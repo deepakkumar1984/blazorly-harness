@@ -1,0 +1,21 @@
+@page "/"
+@using Blazorly.Harness.Web.Services
+@inject SessionFacade Facade
+@inject NavigationManager Navigation
+
+@code
+{
+    protected override void OnInitialized()
+    {
+        var latest = Facade.LiveSessions().OrderBy(s => s.Header.CreatedAt).LastOrDefault();
+        if (latest is not null)
+        {
+            Navigation.NavigateTo($"/session/{latest.Id}");
+        }
+        else
+        {
+            var session = Facade.CreateSession();
+            Navigation.NavigateTo($"/session/{session.Id}");
+        }
+    }
+}

@@ -1,0 +1,19 @@
+{
+  "generatedAt": 1788243364557,
+  "enabled": true,
+  "days": [
+    {
+      "date": "2026-09-01",
+      "turns": 1,
+      "assistantMessages": 2,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0,
+      "toolCalls": {
+        "bash": 1,
+        "todo_write": 1
+      }
+    }
+  ]
+}

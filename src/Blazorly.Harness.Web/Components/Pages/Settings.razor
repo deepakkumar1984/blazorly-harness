@@ -1,0 +1,274 @@
+@page "/settings"
+@using Blazorly.Harness.Web.Services
+@using Blazorly.Harness.Tools
+@inject SessionFacade Facade
+@inject NavigationManager Navigation
+@inject HttpClient Http
+
+<div class="settings-page">
+    <h1>Settings</h1>
+    <p class="settings-note">Settings persist under <code>~/.blazorly/settings.json</code>. The API key resolves from
+        this field, then the provider's environment variable (<code>DEEPSEEK_API_KEY</code>, <code>OPENAI_API_KEY</code>,
+        <code>ANTHROPIC_API_KEY</code>). The <code>replay</code> provider runs a scripted demo agent with no key.
+        Workspaces are managed from the sidebar.</p>
+
+    <div class="settings-form">
+        <label>
+            <span>Provider</span>
+            <select @bind="_settings.Provider" @bind:after="ProviderChanged">
+                @foreach (var provider in Providers)
+                {
+                    <option value="@provider">@provider</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Model</span>
+            <select @bind="_settings.Model">
+                @foreach (var model in _models)
+                {
+                    <option value="@model.Id">@model.Name</option>
+                }
+            </select>
+        </label>
+        @if (_settings.Provider != "replay")
+        {
+            <label>
+                <span>Base URL</span>
+                <input type="text" @bind="_settings.BaseUrl" @bind:event="oninput" />
+            </label>
+            <label>
+                <span>API key</span>
+                <input type="password" @bind="_settings.ApiKey" @bind:event="oninput" placeholder="sk-…" />
+            </label>
+            <div class="discover-row">
+                <button type="button" class="ghost" @onclick="DiscoverModels" disabled="@_discovering">
+                    @(_discovering ? "Discovering…" : "Discover models (GET /models)")
+                </button>
+                @if (_discoverError is not null)
+                {
+                    <span class="discover-error">@_discoverError</span>
+                }
+                else if (_discovered is { Count: > 0 })
+                {
+                    <span class="discover-ok">@_discovered.Count models: @string.Join(", ", _discovered.Take(6))@(_discovered.Count > 6 ? ", …" : "")</span>
+                }
+            </div>
+        }
+
+        <h2 class="settings-heading">Custom OpenAI-compatible providers</h2>
+        <p class="settings-note">Extra routes registered beside the built-ins; each appears in the per-session model picker.</p>
+        @foreach (var custom in _settings.CustomProviders.ToList())
+        {
+            <div class="custom-provider">
+                <input type="text" placeholder="name" @bind="custom.Name" @bind:event="oninput" class="cp-name" />
+                <input type="text" placeholder="https://gateway.example.com/v1" @bind="custom.BaseUrl" @bind:event="oninput" class="cp-url" />
+                <input type="text" placeholder="model ids, comma separated" @bind="custom.ModelsText" @bind:event="oninput" class="cp-models" />
+                <button type="button" class="icon danger" title="Remove provider" @onclick='() => RemoveCustomProvider(custom)'>✕</button>
+            </div>
+        }
+        <div class="discover-row">
+            <button type="button" class="ghost" @onclick="AddCustomProvider">＋ Add custom provider</button>
+        </div>
+
+        <label>
+            <span>Session persistence backend</span>
+            <select @bind="_settings.Persistence">
+                <option value="jsonl">jsonl (one file per session)</option>
+                <option value="sqlite">sqlite (single database)</option>
+            </select>
+        </label>
+        <label>
+            <span>Context window tokens (drives compaction)</span>
+            <input type="number" @bind="_settings.ContextWindowTokens" />
+        </label>
+        <label>
+            <span>Compaction threshold (fraction of the window)</span>
+            <input type="number" step="0.05" min="0.2" max="0.95" @bind="_settings.CompactionThreshold" />
+        </label>
+        <label>
+            <span>Capabilities</span>
+            <div class="settings-toggles">
+                @foreach (var (key, label) in Toggles)
+                {
+                    <label class="toggle">
+                        <input type="checkbox" checked="@(GetToggle(key))" @onchange="e => SetToggle(key, e.Value)" />
+                        <span>@label</span>
+                    </label>
+                }
+            </div>
+        </label>
+        <label>
+            <span>Default permission preset (new sessions)</span>
+            <select @bind="_settings.SandboxMode">
+                <option value="@SandboxPolicy.WorkspaceWrite">workspace-write (writes confined to the session workspace)</option>
+                <option value="@SandboxPolicy.ReadOnly">read-only (all mutations denied)</option>
+                <option value="@SandboxPolicy.DangerFullAccess">danger-full-access (no confinement)</option>
+            </select>
+        </label>
+        <div class="settings-actions">
+            <button class="primary" @onclick="Save">Save</button>
+            <button class="ghost" @onclick="GoBack">Back</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private HarnessSettings _settings = new();
+    private IReadOnlyList<Blazorly.Harness.Llm.LlmModelInfo> _models = [];
+    private List<string>? _discovered;
+    private string? _discoverError;
+    private bool _discovering;
+    private static IReadOnlyList<string> Providers => ProviderCatalog.Providers;
+
+    protected override void OnInitialized()
+    {
+        _settings = Facade.Harness.Settings;
+        RefreshModels();
+    }
+
+    private void ProviderChanged()
+    {
+        _settings.Model = ProviderCatalog.DefaultModel(_settings.Provider);
+        _discovered = null;
+        _discoverError = null;
+        RefreshModels();
+        StateHasChanged();
+    }
+
+    private void RefreshModels()
+    {
+        _models = ProviderCatalog.For(_settings.Provider, _settings.BaseUrl);
+        if (_models.Count > 0 && _models.All(m => m.Id != _settings.Model))
+        {
+            _settings.Model = _models[0].Id;
+        }
+    }
+
+    private async Task DiscoverModels()
+    {
+        _discovering = true;
+        _discoverError = null;
+        _discovered = null;
+        try
+        {
+            var response = await Http.PostAsJsonAsync($"{Navigation.BaseUri}api/llm.discover", new { provider = _settings.Provider });
+            if (response.IsSuccessStatusCode)
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                var ids = doc.RootElement.GetProperty("models").EnumerateArray()
+                    .Select(m => m.GetProperty("id").GetString() ?? "")
+                    .Where(id => id.Length > 0)
+                    .ToList();
+                _discovered = ids;
+                if (_settings.Provider != "replay") RefreshModels();
+            }
+            else
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                _discoverError = doc.RootElement.TryGetProperty("error", out var error) ? error.GetString() : $"discover failed ({(int)response.StatusCode})";
+            }
+        }
+        catch (Exception ex)
+        {
+            _discoverError = ex.Message;
+        }
+        finally
+        {
+            _discovering = false;
+            StateHasChanged();
+        }
+    }
+
+    private void AddCustomProvider()
+    {
+        _settings.CustomProviders.Add(new CustomProviderConfig());
+        StateHasChanged();
+    }
+
+    private void RemoveCustomProvider(CustomProviderConfig custom)
+    {
+        _settings.CustomProviders.Remove(custom);
+        Facade.Harness.ApplyProviderSelection(); // drop the route immediately
+        StateHasChanged();
+    }
+
+    private static readonly (string Key, string Label)[] Toggles =
+    [
+        ("web", "Web tools (web_search, web_fetch)"),
+        ("skills", "Skills"),
+        ("askuser", "ask_user_question tool"),
+        ("sessionquery", "Session-query tools"),
+        ("goals", "Goals"),
+        ("planmode", "Plan mode"),
+        ("codemode", "run_code (C# scripting)"),
+        ("terminals", "Persistent terminals"),
+        ("workflows", "Workflows + ralph"),
+        ("teams", "Agent teams (experimental)"),
+        ("lsp", "LSP (requires BLAZORLY_LSP command)"),
+        ("hooks", "Hooks bridge (~/.blazorly/hooks.json)"),
+        ("projectinstructions", "Project instructions (AGENTS.md / CLAUDE.md)"),
+        ("autotitles", "Auto session titles"),
+        ("spill", "Tool-output spill (~/.blazorly/spills)"),
+        ("schedule", "Schedule reminders"),
+        ("mcp", "MCP servers (~/.blazorly/mcp.json)"),
+    ];
+
+    private bool GetToggle(string key) => key switch
+    {
+        "web" => _settings.EnableWeb,
+        "skills" => _settings.EnableSkills,
+        "askuser" => _settings.EnableAskUser,
+        "sessionquery" => _settings.EnableSessionQuery,
+        "goals" => _settings.EnableGoals,
+        "planmode" => _settings.EnablePlanMode,
+        "codemode" => _settings.EnableCodeMode,
+        "terminals" => _settings.EnableTerminals,
+        "workflows" => _settings.EnableWorkflows,
+        "teams" => _settings.EnableTeams,
+        "lsp" => _settings.EnableLsp,
+        "hooks" => _settings.EnableHooks,
+        "projectinstructions" => _settings.EnableProjectInstructions,
+        "autotitles" => _settings.EnableAutoTitles,
+        "spill" => _settings.EnableSpill,
+        "schedule" => _settings.EnableSchedule,
+        "mcp" => _settings.EnableMcp,
+        _ => false,
+    };
+
+    private void SetToggle(string key, object? value)
+    {
+        var on = value is true;
+        switch (key)
+        {
+            case "web": _settings.EnableWeb = on; break;
+            case "skills": _settings.EnableSkills = on; break;
+            case "askuser": _settings.EnableAskUser = on; break;
+            case "sessionquery": _settings.EnableSessionQuery = on; break;
+            case "goals": _settings.EnableGoals = on; break;
+            case "planmode": _settings.EnablePlanMode = on; break;
+            case "codemode": _settings.EnableCodeMode = on; break;
+            case "terminals": _settings.EnableTerminals = on; break;
+            case "workflows": _settings.EnableWorkflows = on; break;
+            case "teams": _settings.EnableTeams = on; break;
+            case "lsp": _settings.EnableLsp = on; break;
+            case "hooks": _settings.EnableHooks = on; break;
+            case "projectinstructions": _settings.EnableProjectInstructions = on; break;
+            case "autotitles": _settings.EnableAutoTitles = on; break;
+            case "spill": _settings.EnableSpill = on; break;
+            case "schedule": _settings.EnableSchedule = on; break;
+            case "mcp": _settings.EnableMcp = on; break;
+        }
+        StateHasChanged();
+    }
+
+    private void GoBack() => Navigation.NavigateTo("/");
+
+    private void Save()
+    {
+        Facade.Harness.ApplyProviderSelection();
+        Facade.Harness.ApplyDefaultSelection();
+        Facade.Harness.SaveSettings();
+        Navigation.NavigateTo("/");
+    }
+}

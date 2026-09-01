@@ -1,0 +1,67 @@
+@using System.Text.Json
+@using Blazorly.Harness.Web.Services
+
+<div class="tl-row @StateClass @(Expandable ? "expandable" : "")" @onclick="Toggle">
+    <span class="tl-glyph">@Row.Glyph</span>
+    <span class="tl-label">@Row.Label</span>
+    @if (Row.Detail is { Length: > 0 } detail)
+    {
+        <span class="tl-detail" title="@detail">@detail</span>
+    }
+    @if (Row.DurationMs is { } ms)
+    {
+        <span class="tl-turn-dur">@(ms > 1000 ? $"{ms / 1000.0:F1}s" : $"{Math.Round(ms)}ms")</span>
+    }
+    @if (Row.Meta is { Length: > 0 } meta)
+    {
+        <span class="tl-turn-dur">@meta</span>
+    }
+</div>
+@if (_expanded)
+{
+    <div class="tl-io">
+        @if (Row.ArgsJson is { Length: > 0 } args)
+        {
+            <div class="io-label">arguments</div>
+            <pre>@PrettyJson(args)</pre>
+        }
+        @if (Row.ResultText is { Length: > 0 } result)
+        {
+            <div class="io-label">result</div>
+            <pre>@result</pre>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public TrajectoryRow Row { get; set; } = null!;
+    private bool _expanded;
+
+    private bool Expandable => Row.ArgsJson is { Length: > 0 } || Row.ResultText is { Length: > 0 };
+
+    private string StateClass => Row switch
+    {
+        { Kind: "chip" } => "chip",
+        { Kind: "user" } => "user-row",
+        { Status: "error" } => "state-error",
+        _ => "",
+    };
+
+    private void Toggle()
+    {
+        if (Expandable) _expanded = !_expanded;
+    }
+
+    private static string PrettyJson(string text)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return text;
+        }
+    }
+}

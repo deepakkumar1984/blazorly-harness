@@ -1,0 +1,97 @@
+using System.Text.Json;
+using Blazorly.Harness.Llm;
+using Blazorly.Harness.Llm.Adapters;
+using Xunit;
+
+namespace Blazorly.Harness.Tests;
+
+/// <summary>Reasoning-effort wire contract (dsh llm-deepseek serialize.ts parity).</summary>
+public class ReasoningEffortTests
+{
+    private static GenerateOptions Options(string provider, string? effort, string? purpose = null) => new()
+    {
+        Provider = provider,
+        Model = "test-model",
+        Messages = [Message.CreateUserText("hi")],
+        ReasoningEffort = effort,
+        Purpose = purpose,
+    };
+
+    private static JsonElement Body(GenerateOptions options)
+    {
+        var adapter = new OpenAiCompatibleAdapter("test", "http://localhost", "k", [], new HttpClient());
+        return JsonSerializer.SerializeToElement(adapter.BuildWireBody(options));
+    }
+
+    [Fact]
+    public void DeepSeek_Off_DisablesThinkingWithoutEffort()
+    {
+        var body = Body(Options("deepseek", "off"));
+        Assert.Equal("disabled", body.GetProperty("thinking").GetProperty("type").GetString());
+        Assert.False(body.TryGetProperty("reasoning_effort", out _));
+    }
+
+    [Theory]
+    [InlineData("low")]
+    [InlineData("high")]
+    [InlineData("max")]
+    public void DeepSeek_NonOff_EnablesThinkingWithEffort(string effort)
+    {
+        var body = Body(Options("deepseek", effort));
+        Assert.Equal("enabled", body.GetProperty("thinking").GetProperty("type").GetString());
+        Assert.Equal(effort, body.GetProperty("reasoning_effort").GetString());
+    }
+
+    [Fact]
+    public void DeepSeek_NoEffort_SendsNeitherField()
+    {
+        var body = Body(Options("deepseek", null));
+        Assert.False(body.TryGetProperty("thinking", out _));
+        Assert.False(body.TryGetProperty("reasoning_effort", out _));
+    }
+
+    [Fact]
+    public void DeepSeek_SessionTitle_AlwaysThinkingDisabled()
+    {
+        var body = Body(Options("deepseek", "max", purpose: "session-title"));
+        Assert.Equal("disabled", body.GetProperty("thinking").GetProperty("type").GetString());
+        Assert.False(body.TryGetProperty("reasoning_effort", out _));
+    }
+
+    [Fact]
+    public void GenericRoute_PassesEffortThrough_WithoutThinkingField()
+    {
+        var body = Body(Options("openai-compatible", "xhigh"));
+        Assert.Equal("xhigh", body.GetProperty("reasoning_effort").GetString());
+        Assert.False(body.TryGetProperty("thinking", out _));
+    }
+
+    [Fact]
+    public void GenericRoute_NoEffort_SendsNothing()
+    {
+        var body = Body(Options("openai", null));
+        Assert.False(body.TryGetProperty("thinking", out _));
+        Assert.False(body.TryGetProperty("reasoning_effort", out _));
+    }
+
+    [Fact]
+    public void Catalog_OffersEffortsForReasoningModels()
+    {
+        var pro = Web.Services.ProviderCatalog.For("deepseek", "https://api.deepseek.com").Single(m => m.Id == "deepseek-v4-pro");
+        Assert.Equal(new[] { "off", "low", "high", "max" }, pro.ReasoningEfforts);
+        Assert.Equal("high", pro.DefaultEffort);
+        var replay = Web.Services.ProviderCatalog.For("replay", "");
+        Assert.All(replay, m => Assert.True(m.ReasoningEfforts is null || m.ReasoningEfforts.Length == 0));
+    }
+
+    [Fact]
+    public void AgentOptions_EffortOverridableAndResettable()
+    {
+        var options = new Blazorly.Harness.Core.Agent.AgentOptions(Provider: "deepseek", Model: "deepseek-v4-pro");
+        var overridden = options.OverriddenBy(new(ReasoningEffort: "max"));
+        Assert.Equal("max", overridden.ReasoningEffort);
+        Assert.Equal("deepseek", overridden.Provider);
+        var reset = overridden.OverriddenBy(new(ReasoningEffort: null));
+        Assert.Equal("max", reset.ReasoningEffort); // null = keep
+    }
+}

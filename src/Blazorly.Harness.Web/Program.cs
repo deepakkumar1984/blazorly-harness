@@ -1,0 +1,355 @@
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Channels;
+using Blazorly.Harness.Core.Sessions;
+using Blazorly.Harness.Llm;
+using Blazorly.Harness.Web.Components;
+using Blazorly.Harness.Web.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+builder.Services.AddHttpClient();
+
+builder.Services.AddSingleton<HarnessBootstrapper>();
+builder.Services.AddSingleton<UiEventBroker>();
+builder.Services.AddSingleton<UiInteractions>();
+builder.Services.AddSingleton<SessionFacade>();
+builder.Services.AddSingleton(sp =>
+{
+    var harness = sp.GetRequiredService<HarnessBootstrapper>();
+    return new ConversationAssembler(harness.Tools, harness.Meter);
+});
+builder.Services.AddSingleton<MarkdownService>();
+
+var app = builder.Build();
+
+// Boot the harness composition before serving anything.
+var bootstrapper = app.Services.GetRequiredService<HarnessBootstrapper>();
+await bootstrapper.StartAsync(default);
+var broker = app.Services.GetRequiredService<UiEventBroker>();
+var interactions = app.Services.GetRequiredService<UiInteractions>();
+interactions.Mount(bootstrapper);
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Error", createScopeForErrors: true);
+}
+app.UseStatusCodePagesWithReExecute("/not-found");app.UseWebSockets();
+app.UseAntiforgery();
+
+app.MapStaticAssets();
+
+// ---- REST surface (mirrors dsh's apiproxy session domain) ----
+
+app.MapGet("/api/session.list", async (SessionFacade facade) =>
+    JsonSerializer.Serialize(new
+    {
+        sessions = (await facade.ListPersistedAsync()).Select(h => new { h.Id, h.CreatedAt, h.Cwd, h.ParentSession }).ToList(),
+    }));
+
+app.MapPost("/api/session.create", (SessionFacade facade) =>
+{
+    var session = facade.CreateSession();
+    return Results.Json(new { session.Id });
+});
+
+app.MapPost("/api/session.prompt", async (HttpContext http, SessionFacade facade) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<PromptRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.SessionId) || string.IsNullOrWhiteSpace(body.Content))
+        return Results.BadRequest(new { error = "sessionId and content are required" });
+    facade.Prompt(body.SessionId, body.Content, string.IsNullOrWhiteSpace(body.Mode) ? "queue" : body.Mode);
+    await facade.FlushAsync(body.SessionId);
+    return Results.Json(new { ok = true });
+});
+
+app.MapPost("/api/session.cancel", async (HttpContext http, SessionFacade facade) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<PromptRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.SessionId)) return Results.BadRequest();
+    facade.Cancel(body.SessionId);
+    await facade.FlushAsync(body.SessionId);
+    return Results.Json(new { ok = true });
+});
+
+app.MapGet("/api/session.history", async (string id, SessionFacade facade) =>
+{
+    var session = await facade.OpenSessionAsync(id);
+    return Results.Json(new
+    {
+        id = session.Id,
+        seq = session.Seq,
+        events = session.Events.Select(e => new
+        {
+            e.Type,
+            e.Seq,
+            e.Time,
+            data = e.Data,
+        }),
+    });
+});
+
+app.MapPost("/api/session.fork", async (HttpContext http, SessionFacade facade) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<ForkRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.SessionId)) return Results.BadRequest();
+    var child = facade.Fork(body.SessionId, body.AtSeq);
+    await facade.FlushAsync(child.Id);
+    return Results.Json(new { id = child.Id });
+});
+
+app.MapPost("/api/interaction.answer", async (HttpContext http, UiInteractions ui) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<AnswerRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Id)) return Results.BadRequest();
+    var ok = ui.TryAnswer(body.Id, body.Answer ?? "");
+    return Results.Json(new { ok });
+});
+
+// ---- workspace + host surface ----
+
+app.MapGet("/api/workspace.list", (SessionFacade facade) => Results.Json(new
+{
+    workspaces = facade.Workspaces().Select(w => new { w.Id, w.Name, w.Root, w.Order }),
+}));
+
+app.MapPost("/api/workspace.add", async (HttpContext http, SessionFacade facade) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<WorkspaceRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Root)) return Results.BadRequest(new { error = "root is required" });
+    try
+    {
+        var workspace = facade.AddWorkspace(body.Name ?? "", body.Root);
+        return Results.Json(new { workspace.Id, workspace.Name, workspace.Root });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapPost("/api/workspace.remove", async (HttpContext http, SessionFacade facade) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<WorkspaceRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Id)) return Results.BadRequest();
+    facade.RemoveWorkspace(body.Id);
+    return Results.Json(new { ok = true });
+});
+
+app.MapGet("/api/host.browse", (string? path) =>
+{
+    try
+    {
+        var entries = DirectoryBrowser.List(path ?? "/");
+        return Results.Json(new
+        {
+            path = Path.GetFullPath(string.IsNullOrWhiteSpace(path) ? "/" : path),
+            parent = Directory.GetParent(Path.GetFullPath(string.IsNullOrWhiteSpace(path) ? "/" : path))?.FullName,
+            entries,
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapPost("/api/session.rename", async (HttpContext http, SessionFacade facade) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<PromptRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.SessionId)) return Results.BadRequest();
+    facade.RenameSession(body.SessionId, body.Content ?? "");
+    await facade.FlushAsync(body.SessionId);
+    return Results.Json(new { ok = true });
+});
+
+app.MapPost("/api/session.archive", async (HttpContext http, SessionFacade facade) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<ArchiveRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.SessionId)) return Results.BadRequest();
+    facade.Archive(body.SessionId, body.Archived);
+    return Results.Json(new { ok = true });
+});
+
+app.MapPost("/api/session.command", async (HttpContext http, SessionFacade facade) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<PromptRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.SessionId) || string.IsNullOrWhiteSpace(body.Content))
+        return Results.BadRequest(new { error = "sessionId and content are required" });
+    var outcome = facade.TryCommand(body.SessionId, body.Content);
+    if (outcome is null) return Results.BadRequest(new { error = "not a command" });
+    await facade.FlushAsync(body.SessionId);
+    return Results.Json(new { outcome.Name, outcome.Ok, outcome.Text });
+});
+
+app.MapGet("/api/session.search", (string q, SessionFacade facade) =>
+    Results.Json(new { hits = facade.Search(q).Select(h => new { h.SessionId, h.Title, h.Kind, h.Snippet }) }));
+
+// ---- credentials + jobs surface ----
+
+app.MapGet("/api/telemetry", (HarnessBootstrapper harness) => Results.Json(
+    harness.Telemetry is { } telemetry ? telemetry.Snapshot() : new { generatedAt = 0L, enabled = false, days = Array.Empty<object>() }));
+
+app.MapGet("/api/llm.providers", (HarnessBootstrapper harness) => Results.Json(new
+{
+    providers = harness.Llm.ListProviders().Select(p => new { id = p, models = harness.Llm.ListModels(p) }),
+    catalog = ProviderCatalog.Providers,
+}));
+
+app.MapPost("/api/llm.discover", async (HttpContext http, HarnessBootstrapper harness) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<DiscoverRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Provider)) return Results.BadRequest(new { error = "provider is required" });
+
+    string baseUrl;
+    string apiKey;
+    Action<HttpRequestMessage>? configure = null;
+    var custom = harness.Settings.CustomProviders.FirstOrDefault(c => c.Name == body.Provider);
+    if (custom is not null)
+    {
+        baseUrl = custom.BaseUrl;
+        apiKey = custom.ApiKey
+            ?? (custom.ApiKeyEnv is { Length: > 0 } env ? Environment.GetEnvironmentVariable(env) : null)
+            ?? "";
+    }
+    else if (body.Provider == harness.Settings.Provider)
+    {
+        baseUrl = harness.Settings.BaseUrl;
+        apiKey = harness.Settings.EffectiveApiKey ?? "";
+        if (body.Provider == "anthropic")
+        {
+            configure = request =>
+            {
+                request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
+                request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+            };
+        }
+    }
+    else
+    {
+        return Results.BadRequest(new { error = "unknown provider route" });
+    }
+
+    try
+    {
+        var models = await LlmModelDiscovery.DiscoverAsync(body.Provider, baseUrl, apiKey, HarnessBootstrapper.StreamingHttp, configure);
+        if (custom is not null)
+        {
+            foreach (var model in models)
+            {
+                if (!custom.Models.Contains(model.Id)) custom.Models.Add(model.Id);
+            }
+            harness.SaveSettings();
+            harness.ApplyProviderSelection(); // rebuild the route so its model list reflects discovery
+        }
+        return Results.Json(new { provider = body.Provider, models });
+    }
+    catch (Blazorly.Harness.Llm.LlmException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message, code = ex.Code });
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message, code = "TRANSPORT" });
+    }
+});
+
+app.MapGet("/api/credentials.describe", (HarnessBootstrapper harness) => Results.Json(new
+{
+    names = harness.Credentials.Describe().Select(c => new { c.Name, c.Source }),
+}));
+
+app.MapPost("/api/credentials.set", async (HttpContext http, HarnessBootstrapper harness) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<CredentialRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Name)) return Results.BadRequest();
+    await harness.Credentials.SetAsync(body.Name, body.Value ?? "");
+    return Results.Json(new { ok = true });
+});
+
+app.MapPost("/api/credentials.unset", async (HttpContext http, HarnessBootstrapper harness) =>
+{
+    var body = await http.Request.ReadFromJsonAsync<CredentialRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Name)) return Results.BadRequest();
+    await harness.Credentials.UnsetAsync(body.Name);
+    return Results.Json(new { ok = true });
+});
+
+app.MapGet("/api/jobs.list", (HarnessBootstrapper harness) => Results.Json(new
+{
+    jobs = harness.Jobs.List().Select(j => new { j.Id, j.Kind, j.Description, j.Status, j.ExitCode, StartedAt = j.StartedAt.ToUnixTimeMilliseconds() }),
+}));
+
+app.MapGet("/api/events", async (HttpContext http, UiEventBroker brokerRef, SessionFacade facade) =>
+{
+    if (!http.WebSockets.IsWebSocketRequest) return Results.BadRequest(new { error = "websocket required" });
+    var sessionId = http.Request.Query["sessionId"].ToString();
+    using var socket = await http.WebSockets.AcceptWebSocketAsync();
+    if (!string.IsNullOrEmpty(sessionId))
+    {
+        // Opening a session over the API keeps it live for event replay.
+        try { await facade.OpenSessionAsync(sessionId); } catch { /* unknown session streams anyway */ }
+    }
+    var queue = Channel.CreateUnbounded<UiEventBroker.Frame>();
+    using var subscription = brokerRef.Subscribe(frame =>
+    {
+        if (string.IsNullOrEmpty(sessionId) || frame.SessionId == sessionId) queue.Writer.TryWrite(frame);
+        return Task.CompletedTask;
+    });
+    try
+    {
+        if (!string.IsNullOrEmpty(sessionId))
+        {
+            var session = facade.Harness.Sessions.Get(sessionId);
+            if (session is not null)
+            {
+                foreach (var e in session.Events)
+                {
+                    await SendEvent(socket, sessionId, e);
+                }
+            }
+        }
+        while (socket.State == WebSocketState.Open)
+        {
+            var frame = await queue.Reader.ReadAsync(http.RequestAborted);
+            await SendEvent(socket, frame.SessionId, frame.Event);
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        // client disconnected
+    }
+    catch (WebSocketException)
+    {
+        // client disconnected
+    }
+    return Results.Empty;
+});
+
+static async Task SendEvent(WebSocket socket, string sessionId, SessionEvent e)
+{
+    var payload = JsonSerializer.Serialize(new
+    {
+        type = "session/event",
+        sessionId,
+        @event = new { e.Type, e.Seq, e.Time, data = e.Data },
+    });
+    await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(payload)),
+        WebSocketMessageType.Text, true, CancellationToken.None);
+}
+
+app.MapRazorComponents<App>()
+    .AddInteractiveServerRenderMode();
+
+app.Run();
+
+public sealed record PromptRequest(string? SessionId, string? Content, string? Mode);
+public sealed record ForkRequest(string? SessionId, int? AtSeq);
+public sealed record AnswerRequest(string? Id, string? Answer);
+public sealed record WorkspaceRequest(string? Id, string? Name, string? Root);
+public sealed record ArchiveRequest(string? SessionId, bool Archived);
+public sealed record CredentialRequest(string? Name, string? Value);
+public sealed record DiscoverRequest(string? Provider);

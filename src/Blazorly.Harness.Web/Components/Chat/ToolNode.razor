@@ -1,0 +1,170 @@
+@using Blazorly.Harness.Web.Services
+
+<div class="tool-row @Node.ToolStatus">
+    <button class="tool-summary" @onclick="Toggle">
+        <span class="tool-dot @Node.ToolStatus"></span>
+        <span class="tool-name">@Node.ToolName</span>
+        <span class="tool-title">@(Node.CallView?.Title ?? CompactArgs)</span>
+        <span class="tool-state">@(Node.ToolStatus == "running" ? "…" : Node.ToolStatus == "error" ? "✕" : "✓")</span>
+    </button>
+    @if (_expanded)
+    {
+        <div class="tool-detail">
+            @if (Node.CallView?.Card == "diff" && Node.CallView.Diff is { } diff)
+            {
+                <div class="diff-card">
+                    <div class="diff-path">@diff.Path</div>
+                    <pre class="diff-old">@diff.OldText</pre>
+                    <pre class="diff-new">@diff.NewText</pre>
+                </div>
+            }
+            else
+            {
+                var argsJson = ArgsJsonElement;
+                @if (argsJson is not null)
+                {
+                    <div class="io-views">
+                        <button class="@(!_rawArgs ? "on" : "")" @onclick='() => _rawArgs = false'>tree</button>
+                        <button class="@(_rawArgs ? "on" : "")" @onclick='() => _rawArgs = true'>raw</button>
+                    </div>
+                    @if (_rawArgs)
+                    {
+                        <div class="io-card">
+                            <div class="io-label">arguments</div>
+                            <pre>@PrettyArgs</pre>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="io-card">
+                            <div class="io-label">arguments</div>
+                            <JsonTree Root="argsJson.Value" />
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="io-card">
+                        <div class="io-label">arguments</div>
+                        <pre>@PrettyArgs</pre>
+                    </div>
+                }
+            }
+            @if (Node.ResultText is { Length: > 0 })
+            {
+                var structured = ResultJson;
+                @if (structured is not null)
+                {
+                    <div class="io-views">
+                        <button class="@(!_rawResult ? "on" : "")" @onclick='() => _rawResult = false'>tree</button>
+                        <button class="@(_rawResult ? "on" : "")" @onclick='() => _rawResult = true'>raw</button>
+                    </div>
+                    @if (_rawResult)
+                    {
+                        <div class="io-card">
+                            <div class="io-label">result</div>
+                            <pre class="result @Node.ToolStatus">@Node.ResultText</pre>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="io-card">
+                            <div class="io-label">result</div>
+                            <JsonTree Root="structured.Value" />
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="io-card">
+                        <div class="io-label">result</div>
+                        <pre class="result @Node.ToolStatus">@Node.ResultText</pre>
+                    </div>
+                }
+            }
+            else if (Node.ToolStatus == "running")
+            {
+                <div class="io-card running">running…</div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public ConversationNode Node { get; set; } = null!;
+    private bool _expanded;
+    private bool _rawResult;
+    private bool _rawArgs;
+    private System.Text.Json.JsonElement? _resultJson;
+    private bool _resultParsed;
+
+    private System.Text.Json.JsonElement? ArgsJsonElement
+    {
+        get
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(Node.ArgsJson)) return null;
+                using var doc = System.Text.Json.JsonDocument.Parse(Node.ArgsJson);
+                return doc.RootElement.ValueKind is System.Text.Json.JsonValueKind.Object or System.Text.Json.JsonValueKind.Array
+                    ? doc.RootElement.Clone()
+                    : null;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>True when the result text parses as a JSON object/array (tree-renderable).</summary>
+    private System.Text.Json.JsonElement? ResultJson
+    {
+        get
+        {
+            if (!_resultParsed)
+            {
+                _resultParsed = true;
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(Node.ResultText ?? "");
+                    var kind = doc.RootElement.ValueKind;
+                    if (kind is System.Text.Json.JsonValueKind.Object or System.Text.Json.JsonValueKind.Array)
+                    {
+                        _resultJson = doc.RootElement.Clone();
+                    }
+                }
+                catch (System.Text.Json.JsonException) { }
+            }
+            return _resultJson;
+        }
+    }
+
+    private void Toggle() => _expanded = !_expanded;
+
+    private string CompactArgs
+    {
+        get
+        {
+            var text = PrettyArgs.Replace("\n", " ");
+            return text.Length > 80 ? text[..80] + "…" : text;
+        }
+    }
+
+    private string PrettyArgs
+    {
+        get
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(Node.ArgsJson)) return "{}";
+                using var doc = System.Text.Json.JsonDocument.Parse(Node.ArgsJson);
+                return System.Text.Json.JsonSerializer.Serialize(doc.RootElement, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            }
+            catch
+            {
+                return Node.ArgsJson ?? "";
+            }
+        }
+    }
+}

@@ -1,0 +1,419 @@
+@using Blazorly.Harness.Web.Services
+@inject SessionFacade Facade
+@inject IJSRuntime Js
+@implements IDisposable
+
+<div class="app-shell">
+    <div class="mobile-bar">
+        <button class="icon mobile-menu" title="Toggle navigation" aria-label="Toggle navigation" @onclick='() => _drawerOpen = !_drawerOpen'>☰</button>
+        <span class="mobile-title">⚡ Blazorly Harness</span>
+    </div>
+    <aside class="sidebar @(_drawerOpen ? "open" : "")">
+        <div class="brand">
+            <span class="brand-mark">⚡</span>
+            <span class="brand-name">Blazorly Harness</span>
+        </div>
+        <div class="sidebar-search">
+            <input type="text" placeholder="Search sessions…" @bind="_search" @bind:event="oninput" @bind:after="SearchChanged" />
+        </div>
+        @if (_hits.Count > 0)
+        {
+            <div class="search-results">
+                @foreach (var hit in _hits)
+                {
+                    <a class="search-hit" href="@($"/session/{hit.SessionId}")" @onclick="() => ClearSearch()">
+                        <span class="hit-kind">@hit.Kind</span>
+                        <span class="hit-snip">@hit.Snippet</span>
+                    </a>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="new-session-wrap">
+                <button class="new-session" @onclick="ToggleNewMenu">＋ New chat</button>
+                @if (_newMenu)
+                {
+                    <div class="popover new-popover">
+                        <div class="popover-group">start this chat in…</div>
+                        @foreach (var workspace in Facade.Workspaces().OrderBy(w => w.Order))
+                        {
+                            <button class="popover-item np-item" @onclick="() => NewSessionIn(workspace.Id)">
+                                <span class="np-name">@workspace.Name @(IsCurrentWorkspace(workspace) ? "· current" : "")</span>
+                                <span class="np-root">@workspace.Root</span>
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+            <nav class="session-list">
+                @foreach (var group in Groups())
+                {
+                    <div class="workspace-group @(group.Workspace.Id == UnfiledId ? "unfiled" : "")">
+                        <div class="workspace-head" title="@group.Workspace.Root">
+                            <span class="workspace-name">@group.Workspace.Name</span>
+                            @if (group.Workspace.Id != UnfiledId)
+                            {
+                                <span class="workspace-actions">
+                                    <button class="icon" title="New chat here" @onclick="() => NewSessionIn(group.Workspace.Id)">＋</button>
+                                    <button class="icon danger" title="Remove workspace (sessions stay on disk)" @onclick="() => RemoveWorkspace(group.Workspace)">✕</button>
+                                </span>
+                            }
+                        </div>
+                        @foreach (var item in group.Sessions)
+                        {
+                            <div class="session-row">
+                                <a class="session-item @(item.Id == ActiveSessionId ? "active" : "")" href="@($"/session/{item.Id}")">
+                                    <span class="session-dot @(item.Running ? "running" : "")"></span>
+                                    <span class="session-title">@item.Title</span>
+                                </a>
+                                @if (item.Id == ActiveSessionId)
+                                {
+                                    <button class="icon archive" title="@(item.Archived ? "Unarchive" : "Archive")" @onclick="() => ToggleArchive(item.Id, item.Archived)">
+                                        @(item.Archived ? "⇪" : "⌄")
+                                    </button>
+                                }
+                            </div>
+                        }
+                        @if (group.Sessions.Count == 0)
+                        {
+                            <div class="workspace-empty">no sessions yet</div>
+                        }
+                    </div>
+                }
+                @if (_showArchived.Count > 0)
+                {
+                    <div class="workspace-group">
+                        <div class="workspace-head archived-toggle" @onclick="ToggleShowArchived">
+                            <span class="workspace-name">🗄 @($"{_showArchived.Count} archived")</span>
+                            <span class="workspace-actions"><span class="icon">@(_archivedOpen ? "▴" : "▾")</span></span>
+                        </div>
+                        @if (_archivedOpen)
+                        {
+                            foreach (var item in _showArchived)
+                            {
+                                <div class="session-row archived">
+                                    <a class="session-item" href="@($"/session/{item.Id}")">
+                                        <span class="session-dot"></span>
+                                        <span class="session-title">@item.Title</span>
+                                    </a>
+                                    <button class="icon archive" title="Unarchive" @onclick="() => ToggleArchive(item.Id, true)">⇪</button>
+                                </div>
+                            }
+                        }
+                    </div>
+                }
+            </nav>
+        }
+        <div class="sidebar-foot">
+            <button class="sidebar-link" @onclick="OpenAddWorkspace"><span class="sidebar-link-icon">📁</span>Add workspace</button>
+            <a class="sidebar-link" href="/settings"><span class="sidebar-link-icon">⚙️</span>Settings</a>
+            <button class="sidebar-link theme-toggle" title="Toggle dark/light theme" @onclick="ToggleTheme">
+                <span class="sidebar-link-icon">@(_theme == "light" ? "🌙" : "☀️")</span>@(_theme == "light" ? "Dark" : "Light") theme
+            </button>
+        </div>
+    </aside>
+    <main class="chat-pane">@Body</main>
+</div>
+@if (_drawerOpen)
+{
+    <button class="sidebar-scrim" aria-label="Close navigation" @onclick='() => _drawerOpen = false'></button>
+}
+
+@if (_showAddWorkspace)
+{
+    <div class="modal-overlay" @onclick="CloseAddWorkspace">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Add workspace" @onclick:stopPropagation="true" @onkeydown="OnModalKey">
+            <div class="modal-head">
+                <h3>Add workspace</h3>
+                <button class="icon modal-close" title="Close (Esc)" @onclick="CloseAddWorkspace">✕</button>
+            </div>
+            <div class="browse-quick">
+                <span class="browse-quick-label">Jump to</span>
+                <button type="button" class="chip" @onclick='() => Browse(Facade.HomeDirectory)'>🏠 home</button>
+                <button type="button" class="chip" @onclick='() => Browse("/")'>/root</button>
+                <button type="button" class="chip" @onclick="BrowseParent" disabled="@(_browseParent is null)" title="Up one folder">↑ up</button>
+            </div>
+            <div class="browse-path"><code>@_browsePath</code></div>
+            <div class="browse-list">
+                @if (_browseEntries.Count == 0)
+                {
+                    <div class="browse-empty">no subfolders here</div>
+                }
+                @foreach (var entry in _browseEntries)
+                {
+                    <button type="button" class="browse-entry" @onclick="() => Browse(entry.FullPath)">
+                        <span class="browse-entry-icon">📁</span><span class="browse-entry-name">@entry.Name</span>
+                    </button>
+                }
+            </div>
+            <div class="browse-select-row">
+                <span class="browse-selected">Selected: <code>@(_workspaceRoot.Length > 0 ? _workspaceRoot : _browsePath)</code></span>
+                <button type="button" class="ghost" @onclick="UseCurrentFolder" title="Pick the folder shown in the list above">Use this folder</button>
+            </div>
+            <label class="browse-pick">
+                <span>Folder path</span>
+                <input type="text" @ref="_folderInput" @bind="_workspaceRoot" @bind:event="oninput" placeholder="/home/you/projects/my-app" />
+            </label>
+            <label class="browse-pick">
+                <span>Display name</span>
+                <input type="text" placeholder="(folder name)" @bind="_workspaceName" @bind:event="oninput" />
+            </label>
+            @if (_workspaceError is { Length: > 0 })
+            {
+                <div class="form-error">@_workspaceError</div>
+            }
+            <div class="modal-actions">
+                <button class="ghost" @onclick="CloseAddWorkspace">Cancel</button>
+                <button class="primary" @onclick="AddWorkspace">Add workspace</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string? ActiveSessionId { get; set; }
+    [Parameter] public RenderFragment? Body { get; set; }
+
+    public sealed record SessionItem(string Id, string Title, bool Running, bool Archived, string WorkspaceId);
+
+    private List<SessionItem> _sessions = [];
+    private string _search = "";
+    private IReadOnlyList<SessionFacade.SearchHit> _hits = [];
+    private List<SessionItem> _showArchived = [];
+    private bool _archivedOpen;
+    private bool _showAddWorkspace;
+    private string _browsePath = "/";
+    private string? _browseParent;
+    private List<DirectoryEntry> _browseEntries = [];
+    private string _workspaceRoot = "";
+    private string _workspaceName = "";
+    private string _workspaceError = "";
+    private System.Timers.Timer? _refresh;
+    private string _theme = "dark";
+    private bool _drawerOpen;
+
+    [Inject] private Microsoft.AspNetCore.Components.NavigationManager Navigation { get; set; } = null!;
+
+    protected override void OnInitialized()
+    {
+        Refresh();
+        _ = Browse("/");
+        _refresh = new System.Timers.Timer(1200);
+        _refresh.Elapsed += (_, _) => { if (!_showAddWorkspace) Refresh(); };
+        _refresh.AutoReset = true;
+        _refresh.Enabled = true;
+        Navigation.LocationChanged += OnLocationChanged;
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        if (_drawerOpen || _newMenu)
+        {
+            _drawerOpen = false;
+            _newMenu = false;
+            _ = InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private bool _awaitFolderFocus;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var theme = await Js.InvokeAsync<string>("blazorly.getTheme");
+                if (theme != _theme)
+                {
+                    _theme = theme;
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+        }
+        if (_awaitFolderFocus && _showAddWorkspace)
+        {
+            _awaitFolderFocus = false;
+            await FocusFolderInput();
+        }
+    }
+
+    private async Task FocusFolderInput()
+    {
+        try { await _folderInput.FocusAsync(); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task ToggleTheme()
+    {
+        _theme = _theme == "dark" ? "light" : "dark";
+        try
+        {
+            await Js.InvokeAsync<string>("blazorly.setTheme", _theme);
+        }
+        catch (JSDisconnectedException) { }
+    }
+
+    public sealed record WorkspaceGroup(Workspace Workspace, List<SessionItem> Sessions);
+
+    /// <summary>Pseudo-group for sessions whose cwd matches no registered workspace.</summary>
+    private const string UnfiledId = "unfiled";
+
+    private bool _newMenu;
+
+    private void ToggleNewMenu() => _newMenu = !_newMenu;
+
+    private bool IsCurrentWorkspace(Workspace workspace)
+        => ActiveSessionId is { Length: > 0 } active
+           && Facade.Harness.Sessions.Get(active) is { } session
+           && Facade.WorkspaceOf(session)?.Id == workspace.Id;
+
+    private List<WorkspaceGroup> Groups()
+    {
+        var groups = Facade.Workspaces()
+            .OrderBy(w => w.Order)
+            .Select(w => new WorkspaceGroup(w, []))
+            .ToList();
+        var unfiled = new List<SessionItem>();
+        foreach (var item in _sessions.Where(entry => !entry.Archived))
+        {
+            var workspace = Facade.Harness.Workspaces.ForRoot(Facade.Harness.Sessions.Get(item.Id)?.Header.Cwd ?? "");
+            var target = groups.FirstOrDefault(g => g.Workspace.Id == workspace?.Id);
+            if (target is not null) target.Sessions.Add(item);
+            else unfiled.Add(item);
+        }
+        if (unfiled.Count > 0)
+            groups.Add(new WorkspaceGroup(new Workspace(UnfiledId, "unfiled", "", Order: int.MaxValue), unfiled));
+        return groups;
+    }
+
+    private string? CurrentSessionId()
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(Navigation.Uri, "/session/([^/?]+)");
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    private void Refresh()
+    {
+        ActiveSessionId = CurrentSessionId();
+        var items = new List<SessionItem>();
+        var live = new List<SessionItem>();
+        foreach (var session in Facade.LiveSessions())
+        {
+            var agent = Facade.Harness.Agents.Get(session.Id);
+            var item = new SessionItem(session.Id, SessionFacade.DeriveTitle(session), agent?.Status == "running", Facade.IsArchived(session.Id), "");
+            items.Add(item);
+            if (!item.Archived) live.Add(item);
+        }
+        _sessions = items.OrderByDescending(s => s.Running).ToList();
+        _showArchived = [.. items.Where(s => s.Archived)];
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private Task SearchChanged()
+    {
+        if (_search.Trim().Length >= 2) { _hits = Facade.Search(_search); } else { _hits = []; }
+        return Task.CompletedTask;
+    }
+
+    private void ClearSearch()
+    {
+        _search = "";
+        _hits = [];
+    }
+
+    private void NewSessionIn(string workspaceId)
+    {
+        var session = Facade.CreateSession(workspaceId);
+        _newMenu = false;
+        Navigation.NavigateTo($"/session/{session.Id}", forceLoad: true);
+    }
+
+    private void RemoveWorkspace(Workspace workspace)
+    {
+        Facade.RemoveWorkspace(workspace.Id);
+        Refresh();
+    }
+
+    private void ToggleArchive(string sessionId, bool currentlyArchived)
+    {
+        Facade.Archive(sessionId, !currentlyArchived);
+        Refresh();
+    }
+
+    private void ToggleShowArchived() => _archivedOpen = !_archivedOpen;
+
+    private Microsoft.AspNetCore.Components.ElementReference _folderInput;
+
+    private void OpenAddWorkspace()
+    {
+        _workspaceError = "";
+        _showAddWorkspace = true;
+        _awaitFolderFocus = true;
+        _ = Browse(_browsePath);
+    }
+
+    private void CloseAddWorkspace() => _showAddWorkspace = false;
+
+    private void OnModalKey(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") CloseAddWorkspace();
+    }
+
+    private void UseCurrentFolder()
+    {
+        _workspaceRoot = _browsePath;
+        if (_workspaceName.Trim().Length == 0)
+        {
+            var name = System.IO.Path.GetFileName(_browsePath.TrimEnd('/'));
+            _workspaceName = name.Length > 0 ? name : _browsePath;
+        }
+    }
+
+    private async Task Browse(string path)
+    {
+        try
+        {
+            _workspaceError = "";
+            var listing = Facade.BrowseFolders(path);
+            _browsePath = listing.Path;
+            _browseParent = listing.Parent;
+            _browseEntries = [.. listing.Entries];
+        }
+        catch (Exception ex)
+        {
+            _workspaceError = ex.Message;
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private Task BrowseParent() => _browseParent is null ? Task.CompletedTask : Browse(_browseParent);
+
+    private async Task AddWorkspace()
+    {
+        _workspaceError = "";
+        try
+        {
+            var workspace = Facade.AddWorkspace(_workspaceName, _workspaceRoot.Length > 0 ? _workspaceRoot : _browsePath);
+            _showAddWorkspace = false;
+            _workspaceRoot = "";
+            _workspaceName = "";
+            Refresh();
+        }
+        catch (Exception ex)
+        {
+            _workspaceError = ex.Message;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    public void Dispose()
+    {
+        Navigation.LocationChanged -= OnLocationChanged;
+        _refresh?.Dispose();
+    }
+}

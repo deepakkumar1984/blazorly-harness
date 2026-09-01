@@ -1,0 +1,23 @@
+@using Blazorly.Harness.Llm
+@using Blazorly.Harness.Web.Services
+
+@if (Block is TextBlock text)
+{
+    <div class="markdown">@((MarkupString)Markdown.ToHtml(text.Text))</div>
+}
+else if (Block is ReasoningBlock reasoning)
+{
+    <details class="reasoning">
+        <summary>Think</summary>
+        <div class="reasoning-body">@reasoning.Text</div>
+    </details>
+}
+else if (Block is ToolCallBlock call)
+{
+    <div class="inline-tool-call">calls <code>@call.Name</code></div>
+}
+
+@code {
+    [Parameter] public ContentBlock? Block { get; set; }
+    [Parameter] public MarkdownService Markdown { get; set; } = null!;
+}

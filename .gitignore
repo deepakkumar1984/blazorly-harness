@@ -1,0 +1,55 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# IDE / editor caches
+.vs/
+.idea/
+*.swp
+*.swo
+clr-debug-pid-*.log
+msbuild.binlog
+*.binlog
+
+# Publish output
+[Pp]ublish/
+publish/
+*.publish.xml
+*.pubxml.user
+
+# NuGet
+*.nupkg
+**/packages/*
+!**/packages/build/
+*.nuget.props
+*.nuget.targets
+
+# Test results and coverage
+[Tt]est[Rr]esult*/
+TestResults/
+coverage*.json
+Coverage/
+*.coverage
+*.coveragexml
+*.trx
+BenchmarkDotNet.Artifacts/
+
+# Runtime data (SQLite / local stores)
+*.db
+*.db-shm
+*.db-wal
+
+# OS cruft
+.DS_Store
+Thumbs.db

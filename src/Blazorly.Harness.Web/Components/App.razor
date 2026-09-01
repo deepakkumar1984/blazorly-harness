@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blazorly Harness</title>
+    <base href="/" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="app.css" />
+    <script>
+        // Apply the persisted theme before first paint to avoid a flash.
+        document.documentElement.dataset.theme = localStorage.getItem("blazorly.theme") || "dark";
+    </script>
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+
+<body>
+    <Routes @rendermode="InteractiveServer" />
+    <script src="app.js"></script>
+    <script src="_framework/blazor.web.js"></script>
+</body>
+
+</html>

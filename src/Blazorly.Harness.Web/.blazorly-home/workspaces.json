@@ -1,0 +1,13 @@
+{
+  "workspaces": [
+    {
+      "id": "ws-default",
+      "name": "default",
+      "root": "/home/ubuntu/work/blazorly-harness/src/Blazorly.Harness.Web",
+      "order": 0,
+      "key": "ws-default"
+    }
+  ],
+  "archivedSessions": [],
+  "defaultWorkspaceId": "ws-default"
+}

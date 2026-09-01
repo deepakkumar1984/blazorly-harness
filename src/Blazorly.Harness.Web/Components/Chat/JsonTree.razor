@@ -1,0 +1,109 @@
+@using System.Text.Json
+
+<div class="json-tree">
+    @foreach (var row in Rows())
+    {
+        <div class="jt-row @(row.Expandable ? "expandable" : "")" style="padding-left:@(row.Depth * 14)px" @onclick="() => Toggle(row)">
+            @if (row.Expandable)
+            {
+                <span class="jt-arrow">@(_open.Contains(row.Path) ? "▾" : "▸")</span>
+            }
+            else
+            {
+                <span class="jt-arrow"></span>
+            }
+            @if (row.Key.Length > 0)
+            {
+                <span class="jt-key">@row.Key:</span>
+            }
+            @if (row.Scalar is { } scalar)
+            {
+                <span class="jt-scalar @row.Kind">@scalar</span>
+            }
+            else
+            {
+                <span class="jt-meta">@row.Kind @(row.Size) @(row.Size == 1 ? "entry" : "entries") @(_open.Contains(row.Path) ? "" : "…")</span>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>Container rows deeper than this start collapsed; the user's toggles win.</summary>
+    private const int AutoCollapseDepth = 2;
+
+    [Parameter] public JsonElement Root { get; set; }
+
+    private readonly HashSet<string> _open = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _closed = new(StringComparer.Ordinal);
+
+    private void Toggle(TreeRow row)
+    {
+        if (!row.Expandable) return;
+        if (_open.Contains(row.Path))
+        {
+            _open.Remove(row.Path);
+            _closed.Add(row.Path);
+        }
+        else
+        {
+            _open.Add(row.Path);
+            _closed.Remove(row.Path);
+        }
+    }
+
+    private sealed record TreeRow(int Depth, string Key, string Path, string Kind, string? Scalar, bool Expandable, int Size);
+
+    private List<TreeRow> Rows()
+    {
+        var rows = new List<TreeRow>();
+        Flatten(Root, "", "$", 0, rows);
+        return rows;
+    }
+
+    private void Flatten(JsonElement node, string key, string path, int depth, List<TreeRow> rows)
+    {
+        var kind = node.ValueKind switch
+        {
+            JsonValueKind.Object => "object",
+            JsonValueKind.Array => "array",
+            JsonValueKind.String => "string",
+            JsonValueKind.Number => "number",
+            JsonValueKind.True or JsonValueKind.False => "boolean",
+            JsonValueKind.Null => "null",
+            _ => node.ValueKind.ToString(),
+        };
+        var expandable = node.ValueKind is JsonValueKind.Object or JsonValueKind.Array;
+        var size = node.ValueKind switch
+        {
+            JsonValueKind.Object => node.EnumerateObject().Count(),
+            JsonValueKind.Array => node.GetArrayLength(),
+            _ => 0,
+        };
+        string? scalar = node.ValueKind switch
+        {
+            JsonValueKind.String => $"\"{node.GetString()}\"",
+            JsonValueKind.Number => node.GetRawText(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            JsonValueKind.Null => "null",
+            _ => null,
+        };
+        rows.Add(new TreeRow(depth, key, path, kind, scalar, expandable, size));
+        if (!expandable) return;
+        var isOpen = _closed.Contains(path) ? false
+            : _open.Contains(path) || depth < AutoCollapseDepth;
+        if (!isOpen) return;
+        if (node.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in node.EnumerateObject())
+                Flatten(property.Value, property.Name, $"{path}.{property.Name}", depth + 1, rows);
+        }
+        else
+        {
+            var index = 0;
+            foreach (var item in node.EnumerateArray())
+                Flatten(item, $"[{index++}]", $"{path}[{index - 1}]", depth + 1, rows);
+        }
+    }
+}

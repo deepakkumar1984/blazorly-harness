@@ -1,0 +1,786 @@
+@page "/session/{SessionId}"
+@using Blazorly.Harness.Core.Agent
+@using Blazorly.Harness.Core.Sessions
+@using Blazorly.Harness.Llm
+@using Blazorly.Harness.Web.Services
+@inject SessionFacade Facade
+@inject UiEventBroker Broker
+@inject UiInteractions Interactions
+@inject ConversationAssembler Assembler
+@implements IDisposable
+
+<div class="session-view">
+    <header class="session-header">
+        <div class="session-header-title">
+            @if (_editingTitle)
+            {
+                <input class="title-edit" value="@_titleDraft" @oninput="OnTitleInput" @onkeydown="OnTitleKey" @onblur="SaveTitle" />
+            }
+            else
+            {
+                <button class="session-title" title="Rename (/title)" @onclick="StartEditTitle">@(_snapshot?.Title is { Length: > 0 } t ? t : SessionFacade.DeriveTitle(_session))</button>
+            }
+            <button class="model-chip" title="Switch model for this session" @onclick="ToggleModelMenu">
+                @(_agent?.Options.Provider)/@(_agent?.Options.Model) ▾
+            </button>
+            <button class="status-chip permission" title="Switch permission preset (/permission)" @onclick="TogglePermissionMenu">
+                🔒 @(EffectiveSandbox)
+            </button>
+            @if (_snapshot?.Context is { } context)
+            {
+                <span class="status-chip context-meter" title="@MeterTooltip(context)">
+                    <span class="meter"><span class="meter-fill" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></span>
+                    ctx @context.OccupancyPercent%
+                </span>
+            }
+            <span class="status-chip @(_snapshot?.Status == "running" ? "running" : "idle")">
+                @(_snapshot?.Status == "running" ? "● running" : "○ idle")
+            </span>
+        </div>
+        <div class="session-header-actions">
+            <div class="view-tabs">
+                <button class="@TabClass("chat")" @onclick='() => SwitchView("chat")'>Chat</button>
+                <button class="@TabClass("trajectory")" @onclick='() => SwitchView("trajectory")'>Trajectory</button>
+            </div>
+            <button class="ghost @(_statsOpen ? "stats-toggle on" : "")" title="Session statistics: turns, tokens, duration, tool usage" @onclick='() => _statsOpen = !_statsOpen'>Stats</button>
+            <button class="ghost" @onclick="ForkHere" title="Fork this session at the last completed turn">Fork</button>
+        </div>
+    </header>
+
+    @if (_statsOpen && _session is not null)
+    {
+        var stats = SessionStats();
+        <div class="stats-dock">
+            <div class="stats-grid">
+                @foreach (var line in stats.Lines)
+                {
+                    <div class="stats-line"><span class="stats-label">@line.Label</span><span class="stats-value">@line.Value</span></div>
+                }
+            </div>
+            @if (stats.Tools.Count > 0)
+            {
+                <div class="stats-tools">
+                    @foreach (var tool in stats.Tools)
+                    {
+                        <div class="stats-line"><span class="stats-label">@tool.Label</span><span class="stats-value">@tool.Value</span></div>
+                    }
+                </div>
+            }
+        </div>
+    }
+
+    @if (_modelMenu)
+    {
+        <div class="popover">
+            @{
+                var currentModel = ProviderCatalog.For(_agent?.Options.Provider ?? "", Facade.Harness.Settings.BaseUrl)
+                    .FirstOrDefault(m => m.Id == _agent?.Options.Model);
+            }
+            @foreach (var provider in Facade.Harness.Llm.ListProviders())
+            {
+                <div class="popover-group">@provider</div>
+                @foreach (var model in Facade.Harness.Llm.ListModels(provider))
+                {
+                    <button class="popover-item @(_agent?.Options.Provider == provider && _agent?.Options.Model == model.Id ? "selected" : "")"
+                            @onclick="() => SelectModel(provider, model.Id)">
+                        @model.Name
+                    </button>
+                }
+            }
+            @if (currentModel?.ReasoningEfforts is { Length: > 0 } efforts)
+            {
+                <div class="popover-group">reasoning effort</div>
+                <button class="popover-item @(_agent?.Options.ReasoningEffort is null ? "selected" : "")" @onclick='() => SelectEffort(null)'>
+                    model default@(currentModel.DefaultEffort is { } def ? $" ({def})" : "")
+                </button>
+                @foreach (var effort in efforts)
+                {
+                    <button class="popover-item @(_agent?.Options.ReasoningEffort == effort ? "selected" : "")" @onclick='() => SelectEffort(effort)'>@effort</button>
+                }
+            }
+        </div>
+    }
+    @if (_permissionMenu)
+    {
+        <div class="popover">
+            <div class="popover-group">permission preset</div>
+            <button class="popover-item @(EffectiveSandbox == "read-only" ? "selected" : "")" @onclick='() => SelectPermission("read-only")'>read-only — deny all mutations</button>
+            <button class="popover-item @(EffectiveSandbox == "workspace-write" ? "selected" : "")" @onclick='() => SelectPermission("workspace-write")'>workspace-write — writes confined to the session folder</button>
+            <button class="popover-item @(EffectiveSandbox == "danger-full-access" ? "selected" : "")" @onclick='() => SelectPermission("danger-full-access")'>danger-full-access — no confinement</button>
+        </div>
+    }
+
+    @if (_view == "trajectory" && _session is not null)
+    {
+        var timeline = TrajectoryBuilder.Build(_session.Events);
+        <div class="transcript trajectory">
+            <div class="trajectory-head">
+                <button class="ghost" @onclick='() => _rawTrajectory = !_rawTrajectory'>@(_rawTrajectory ? "◀ timeline" : "raw events ▶")</button>
+            </div>
+            @if (_rawTrajectory)
+            {
+                <table class="event-table">
+                    <thead><tr><th>seq</th><th>type</th><th>time</th><th>data</th></tr></thead>
+                    <tbody>
+                        @foreach (var e in _session.Events)
+                        {
+                            <tr>
+                                <td class="mono">@e.Seq</td>
+                                <td class="mono type-@e.Type.Contains('/')">@e.Type</td>
+                                <td class="mono">@e.Time</td>
+                                <td class="mono preview">@Preview(e)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            else
+            {
+                @if (timeline.Preamble.Count > 0)
+                {
+                    <div class="tl-preamble">
+                        @foreach (var row in timeline.Preamble)
+                        {
+                            <TrajectoryRowView Row="row" />
+                        }
+                    </div>
+                }
+                @if (timeline.Turns.Count == 0)
+                {
+                    <div class="empty">no turns yet — run a prompt to populate the timeline</div>
+                }
+                @foreach (var turn in timeline.Turns)
+                {
+                    <div class="tl-turn">
+                        <div class="tl-turn-head">
+                            <span class="tl-turn-title">turn @turn.Turn</span>
+                            <span class="tl-turn-status @turn.Status.Split(' ')[0]">@turn.Status</span>
+                            <span class="tl-turn-dur">@FormatMs(turn.DurationMs)</span>
+                        </div>
+                        <div class="tl-steps">
+                            @foreach (var step in turn.Steps)
+                            {
+                                <div class="tl-step">
+                                    @if (turn.Steps.Count > 1 || step.Step > 1)
+                                    {
+                                        <div class="tl-step-head">step @step.Step</div>
+                                    }
+                                    @foreach (var row in step.Rows)
+                                    {
+                                        <TrajectoryRowView Row="row" />
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    }
+    else
+    {
+        <div class="transcript" @ref="_transcript">
+            @if (_snapshot is null)
+            {
+                <div class="empty">Loading…</div>
+            }
+            else if (_snapshot.Nodes.Count == 0)
+            {
+                <div class="hero">
+                    <div class="hero-mark">⚡</div>
+                    <h1>Blazorly Harness</h1>
+                    <p>An agentic coding harness: session-log-first, tool-guarded, fully plugin-composed.</p>
+                    <p class="hero-hint">Describe a task below. Type <code>/</code> for commands — <code>/permission</code>, <code>/model</code>, <code>/title</code>.</p>
+                </div>
+            }
+            @foreach (var node in _snapshot?.Nodes ?? [])
+            {
+                switch (node.Kind)
+                {
+                    case "user":
+                        <div class="bubble user" data-source="@node.Source">
+                            <div class="bubble-role">You</div>
+                            <div class="bubble-body">@(node.Message?.FlattenText())</div>
+                        </div>
+                        break;
+                    case "assistant":
+                        <div class="bubble assistant">
+                            <div class="bubble-role">Assistant @(node.StepStatus == "streaming" ? "· typing…" : "")</div>
+                            <div class="bubble-body">
+                                @foreach (var block in node.Blocks ?? [])
+                                {
+                                    <AssistantBlock Block="block" Markdown="Markdown" />
+                                }
+                            </div>
+                            <div class="bubble-actions">
+                                @if (node.StepStatus != "streaming")
+                                {
+                                    <button class="link" @onclick="() => CopyNode(node)">copy</button>
+                                }
+                                @if (node.Usage is { } usage)
+                                {
+                                    <span class="bubble-meta">@usage.InputTokens in · @usage.OutputTokens out</span>
+                                }
+                            </div>
+                        </div>
+                        break;
+                    case "tool":
+                        <ToolNode Node="node" />
+                        break;
+                    case "command":
+                        <div class="command-row @(node.CommandOk ? "" : "error")">
+                            <span class="command-name">@node.CommandName @(node.CommandArgs is { Length: > 0 } ? node.CommandArgs : "")</span>
+                            <span class="command-text">@node.CommandText</span>
+                        </div>
+                        break;
+                    case "turn-ok":
+                        <div class="turn-footer">
+                            <span>turn @node.Turn complete</span>
+                            @if (node.DurationMs is { } ms)
+                            {
+                                <span class="turn-usage">@(ms > 1000 ? $"{ms / 1000.0:F1}s" : $"{ms}ms")</span>
+                            }
+                            @if (node.Usage is { } u)
+                            {
+                                <span class="turn-usage">@u.UsageTokens() tokens</span>
+                            }
+                            <button class="link" @onclick="() => ForkAt(node.Key)">fork here</button>
+                        </div>
+                        break;
+                    case "turn-end":
+                        <div class="turn-error">
+                            turn @node.Turn ended — @DescribeReason(node.Reason)
+                        </div>
+                        break;
+                }
+            }
+            @if (_pendingApproval is not null)
+            {
+                <div class="interaction-card">
+                    <div class="interaction-title">Approval requested: <code>@_pendingApproval.ToolName</code></div>
+                    @if (_pendingApproval.Reason is { Length: > 0 })
+                    {
+                        <div class="interaction-body">@_pendingApproval.Reason</div>
+                    }
+                    <div class="interaction-actions">
+                        <button class="primary" @onclick='() => Answer(_pendingApproval.Id, "allowed")'>Allow once</button>
+                        <button class="danger" @onclick='() => Answer(_pendingApproval.Id, "rejected")'>Reject</button>
+                    </div>
+                </div>
+            }
+            @if (_pendingQuestion is not null)
+            {
+                <div class="interaction-card">
+                    <div class="interaction-title">The assistant has a question</div>
+                    @foreach (var question in _pendingQuestion.Questions ?? [])
+                    {
+                        <div class="question">
+                            <div class="question-text">@(question.Header is { Length: > 0 } ? question.Header + " — " : "")@question.Question</div>
+                            @foreach (var option in question.Options ?? [])
+                            {
+                                <button class="option" @onclick="() => AnswerQuestion(_pendingQuestion.Id, question.Id, option.Label)">@option.Label</button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        @if (_snapshot?.Todos.Count > 0)
+        {
+            <div class="todo-panel">
+                @foreach (var todo in _snapshot.Todos)
+                {
+                    <div class="todo-item @todo.Status">
+                        <span class="todo-glyph">@TodoGlyph(todo.Status)</span>
+                        <span>@todo.Content</span>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (_agent is { Inbox.HasPending: true })
+        {
+            <div class="queue-dock">
+                @foreach (var queued in _agent.Inbox.NextTurn)
+                {
+                    <div class="queue-item">
+                        <span class="queue-tag">queued</span>
+                        @if (_editingQueue?.Id == queued.Id)
+                        {
+                            <input class="queue-edit" value="@_queueDraft" @oninput="OnQueueInput" @onkeydown="OnQueueKey" @onblur="() => SaveQueue(queued)" />
+                        }
+                        else
+                        {
+                            <span class="queue-text">@queued.FlattenText()</span>
+                            <button class="link" @onclick="() => StartEditQueue(queued)">edit</button>
+                        }
+                        <button class="link" @onclick="() => SteerQueued(queued)" title="Run at the next step boundary instead of a new turn">steer now</button>
+                        <button class="link" @onclick="() => RemoveQueued(queued)">remove</button>
+                    </div>
+                }
+                @foreach (var steering in _agent.Inbox.NextStep)
+                {
+                    <div class="queue-item">
+                        <span class="queue-tag steer">steering</span>
+                        <span class="queue-text">@steering.FlattenText()</span>
+                    </div>
+                }
+            </div>
+        }
+    }
+
+    <footer class="composer">
+        @if (_commandMenu)
+        {
+            <div class="command-menu">
+                <button class="command-option" @onclick='() => PickCommand("/permission ")'><code>/permission</code> switch sandbox preset</button>
+                <button class="command-option" @onclick='() => PickCommand("/model ")'><code>/model</code> switch model route</button>
+                <button class="command-option" @onclick='() => PickCommand("/effort ")'><code>/effort</code> set reasoning effort (off/low/high/max…)</button>
+                <button class="command-option" @onclick='() => PickCommand("/title ")'><code>/title</code> rename session</button>
+                <button class="command-option" @onclick='() => PickCommand("/help")'><code>/help</code> list commands</button>
+            </div>
+        }
+        <div class="composer-input">
+            <span class="composer-cwd" title="@(_session?.Header.Cwd)">@WorkspaceLabel</span>
+            <textarea
+                @bind="_draft"
+                @bind:event="oninput"
+                @bind:after="DraftChanged"
+                @onkeydown="OnKeyDown"
+                placeholder="@Placeholder"
+                rows="1"></textarea>
+        </div>
+        <div class="composer-actions">
+            @if (_running)
+            {
+                <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">Queue (⏎)</button>
+                <button class="ghost" disabled="@(_draft.Length == 0)" @onclick="SendSteer">Steer</button>
+                <button class="danger" @onclick="CancelTurn">Stop</button>
+            }
+            else
+            {
+                <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">@(_draft.StartsWith('/') ? "Run (⏎)" : "Send (⏎)")</button>
+            }
+        </div>
+    </footer>
+</div>
+
+@code {
+    [Parameter] public string SessionId { get; set; } = "";
+
+    private Core.Sessions.Session _session = null!;
+    private Agent _agent = null!;
+    private ConversationSnapshot? _snapshot;
+    private string _draft = "";
+    private bool _running;
+    private volatile bool _dirty;
+    private bool _pinned = true;
+    private string _view = "chat";
+    private bool _modelMenu;
+    private bool _permissionMenu;
+    private bool _commandMenu;
+    private bool _editingTitle;
+    private string _titleDraft = "";
+    private Llm.Message? _editingQueue;
+    private string _queueDraft = "";
+    private ElementReference _transcript;
+    private IDisposable? _subscription;
+    private System.Timers.Timer? _coalesce;
+    private PendingInteraction? _pendingApproval;
+    private PendingInteraction? _pendingQuestion;
+    private bool _rawTrajectory;
+    private bool _statsOpen;
+
+    [Inject] private MarkdownService Markdown { get; set; } = null!;
+    [Inject] private IJSRuntime Js { get; set; } = null!;
+    [Inject] private Microsoft.AspNetCore.Components.NavigationManager Navigation { get; set; } = null!;
+
+    private string EffectiveSandbox => _snapshot?.SandboxMode ?? Facade.Harness.Settings.SandboxMode;
+    private string WorkspaceLabel => Facade.WorkspaceOf(_session) is { } ws ? ws.Name : Path.GetFileName(_session?.Header.Cwd ?? "");
+    private string Placeholder => _running
+        ? "Queue for the next turn (⏎) or type and hit Steer…"
+        : "Describe a task… or type / for commands";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _session = await Facade.OpenSessionAsync(SessionId);
+        _agent = Facade.EnsureAgent(_session);
+        _snapshot = Assembler.Fold(_session, _agent);
+        _running = _agent.Status == "running";
+
+        _subscription = Broker.Subscribe(frame =>
+        {
+            if (frame.SessionId != SessionId) return Task.CompletedTask;
+            if (frame.Event.Type.StartsWith("ui/"))
+            {
+                InvokeAsync(() =>
+                {
+                    RefreshPending();
+                    StateHasChanged();
+                });
+                return Task.CompletedTask;
+            }
+            _dirty = true;
+            return Task.CompletedTask;
+        });
+
+        _coalesce = new System.Timers.Timer(120);
+        _coalesce.Elapsed += (_, _) =>
+        {
+            if (!_dirty && !_pendingChanged) return;
+            _dirty = false;
+            _pendingChanged = false;
+            _ = InvokeAsync(async () =>
+            {
+                try
+                {
+                    _snapshot = Assembler.Fold(_session, _agent);
+                    _running = _agent.Status == "running";
+                    RefreshPending();
+                    StateHasChanged();
+                    if (_pinned && _view == "chat") await ScrollToBottom();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[ui] fold failed for {SessionId}: {ex}");
+                }
+            });
+        };
+        _coalesce.AutoReset = true;
+        _coalesce.Enabled = true;
+        RefreshPending();
+    }
+
+    private volatile bool _pendingChanged;
+
+    private void RefreshPending()
+    {
+        var approval = Interactions.Pending.FirstOrDefault(p => p.Kind == "approval" && p.SessionId == SessionId);
+        var question = Interactions.Pending.FirstOrDefault(p => p.Kind == "question");
+        if (!ReferenceEquals(approval, _pendingApproval) || !ReferenceEquals(question, _pendingQuestion))
+        {
+            _pendingApproval = approval;
+            _pendingQuestion = question;
+            _pendingChanged = true;
+        }
+    }
+
+    private async Task ScrollToBottom()
+    {
+        try
+        {
+            await Js.InvokeVoidAsync("blazorly.scrollBottom", _transcript);
+        }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private Task DraftChanged()
+    {
+        _commandMenu = _draft.StartsWith('/');
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private void OnKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter" && !args.ShiftKey)
+        {
+            // Enter always queues (dsh default); steering is the explicit button while running.
+            SendQueue();
+        }
+    }
+
+    private void SendQueue()
+    {
+        var text = _draft.Trim();
+        if (text.Length == 0) return;
+        if (text.StartsWith('/'))
+        {
+            _draft = "";
+            _commandMenu = false;
+            Facade.TryCommand(SessionId, text);
+        }
+        else
+        {
+            _draft = "";
+            Facade.Prompt(SessionId, text, "queue");
+        }
+        _dirty = true;
+    }
+
+    private void SendSteer()
+    {
+        var text = _draft.Trim();
+        if (text.Length == 0) return;
+        _draft = "";
+        Facade.Prompt(SessionId, text, "steer");
+        _dirty = true;
+    }
+
+    private void PickCommand(string command)
+    {
+        _draft = command;
+        _commandMenu = false;
+    }
+
+    private void CancelTurn()
+    {
+        Facade.Cancel(SessionId);
+        _dirty = true;
+    }
+
+    private void RemoveQueued(Llm.Message message)
+    {
+        _agent.Inbox.Remove(message);
+        _dirty = true;
+    }
+
+    private void SteerQueued(Llm.Message message)
+    {
+        _agent.Inbox.PromoteToNextStep(message);
+        _dirty = true;
+    }
+
+    private void StartEditQueue(Llm.Message message)
+    {
+        _editingQueue = message;
+        _queueDraft = message.FlattenText();
+    }
+
+    private void OnQueueInput(ChangeEventArgs args)
+    {
+        _queueDraft = args.Value?.ToString() ?? "";
+    }
+
+    private void OnQueueKey(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter" && !args.ShiftKey && _editingQueue is not null)
+        {
+            SaveQueue(_editingQueue);
+        }
+    }
+
+    private Task SaveQueue(Llm.Message message)
+    {
+        if (_queueDraft.Trim().Length > 0)
+        {
+            _agent.Inbox.Replace(message, _queueDraft.Trim());
+        }
+        _editingQueue = null;
+        _dirty = true;
+        return Task.CompletedTask;
+    }
+
+    private void StartEditTitle()
+    {
+        _titleDraft = _snapshot?.Title ?? SessionFacade.DeriveTitle(_session);
+        _editingTitle = true;
+    }
+
+    private void OnTitleInput(ChangeEventArgs args) => _titleDraft = args.Value?.ToString() ?? "";
+
+    private void OnTitleKey(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter") SaveTitle();
+        if (args.Key == "Escape") _editingTitle = false;
+    }
+
+    private Task SaveTitle()
+    {
+        _editingTitle = false;
+        if (_titleDraft.Trim().Length > 0)
+        {
+            Facade.RenameSession(SessionId, _titleDraft.Trim());
+            _dirty = true;
+        }
+        return Task.CompletedTask;
+    }
+
+    private void ToggleModelMenu()
+    {
+        _modelMenu = !_modelMenu;
+        _permissionMenu = false;
+    }
+
+    private void TogglePermissionMenu()
+    {
+        _permissionMenu = !_permissionMenu;
+        _modelMenu = false;
+    }
+
+    private Task SelectModel(string provider, string model)
+    {
+        Facade.SetSessionModel(SessionId, provider, model);
+        _modelMenu = false;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private void SelectEffort(string? effort)
+    {
+        if (_agent is not null) _agent.Options = _agent.Options with { ReasoningEffort = effort };
+        _modelMenu = false;
+        StateHasChanged();
+    }
+
+    private Task SelectPermission(string mode)
+    {
+        Facade.SetSessionSandboxMode(SessionId, mode);
+        _permissionMenu = false;
+        _dirty = true;
+        return Task.CompletedTask;
+    }
+
+    private void SwitchView(string view) => _view = view;
+
+    private Task CopyNode(ConversationNode node)
+    {
+        var text = string.Join("\n", (node.Blocks ?? []).OfType<TextBlock>().Select(b => b.Text));
+        return CopyText(text);
+    }
+
+    private string TabClass(string view) => _view == view ? "tab active" : "tab";
+
+    private async Task CopyText(string text)
+    {
+        try
+        {
+            await Js.InvokeVoidAsync("navigator.clipboard.writeText", text);
+        }
+        catch (JSDisconnectedException) { }
+    }
+
+    private void Answer(string id, string answer)
+    {
+        Interactions.TryAnswer(id, answer);
+        _pendingChanged = true;
+    }
+
+    private void AnswerQuestion(string interactionId, string questionId, string text)
+    {
+        Interactions.TryAnswer(interactionId, $"{questionId}={text}");
+        _pendingChanged = true;
+    }
+
+    private void ForkHere() => ForkAt(null);
+
+    private void ForkAt(string? key)
+    {
+        int? atSeq = null;
+        if (key is { Length: > 0 } && key.StartsWith("te-") && int.TryParse(key[3..], out var seq)) atSeq = seq;
+        var child = Facade.Fork(SessionId, atSeq);
+        Navigation.NavigateTo($"/session/{child.Id}", forceLoad: true);
+    }
+
+    private string Preview(SessionEvent e)
+    {
+        var raw = e.Data.GetRawText();
+        return raw.Length > 160 ? raw[..160] + "…" : raw;
+    }
+
+    private static string FormatMs(double ms)
+        => ms > 1000 ? $"{ms / 1000.0:F1}s" : $"{Math.Round(ms)}ms";
+
+    private (List<(string Label, string Value)> Lines, List<(string Label, string Value)> Tools) SessionStats()
+    {
+        var lines = new List<(string Label, string Value)>();
+        var events = _session.Events;
+        var turnEnds = 0;
+        var completed = 0;
+        var errored = 0;
+        var cancelled = 0;
+        var compactions = 0;
+        var retries = 0;
+        long durationTotal = 0;
+        long turnStart = 0;
+        var tools = new Dictionary<string, long>(StringComparer.Ordinal);
+
+        foreach (var e in events)
+        {
+            switch (e.Type)
+            {
+                case SessionEventTypes.TurnStart:
+                    turnStart = e.Time;
+                    break;
+                case SessionEventTypes.TurnEnd:
+                {
+                    turnEnds++;
+                    durationTotal += Math.Max(0, e.Time - turnStart);
+                    switch (SessionEventRead.TurnEndReasonOf(e))
+                    {
+                        case TurnEndReason.Completed: completed++; break;
+                        case TurnEndReason.Error: errored++; break;
+                        case TurnEndReason.Interrupted or TurnEndReason.Aborted: cancelled++; break;
+                    }
+                    break;
+                }
+                case SessionEventTypes.ToolCall:
+                {
+                    var name = SessionEventRead.ToolCallOf(e).Name;
+                    tools[name] = tools.TryGetValue(name, out var count) ? count + 1 : 1;
+                    break;
+                }
+                case SessionEventTypes.CompactionStart:
+                    compactions++;
+                    break;
+                case SessionEventTypes.LlmRetryStarted:
+                    retries++;
+                    break;
+            }
+        }
+
+        lines.Add(("turns", turnEnds == 0 ? "0" : $"{turnEnds} ({completed} completed{(errored > 0 ? $", {errored} errored" : "")}{(cancelled > 0 ? $", {cancelled} cancelled" : "")})"));
+        lines.Add(("conversation", FormatMs(durationTotal)));
+        lines.Add(("events", $"{events.Count:N0}"));
+        if (compactions > 0) lines.Add(("compactions", $"{compactions}"));
+        if (retries > 0) lines.Add(("llm retries", $"{retries}"));
+        if (Facade.Harness.Meter?.Measure(_agent) is { } reading)
+        {
+            lines.Add(("context", $"{reading.OccupancyPercent}% of {reading.ContextWindowTokens:N0}"));
+            lines.Add(("tokens", $"{reading.TotalInputTokens:N0} in · {reading.TotalOutputTokens:N0} out"
+                + $" · cache {reading.TotalCacheReadTokens:N0}/{reading.TotalCacheWriteTokens:N0}"));
+        }
+
+        var toolLines = tools
+            .OrderByDescending(kv => kv.Value)
+            .Take(8)
+            .Select(kv => (kv.Key, $"{kv.Value}×"))
+            .ToList();
+        return (lines, toolLines);
+    }
+
+    private static string MeterTooltip(Blazorly.Harness.Core.TokenMeter.ContextMeterReading context)
+    {
+        var provider = context.ProviderPressureTokens is { } p ? $"{p} tokens (provider-anchored)" : "no provider usage yet";
+        return $"context ~{context.OccupancyPercent}% of {context.ContextWindowTokens:N0}"
+            + $" — system {context.SystemTokens} · tools {context.ToolsTokens} · messages {context.MessageTokens} tokens"
+            + $"; last request {provider}"
+            + $"; totals in {context.TotalInputTokens} / out {context.TotalOutputTokens}"
+            + $" / cache-read {context.TotalCacheReadTokens} / cache-write {context.TotalCacheWriteTokens}";
+    }
+
+    private static string DescribeReason(TurnEndReason? reason) => reason switch
+    {
+        TurnEndReason.Aborted aborted => $"aborted ({aborted.Cause})",
+        TurnEndReason.Error error => $"error: {error.Message}",
+        TurnEndReason.MaxTokens => "max tokens reached",
+        TurnEndReason.Blocked => "blocked before starting",
+        TurnEndReason.Interrupted => "interrupted by restart",
+        _ => "unknown",
+    };
+
+    private static char TodoGlyph(string status) => status switch
+    {
+        TodoItem.Completed => '✔',
+        TodoItem.InProgress => '◐',
+        _ => '○',
+    };
+
+    public void Dispose()
+    {
+        _coalesce?.Dispose();
+        _subscription?.Dispose();
+    }
+}
