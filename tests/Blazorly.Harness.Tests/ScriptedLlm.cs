@@ -1,10 +1,14 @@
 using System.Text.Json;
+using Blazorly.Harness.Llm;
+using Blazorly.Harness.Llm.Adapters;
 
-namespace Blazorly.Harness.Llm.Adapters;
-/// <summary>A scripted adapter: the script function is invoked once per request and returns the chunk sequence.</summary>
-public sealed class ReplayAdapter : LlmAdapter
+namespace Blazorly.Harness.Tests;
+
+/// <summary>Test-only scripted LLM route: the script function returns the chunk sequence per request.</summary>
+public sealed class ScriptedLlmAdapter : LlmAdapter
 {
-    public const string ProviderName = "replay";
+    public const string ProviderName = "scripted";
+    public const string ModelName = "test";
 
     private readonly Func<GenerateOptions, IReadOnlyList<StreamChunk>> _script;
     public int Calls { get; private set; }
@@ -12,12 +16,12 @@ public sealed class ReplayAdapter : LlmAdapter
     /// <summary>Delay before each chunk; use to simulate slow streams and mid-stream aborts.</summary>
     public int ChunkDelayMs { get; set; }
 
-    public ReplayAdapter(Func<GenerateOptions, IReadOnlyList<StreamChunk>> script) => _script = script;
+    public ScriptedLlmAdapter(Func<GenerateOptions, IReadOnlyList<StreamChunk>> script) => _script = script;
 
     public override string Provider => ProviderName;
 
     public override IReadOnlyList<LlmModelInfo> ListModels()
-        => [new LlmModelInfo(ProviderName, "demo", "Replay demo (scripted, no API key)")];
+        => [new LlmModelInfo(ProviderName, ModelName, "scripted test model")];
 
     public override async IAsyncEnumerable<StreamChunk> Stream(GenerateOptions options, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
@@ -32,8 +36,8 @@ public sealed class ReplayAdapter : LlmAdapter
     }
 }
 
-/// <summary>Helpers for authoring replay scripts; arguments serialize camelCase like session payloads.</summary>
-public static class ReplayScript
+/// <summary>Helpers for authoring scripted responses; arguments serialize camelCase like session payloads.</summary>
+public static class Scripted
 {
     private static readonly JsonSerializerOptions CamelCase = new()
     {
@@ -41,6 +45,7 @@ public static class ReplayScript
     };
 
     public static string SerializeArguments(object arguments) => JsonSerializer.Serialize(arguments, CamelCase);
+
     public static IReadOnlyList<StreamChunk> Text(string text, string finish = FinishReason.Stop)
     {
         var chunks = new List<StreamChunk>();
@@ -92,4 +97,39 @@ public static class ReplayScript
 
     public static IReadOnlyList<StreamChunk> Error(string code, string message)
         => [new FinishChunk(FinishReason.Error, new LlmFailure(message, code))];
+}
+
+/// <summary>The canonical two-step scripted flow: tools first, then a summary once results return.</summary>
+public static class ScriptedDemoFlow
+{
+    private static readonly Dictionary<string, int> Step = new(StringComparer.Ordinal);
+
+    public static IReadOnlyList<StreamChunk> Respond(GenerateOptions options)
+    {
+        if (options.Purpose == "session-title")
+        {
+            return Scripted.Text("Scripted run");
+        }
+        var hasToolResults = options.Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>().Any();
+        var step = Step.TryGetValue(options.SessionId ?? "anon", out var current) ? current + 1 : 1;
+        Step[options.SessionId ?? "anon"] = step;
+        if (!hasToolResults && step == 1)
+        {
+            return Scripted.ToolCalls(
+                ("bash", new { command = "sleep 2.5 && echo \"hello from blazorly harness\" && date", description = "Greet and print the date" }),
+                ("todo_write", new { todos = new object[]
+                    {
+                        new { content = "Run the scripted greeting", status = "completed" },
+                        new { content = "Summarize the result", status = "in_progress" },
+                    } }));
+        }
+        var bashOutput = options.Messages
+            .SelectMany(m => m.Content).OfType<ToolResultBlock>()
+            .SelectMany(b => b.Content).OfType<TextBlock>()
+            .Select(t => t.Text).FirstOrDefault() ?? "";
+        var summary = bashOutput.Contains("hello from blazorly harness")
+            ? "The scripted run completed: I executed `bash` (expand the card above to inspect it) and updated the todo list."
+            : "The scripted run completed.";
+        return Scripted.Text(summary);
+    }
 }

@@ -402,7 +402,7 @@ public class SessionQueryTests
     [Fact]
     public async Task Search_FindsUserMessageInLiveSessions()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("done"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
         var needleAgent = await RunAgent(harness, "needle in a haystack");
         var otherAgent = await RunAgent(harness, "unrelated small talk");
         new SessionQueryPlugin().Apply(harness.Ctx);
@@ -422,7 +422,7 @@ public class SessionQueryTests
     [Fact]
     public async Task Search_MatchesAssistantText()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("the special thing is a needle"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("the special thing is a needle"));
         var agent = await RunAgent(harness, "where is the special thing?");
         new SessionQueryPlugin().Apply(harness.Ctx);
 
@@ -476,7 +476,7 @@ public class SessionQueryTests
     [Fact]
     public async Task EventRead_ReturnsSeqTypeLinesAndHonorsRange()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("done"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
         var agent = await RunAgent(harness, "read my events");
         new SessionQueryPlugin().Apply(harness.Ctx);
 
@@ -513,6 +513,12 @@ public class SessionQueryTests
     internal sealed class MemoryPersistence : ISessionPersistence
     {
         public readonly Dictionary<string, (SessionHeader Header, List<SessionEvent> Events)> Store = new(StringComparer.Ordinal);
+
+        public Task DeleteAsync(string sessionId, CancellationToken ct = default)
+        {
+            Store.Remove(sessionId);
+            return Task.CompletedTask;
+        }
 
         public Task CreateAsync(SessionHeader header, CancellationToken ct = default)
         {

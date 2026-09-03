@@ -24,8 +24,8 @@ public class CompactionTests
         {
             calls++;
             return options.Purpose == "compaction"
-                ? ReplayScript.Text("SUMMARY: the task is underway.")
-                : ReplayScript.Text("ok");
+                ? Scripted.Text("SUMMARY: the task is underway.")
+                : Scripted.Text("ok");
         });
         var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions
         {
@@ -65,11 +65,11 @@ public class CompactionTests
         var attempts = 0;
         await using var harness = TestHarness.Create(options =>
         {
-            if (options.Purpose == "compaction") return ReplayScript.Text("SUMMARY: compacted.");
+            if (options.Purpose == "compaction") return Scripted.Text("SUMMARY: compacted.");
             attempts++;
             return attempts == 1
-                ? ReplayScript.Error(LlmErrorCodes.ContextWindowExceeded, "too long")
-                : ReplayScript.Text("recovered after compaction");
+                ? Scripted.Error(LlmErrorCodes.ContextWindowExceeded, "too long")
+                : Scripted.Text("recovered after compaction");
         });
         CompactionService.Mount(harness.Ctx, new CompactionOptions
         {
@@ -95,7 +95,7 @@ public class CompactionTests
     [Fact]
     public async Task NoCompactionBelowThreshold()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("ok"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
         var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions { ContextWindowTokens = 1_000_000 });
         var agent = harness.CreateAgent();
         agent.Session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
@@ -273,9 +273,9 @@ public class SubagentServiceTests
     public async Task Spawn_RunsChildToIdleAndReturnsSummary()
     {
         await using var harness = TestHarness.Create(options =>
-            options.Purpose == "compaction" ? ReplayScript.Text("n/a")
-            : options.SessionId is { } id && id.Contains("sub") ? ReplayScript.Text("child computed the answer: 41")
-            : ReplayScript.Text("parent ok"));
+            options.Purpose == "compaction" ? Scripted.Text("n/a")
+            : options.SessionId is { } id && id.Contains("sub") ? Scripted.Text("child computed the answer: 41")
+            : Scripted.Text("parent ok"));
         var subagents = Blazorly.Harness.Core.Subagents.SubagentService.Mount(harness.Ctx);
         var parent = harness.CreateAgent();
 
@@ -292,7 +292,7 @@ public class SubagentServiceTests
     [Fact]
     public async Task Spawn_RespectsDelegationDepthCap()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("deep"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("deep"));
         var subagents = Blazorly.Harness.Core.Subagents.SubagentService.Mount(harness.Ctx);
         var parent = harness.CreateAgent();
 

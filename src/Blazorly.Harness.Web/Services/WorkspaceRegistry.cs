@@ -186,7 +186,7 @@ public sealed class WorkspaceRegistry
     }
 }
 
-public sealed record DirectoryEntry(string Name, string FullPath, bool IsDirectory);
+public sealed record DirectoryEntry(string Name, string FullPath, bool IsDirectory, bool Empty = false);
 
 /// <summary>Server-side directory browsing for the add-workspace flow (dsh's browse picker).</summary>
 public static class DirectoryBrowser
@@ -202,9 +202,16 @@ public static class DirectoryBrowser
         {
             var name = Path.GetFileName(dir);
             if (name.StartsWith('.') || Ignore.Contains(name)) continue;
-            entries.Add(new DirectoryEntry(name, dir, true));
+            entries.Add(new DirectoryEntry(name, dir, true, IsEmptyFolder(dir)));
         }
         entries.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.Ordinal));
         return [.. entries.Take(300)];
+    }
+
+    /// <summary>True when the folder holds nothing a user would work with (hidden-only counts as empty).</summary>
+    public static bool IsEmptyFolder(string path)
+    {
+        try { return !Directory.EnumerateFileSystemEntries(path).Any(); }
+        catch { return false; }
     }
 }

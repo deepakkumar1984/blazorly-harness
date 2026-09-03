@@ -80,8 +80,8 @@ public class ReasoningEffortTests
         var pro = Web.Services.ProviderCatalog.For("deepseek", "https://api.deepseek.com").Single(m => m.Id == "deepseek-v4-pro");
         Assert.Equal(new[] { "off", "low", "high", "max" }, pro.ReasoningEfforts);
         Assert.Equal("high", pro.DefaultEffort);
-        var replay = Web.Services.ProviderCatalog.For("replay", "");
-        Assert.All(replay, m => Assert.True(m.ReasoningEfforts is null || m.ReasoningEfforts.Length == 0));
+        var plain = Web.Services.ProviderCatalog.For("openai", "").Single(m => m.Id == "gpt-4.1");
+        Assert.True(plain.ReasoningEfforts is null || plain.ReasoningEfforts.Length == 0);
     }
 
     [Fact]

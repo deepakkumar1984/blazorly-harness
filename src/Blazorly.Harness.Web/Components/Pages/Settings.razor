@@ -3,175 +3,394 @@
 @using Blazorly.Harness.Tools
 @inject SessionFacade Facade
 @inject NavigationManager Navigation
-@inject HttpClient Http
 
 <div class="settings-page">
-    <h1>Settings</h1>
-    <p class="settings-note">Settings persist under <code>~/.blazorly/settings.json</code>. The API key resolves from
-        this field, then the provider's environment variable (<code>DEEPSEEK_API_KEY</code>, <code>OPENAI_API_KEY</code>,
-        <code>ANTHROPIC_API_KEY</code>). The <code>replay</code> provider runs a scripted demo agent with no key.
-        Workspaces are managed from the sidebar.</p>
-
-    <div class="settings-form">
-        <label>
-            <span>Provider</span>
-            <select @bind="_settings.Provider" @bind:after="ProviderChanged">
-                @foreach (var provider in Providers)
-                {
-                    <option value="@provider">@provider</option>
-                }
-            </select>
-        </label>
-        <label>
-            <span>Model</span>
-            <select @bind="_settings.Model">
-                @foreach (var model in _models)
-                {
-                    <option value="@model.Id">@model.Name</option>
-                }
-            </select>
-        </label>
-        @if (_settings.Provider != "replay")
-        {
-            <label>
-                <span>Base URL</span>
-                <input type="text" @bind="_settings.BaseUrl" @bind:event="oninput" />
-            </label>
-            <label>
-                <span>API key</span>
-                <input type="password" @bind="_settings.ApiKey" @bind:event="oninput" placeholder="sk-…" />
-            </label>
-            <div class="discover-row">
-                <button type="button" class="ghost" @onclick="DiscoverModels" disabled="@_discovering">
-                    @(_discovering ? "Discovering…" : "Discover models (GET /models)")
-                </button>
-                @if (_discoverError is not null)
-                {
-                    <span class="discover-error">@_discoverError</span>
-                }
-                else if (_discovered is { Count: > 0 })
-                {
-                    <span class="discover-ok">@_discovered.Count models: @string.Join(", ", _discovered.Take(6))@(_discovered.Count > 6 ? ", …" : "")</span>
-                }
-            </div>
-        }
-
-        <h2 class="settings-heading">Custom OpenAI-compatible providers</h2>
-        <p class="settings-note">Extra routes registered beside the built-ins; each appears in the per-session model picker.</p>
-        @foreach (var custom in _settings.CustomProviders.ToList())
-        {
-            <div class="custom-provider">
-                <input type="text" placeholder="name" @bind="custom.Name" @bind:event="oninput" class="cp-name" />
-                <input type="text" placeholder="https://gateway.example.com/v1" @bind="custom.BaseUrl" @bind:event="oninput" class="cp-url" />
-                <input type="text" placeholder="model ids, comma separated" @bind="custom.ModelsText" @bind:event="oninput" class="cp-models" />
-                <button type="button" class="icon danger" title="Remove provider" @onclick='() => RemoveCustomProvider(custom)'>✕</button>
-            </div>
-        }
-        <div class="discover-row">
-            <button type="button" class="ghost" @onclick="AddCustomProvider">＋ Add custom provider</button>
+    <div class="settings-topbar">
+        <div class="settings-title">
+            <button class="icon" title="Back" @onclick="GoBack">←</button>
+            <h1>Settings</h1>
         </div>
-
-        <label>
-            <span>Session persistence backend</span>
-            <select @bind="_settings.Persistence">
-                <option value="jsonl">jsonl (one file per session)</option>
-                <option value="sqlite">sqlite (single database)</option>
-            </select>
-        </label>
-        <label>
-            <span>Context window tokens (drives compaction)</span>
-            <input type="number" @bind="_settings.ContextWindowTokens" />
-        </label>
-        <label>
-            <span>Compaction threshold (fraction of the window)</span>
-            <input type="number" step="0.05" min="0.2" max="0.95" @bind="_settings.CompactionThreshold" />
-        </label>
-        <label>
-            <span>Capabilities</span>
-            <div class="settings-toggles">
-                @foreach (var (key, label) in Toggles)
-                {
-                    <label class="toggle">
-                        <input type="checkbox" checked="@(GetToggle(key))" @onchange="e => SetToggle(key, e.Value)" />
-                        <span>@label</span>
-                    </label>
-                }
-            </div>
-        </label>
-        <label>
-            <span>Default permission preset (new sessions)</span>
-            <select @bind="_settings.SandboxMode">
-                <option value="@SandboxPolicy.WorkspaceWrite">workspace-write (writes confined to the session workspace)</option>
-                <option value="@SandboxPolicy.ReadOnly">read-only (all mutations denied)</option>
-                <option value="@SandboxPolicy.DangerFullAccess">danger-full-access (no confinement)</option>
-            </select>
-        </label>
         <div class="settings-actions">
             <button class="primary" @onclick="Save">Save</button>
-            <button class="ghost" @onclick="GoBack">Back</button>
         </div>
+    </div>
+
+    <nav class="settings-tabs" role="tablist">
+        @foreach (var (id, label) in Tabs)
+        {
+            <button type="button" role="tab" class="settings-tab @(_tab == id ? "on" : "")" @onclick="() => _tab = id">@label</button>
+        }
+    </nav>
+
+    <div class="settings-form" role="tabpanel">
+        @switch (_tab)
+        {
+            case "provider":
+                <p class="settings-note">Provider, model and API key for new sessions. Keys are kept per provider — switch back
+                    and forth without retyping. Saved to <code>~/.blazorly/settings.json</code>.</p>
+
+                <label>
+                    <span>Provider</span>
+                    <select @bind="_settings.Provider" @bind:after="ProviderChanged">
+                        @foreach (var category in ProviderCatalog.Categories)
+                        {
+                            var group = ProviderCatalog.All.Where(p => p.Category == category).ToList();
+                            if (group.Count == 0) continue;
+                            <optgroup label="@CategoryLabel(category)">
+                                @foreach (var provider in group)
+                                {
+                                    <option value="@provider.Id">@provider.Name</option>
+                                }
+                            </optgroup>
+                        }
+                    </select>
+                </label>
+                @if (_providerInfo is { } info)
+                {
+                    <div class="provider-meta">
+                        @if (info.Local)
+                        {
+                            <span class="chip">runs on your machine</span>
+                        }
+                        else if (info.ApiKeyEnv is { Length: > 0 } env)
+                        {
+                            <span class="provider-meta-hint">key or env <code>@env</code></span>
+                        }
+                        @if (info.DefaultBaseUrl is { Length: > 0 })
+                        {
+                            <span class="provider-meta-hint">default <code>@info.DefaultBaseUrl</code></span>
+                        }
+                    </div>
+                }
+
+                <label>
+                    <span>Model @(_discovered is { Count: > 0 } ? $"— {_discovered.Count} loaded from the {ProviderCatalog.Info(_settings.Provider)?.Name ?? _settings.Provider} API" : "")</span>
+                    <select @bind="_settings.Model">
+                        @if (_models.Count == 0)
+                        {
+                            <option value="@_settings.Model">@(NeedsKey && string.IsNullOrWhiteSpace(_settings.ApiKey) ? "— enter your API key to load models —" : "— load models below —")</option>
+                        }
+                        @foreach (var model in _models)
+                        {
+                            <option value="@model.Id">@model.Name</option>
+                        }
+                    </select>
+                </label>
+
+                <label>
+                    <span>Base URL</span>
+                    <input type="text" @bind="_settings.BaseUrl" @bind:event="oninput" />
+                </label>
+                @if (ProviderCatalog.Info(_settings.Provider)?.DefaultBaseUrl is { Length: > 0 } def
+                    && _settings.BaseUrl.TrimEnd('/') != def.TrimEnd('/'))
+                {
+                    <div class="discover-row">
+                        <button type="button" class="chip" @onclick='() => _settings.BaseUrl = def'>reset to @def</button>
+                    </div>
+                }
+                @if (_providerInfo is { Local: false })
+                {
+                    <label>
+                        <span>API key</span>
+                        <input type="password" @bind="_settings.ApiKey" @bind:event="oninput" @onblur="ApiKeyBlurred" placeholder="sk-…" />
+                    </label>
+                }
+                <div class="discover-row">
+                    <button type="button" class="ghost" @onclick="DiscoverModels" disabled="@_discovering">
+                        @(_discovering ? "Loading…" : _discovered is { Count: > 0 } ? "Reload models" : "Load models from the API")
+                    </button>
+                    @if (_discoverError is not null)
+                    {
+                        <span class="discover-error">@_discoverError</span>
+                    }
+                    else if (_discovered is { Count: > 0 })
+                    {
+                        <span class="discover-ok">@_discovered.Count models: @string.Join(", ", _discovered.Take(6))@(_discovered.Count > 6 ? ", …" : "")</span>
+                    }
+                </div>
+                break;
+
+            case "custom":
+                <p class="settings-note">Extra OpenAI-compatible routes registered beside the built-ins; each appears in the
+                    per-session model picker.</p>
+                <div class="custom-list">
+                    @if (_settings.CustomProviders.Count == 0)
+                    {
+                        <div class="custom-empty">no custom providers yet</div>
+                    }
+                    @foreach (var custom in _settings.CustomProviders)
+                    {
+                        <div class="custom-row">
+                            <div class="custom-row-main">
+                                <span class="custom-row-name">@custom.Name</span>
+                                <code class="custom-row-url">@custom.BaseUrl</code>
+                            </div>
+                            <span class="custom-row-models">@custom.Models.Count models</span>
+                            <button type="button" class="ghost small" @onclick="() => EditCustom(custom)">Edit</button>
+                            <button type="button" class="icon danger" title="Remove provider" @onclick='() => RemoveCustomProvider(custom)'>✕</button>
+                        </div>
+                    }
+                </div>
+                <div class="discover-row">
+                    <button type="button" class="ghost" @onclick="AddCustomProvider">＋ Add custom provider</button>
+                </div>
+                break;
+
+            case "context":
+                <label>
+                    <span>Session persistence backend</span>
+                    <select @bind="_settings.Persistence">
+                        <option value="jsonl">jsonl (one file per session)</option>
+                        <option value="sqlite">sqlite (single database)</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Context window tokens — fallback only; the model catalog's window takes priority</span>
+                    <input type="number" @bind="_settings.ContextWindowTokens" />
+                </label>
+                <label>
+                    <span>Compaction threshold (fraction of the window)</span>
+                    <input type="number" step="0.05" min="0.2" max="0.95" @bind="_settings.CompactionThreshold" />
+                </label>
+                <label>
+                    <span>Tool-output spill threshold (characters)</span>
+                    <input type="number" @bind="_settings.SpillThresholdChars" />
+                </label>
+                <label>
+                    <span>Usage telemetry</span>
+                    <div class="settings-toggles">
+                        <label class="toggle">
+                            <input type="checkbox" checked="@_settings.TelemetryEnabled" @onchange="e => _settings.TelemetryEnabled = e.Value is true" />
+                            <span>Local-only usage aggregates (turns/tokens/tool calls); nothing leaves the machine</span>
+                        </label>
+                    </div>
+                </label>
+                break;
+
+            case "capabilities":
+                <label>
+                    <span>Capabilities</span>
+                    <div class="settings-toggles">
+                        @foreach (var (key, label) in Toggles)
+                        {
+                            <label class="toggle">
+                                <input type="checkbox" checked="@(GetToggle(key))" @onchange="e => SetToggle(key, e.Value)" />
+                                <span>@label</span>
+                            </label>
+                        }
+                    </div>
+                </label>
+                break;
+
+            case "sandbox":
+                <label>
+                    <span>Default permission preset (new sessions)</span>
+                    <select @bind="_settings.SandboxMode">
+                        <option value="@SandboxPolicy.WorkspaceWrite">workspace-write (writes confined to the session workspace)</option>
+                        <option value="@SandboxPolicy.ReadOnly">read-only (all mutations denied)</option>
+                        <option value="@SandboxPolicy.DangerFullAccess">danger-full-access (no confinement)</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Remote sandbox (E2B)</span>
+                    <div class="settings-toggles">
+                        <label class="toggle">
+                            <input type="checkbox" checked="@_settings.EnableE2b" @onchange="e => _settings.EnableE2b = e.Value is true" />
+                            <span>Run tools on E2B sandboxes instead of this machine</span>
+                        </label>
+                    </div>
+                </label>
+                @if (_settings.EnableE2b)
+                {
+                    <label>
+                        <span>E2B API key</span>
+                        <input type="password" @bind="_settings.E2bApiKey" @bind:event="oninput" placeholder="e2b_…" />
+                    </label>
+                    <div class="discover-row"><span class="provider-meta-hint">or env <code>@_settings.E2bApiKeyEnv</code></span></div>
+                    <label>
+                        <span>E2B template</span>
+                        <input type="text" @bind="_settings.E2bTemplate" @bind:event="oninput" />
+                    </label>
+                    <label>
+                        <span>E2B base URL</span>
+                        <input type="text" @bind="_settings.E2bBaseUrl" @bind:event="oninput" />
+                    </label>
+                }
+                <p class="settings-note">Remote-sandbox changes apply after the app restarts.</p>
+                break;
+        }
     </div>
 </div>
 
+@if (_customModal is not null)
+{
+    <div class="modal-overlay" @onclick="CloseCustomModal">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Custom provider" @onclick:stopPropagation="true" @onkeydown="OnModalKey">
+            <div class="modal-head">
+                <h3>@(_isNewCustom ? "Add custom provider" : $"Edit {_customModal.Name}")</h3>
+                <button class="icon modal-close" title="Close (Esc)" @onclick="CloseCustomModal">✕</button>
+            </div>
+            @if (_customError is { Length: > 0 })
+            {
+                <div class="discover-error">@_customError</div>
+            }
+            <label class="modal-field">
+                <span>Name (unique, used as the provider id)</span>
+                <input type="text" @ref="_modalFirstField" @bind="_customModal.Name" @bind:event="oninput" placeholder="my-gateway" />
+            </label>
+            <label class="modal-field">
+                <span>Base URL (OpenAI-compatible, include /v1)</span>
+                <input type="text" @bind="_customModal.BaseUrl" @bind:event="oninput" placeholder="https://gateway.example.com/v1" />
+            </label>
+            <label class="modal-field">
+                <span>API key (optional)</span>
+                <input type="password" @bind="_customModal.ApiKey" @bind:event="oninput" />
+            </label>
+            <label class="modal-field">
+                <span>API key environment variable (optional)</span>
+                <input type="text" @bind="_customModal.ApiKeyEnv" @bind:event="oninput" placeholder="MY_GATEWAY_API_KEY" />
+            </label>
+            <label class="modal-field">
+                <span>Model ids (comma separated — or use Discover models after saving)</span>
+                <textarea rows="3" @bind="_customModal.ModelsText"></textarea>
+            </label>
+            <div class="modal-actions">
+                <button class="primary" @onclick="SaveCustomModal">Save provider</button>
+                <button class="ghost" @onclick="CloseCustomModal">Cancel</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
+    private static readonly (string Id, string Label)[] Tabs =
+    [
+        ("provider", "Model & API"),
+        ("custom", "Custom providers"),
+        ("context", "Sessions & context"),
+        ("capabilities", "Capabilities"),
+        ("sandbox", "Permissions & sandbox"),
+    ];
+
     private HarnessSettings _settings = new();
+    private string _tab = "provider";
+    private string _lastProvider = "";
     private IReadOnlyList<Blazorly.Harness.Llm.LlmModelInfo> _models = [];
     private List<string>? _discovered;
     private string? _discoverError;
     private bool _discovering;
-    private static IReadOnlyList<string> Providers => ProviderCatalog.Providers;
+    private CustomProviderConfig? _customModal;
+    private bool _isNewCustom;
+    private string _customError = "";
+    private ProviderInfo? _providerInfo => ProviderCatalog.Info(_settings.Provider);
+
+    /// <summary>Cloud providers that require a key before their API will list models.</summary>
+    private bool NeedsKey => _providerInfo is { Local: false } && _settings.Provider != "openai-compatible";
 
     protected override void OnInitialized()
     {
         _settings = Facade.Harness.Settings;
+        _lastProvider = _settings.Provider;
         RefreshModels();
     }
 
-    private void ProviderChanged()
+    protected override Task OnInitializedAsync()
+        // The model list comes from the provider's API — load it whenever the key is already available.
+        => MaybeAutoDiscoverAsync();
+
+    private async Task MaybeAutoDiscoverAsync()
     {
+        if (_discovering) return;
+        if (NeedsKey && string.IsNullOrWhiteSpace(_settings.ApiKey)
+            && string.IsNullOrWhiteSpace(Facade.Harness.Settings.EffectiveApiKey))
+        {
+            return; // no key yet: keep the placeholder, list nothing
+        }
+        await DiscoverModels();
+    }
+
+    private async Task ApiKeyBlurred()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.ApiKey)) return;
+        await MaybeAutoDiscoverAsync();
+    }
+
+    // Focusing the first field also makes Escape work immediately (keydown lands inside the modal).
+    private Microsoft.AspNetCore.Components.ElementReference _modalFirstField;
+    private bool _focusModal;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusModal && _customModal is not null)
+        {
+            _focusModal = false;
+            try { await _modalFirstField.FocusAsync(); }
+            catch (ObjectDisposedException) { }
+        }
+    }
+
+    private static string CategoryLabel(string category) => category switch
+    {
+        "us" => "US companies",
+        "china" => "Chinese companies",
+        "local" => "Local & self-hosted",
+        _ => "Other",
+    };
+
+    private async Task ProviderChanged()
+    {
+        // Stash the typed key for the provider we're leaving, restore the one we're entering.
+        if (_lastProvider.Length > 0 && _settings.ApiKey is { Length: > 0 } leaving)
+        {
+            _settings.ProviderKeys[_lastProvider] = leaving;
+        }
+        _settings.ApiKey = _settings.ProviderKeys.TryGetValue(_settings.Provider, out var stashed) ? stashed : null;
+        // Swap the base URL when it is blank or still at another provider's default; keep custom URLs (proxies).
+        var current = _settings.BaseUrl?.TrimEnd('/') ?? "";
+        if (string.IsNullOrWhiteSpace(current) ||
+            ProviderCatalog.All.Any(p => p.DefaultBaseUrl.TrimEnd('/') == current))
+        {
+            _settings.BaseUrl = ProviderCatalog.Info(_settings.Provider)?.DefaultBaseUrl ?? _settings.BaseUrl ?? "";
+        }
         _settings.Model = ProviderCatalog.DefaultModel(_settings.Provider);
+        _lastProvider = _settings.Provider;
         _discovered = null;
         _discoverError = null;
         RefreshModels();
         StateHasChanged();
+        await MaybeAutoDiscoverAsync();
     }
 
     private void RefreshModels()
     {
-        _models = ProviderCatalog.For(_settings.Provider, _settings.BaseUrl);
+        // The Settings dropdown lists API-loaded models only;
+        // the catalog seeds remain the route fallback for the meter and session picker until discovery runs.
+        _models = HasApiList ? Facade.Harness.RuntimeModels(_settings.Provider) : [];
         if (_models.Count > 0 && _models.All(m => m.Id != _settings.Model))
         {
             _settings.Model = _models[0].Id;
         }
     }
 
+    private bool HasApiList => Facade.Harness.Settings.DiscoveredModels.TryGetValue(_settings.Provider, out var ids) && ids.Count > 0;
+
     private async Task DiscoverModels()
     {
         _discovering = true;
         _discoverError = null;
-        _discovered = null;
         try
         {
-            var response = await Http.PostAsJsonAsync($"{Navigation.BaseUri}api/llm.discover", new { provider = _settings.Provider });
-            if (response.IsSuccessStatusCode)
+            var (models, error) = await Facade.Harness.DiscoverModelsAsync(_settings.Provider, _settings.BaseUrl, _settings.ApiKey);
+            if (error is not null)
             {
-                using var doc = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-                var ids = doc.RootElement.GetProperty("models").EnumerateArray()
-                    .Select(m => m.GetProperty("id").GetString() ?? "")
-                    .Where(id => id.Length > 0)
-                    .ToList();
-                _discovered = ids;
-                if (_settings.Provider != "replay") RefreshModels();
+                _discoverError = error;
+                _discovered = null;
             }
             else
             {
-                using var doc = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-                _discoverError = doc.RootElement.TryGetProperty("error", out var error) ? error.GetString() : $"discover failed ({(int)response.StatusCode})";
+                _discovered = [.. models];
+                RefreshModels();
             }
-        }
-        catch (Exception ex)
-        {
-            _discoverError = ex.Message;
         }
         finally
         {
@@ -182,8 +401,67 @@
 
     private void AddCustomProvider()
     {
-        _settings.CustomProviders.Add(new CustomProviderConfig());
-        StateHasChanged();
+        _customModal = new CustomProviderConfig();
+        _isNewCustom = true;
+        _original = null;
+        _customError = "";
+        _focusModal = true;
+    }
+
+    private void EditCustom(CustomProviderConfig custom)
+    {
+        // Edit a copy; Apply writes back only on Save.
+        _customModal = new CustomProviderConfig
+        {
+            Name = custom.Name,
+            BaseUrl = custom.BaseUrl,
+            ApiKey = custom.ApiKey,
+            ApiKeyEnv = custom.ApiKeyEnv,
+            Models = [.. custom.Models],
+        };
+        _isNewCustom = false;
+        _original = custom;
+        _customError = "";
+        _focusModal = true;
+    }
+
+    private void SaveCustomModal()
+    {
+        var modal = _customModal!;
+        var name = modal.Name.Trim();
+        if (name.Length == 0 || modal.BaseUrl.Trim().Length == 0)
+        {
+            _customError = "name and base URL are required";
+            return;
+        }
+        if (ProviderCatalog.Providers.Contains(name) ||
+            _settings.CustomProviders.Any(c => c != _original && c.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            _customError = $"'{name}' is already a provider name";
+            return;
+        }
+        if (_original is not null)
+        {
+            _settings.CustomProviders.Remove(_original);
+        }
+        modal.Name = name;
+        modal.BaseUrl = modal.BaseUrl.Trim();
+        _settings.CustomProviders.Add(modal);
+        _original = null;
+        _customModal = null;
+        Facade.Harness.ApplyProviderSelection();
+    }
+
+    private void CloseCustomModal()
+    {
+        _customModal = null;
+        _original = null;
+        _customError = "";
+    }
+
+    private void OnModalKey(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") CloseCustomModal();
     }
 
     private void RemoveCustomProvider(CustomProviderConfig custom)
@@ -262,10 +540,16 @@
         StateHasChanged();
     }
 
+    private CustomProviderConfig? _original;
+
     private void GoBack() => Navigation.NavigateTo("/");
 
     private void Save()
     {
+        if (_settings.ApiKey is { Length: > 0 } key)
+        {
+            _settings.ProviderKeys[_settings.Provider] = key;
+        }
         Facade.Harness.ApplyProviderSelection();
         Facade.Harness.ApplyDefaultSelection();
         Facade.Harness.SaveSettings();

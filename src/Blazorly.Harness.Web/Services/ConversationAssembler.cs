@@ -29,6 +29,7 @@ public sealed record ConversationNode
     public string? ResultText { get; init; }
     public ToolCallView? CallView { get; init; }
     public bool IsError { get; init; }
+    public long? StartedAt { get; init; }
 
     // turn end
     public TurnEndReason? Reason { get; init; }
@@ -60,211 +61,310 @@ public sealed record CompactionSummaryPayload(string Summary, IReadOnlyList<int>
 
 public sealed class ConversationAssembler(ToolRuntime tools, Blazorly.Harness.Core.TokenMeter.TokenMeterService? meter = null)
 {
+    /// <summary>One-shot fold: fresh folder, all events processed.</summary>
     public ConversationSnapshot Fold(Core.Sessions.Session session, Agent? agent)
+        => CreateFolder(session).Update(agent);
+
+    /// <summary>Stateful folder for live pages: each Update processes only new events,
+    /// so a 100K-event session costs the same per tick as a fresh one.</summary>
+    public ConversationFolder CreateFolder(Core.Sessions.Session session) => new(this, session, tools, meter);
+
+    private static int SortKey(ConversationNode node)
     {
-        var events = session.Events;
-        var nodes = new List<ConversationNode>();
-        var assemblers = new Dictionary<(int Turn, int Step), BlockAssembler>();
-        var steps = new Dictionary<(int Turn, int Step), (string Status, TokenUsage? Usage)>();
-        var turnStart = new Dictionary<int, long>();
-        var todos = session.LatestTodos() ?? [];
+        // Nodes carry their originating seq in the key: u-{seq}, a-{seq}, t-{seq}, te-{seq}, live-*
+        var parts = node.Key.Split('-');
+        if (node.Kind == "assistant" && node.Key.StartsWith("live-")) return int.MaxValue - 1;
+        return parts.Length == 2 && int.TryParse(parts[1], out var seq) ? seq : int.MaxValue;
+    }
+}
 
-        foreach (var e in events)
+/// <summary>Incremental fold state for one live session page.</summary>
+public sealed class ConversationFolder
+{
+    private readonly ConversationAssembler _owner;
+    private readonly ToolRuntime _tools;
+    private readonly Blazorly.Harness.Core.TokenMeter.TokenMeterService? _meter;
+    private readonly Core.Sessions.Session _session;
+
+    private readonly List<ConversationNode> _nodes = [];
+    private readonly Dictionary<(int Turn, int Step), BlockAssembler> _assemblers = [];
+    private readonly Dictionary<(int Turn, int Step), (string Status, TokenUsage? Usage)> _steps = [];
+    private readonly Dictionary<int, (long Time, int Seq)> _turnStart = [];
+    private readonly Dictionary<int, int> _turnLastSeen = [];
+    private readonly HashSet<int> _endedTurns = [];
+    private readonly List<(int Turn, int Step)> _liveKeys = [];
+
+    private int _processed;
+    private IReadOnlyList<TodoItem> _todos = [];
+    private long _usageIn, _usageOut, _usageCacheRead, _usageCacheWrite;
+    private long? _declaredWindow;
+    private ConversationSnapshot? _last;
+
+    internal ConversationFolder(ConversationAssembler owner, Core.Sessions.Session session, ToolRuntime tools,
+        Blazorly.Harness.Core.TokenMeter.TokenMeterService? meter)
+    {
+        _owner = owner;
+        _session = session;
+        _tools = tools;
+        _meter = meter;
+    }
+
+    public ConversationSnapshot Update(Agent? agent)
+    {
+        var events = _session.Events;
+        var fresh = false;
+        while (_processed < events.Count)
         {
-            switch (e.Type)
-            {
-                case SessionEventTypes.UserMessage:
-                {
-                    var message = SessionEventRead.MessageOf(e);
-                    if (message.Source.Kind == "plugin") continue; // runtime-context snapshots stay hidden
-                    nodes.Add(new ConversationNode
-                    {
-                        Key = $"u-{e.Seq}",
-                        Kind = "user",
-                        Message = message,
-                        Source = message.Source.Kind,
-                    });
-                    break;
-                }
-                case SessionEventTypes.AssistantChunk:
-                {
-                    var payload = SessionJson.FromElement<SessionPayloads.AssistantChunk>(e.Data);
-                    var key = (payload.Turn, payload.Step);
-                    if (!assemblers.TryGetValue(key, out var assembler)) assemblers[key] = assembler = new BlockAssembler();
-                    assembler.Push(payload.Chunk);
-                    break;
-                }
-                case SessionEventTypes.AssistantMessage:
-                {
-                    var payload = SessionEventRead.AssistantMessageOf(e);
-                    var key = (payload.Turn, payload.Step);
-                    steps[key] = (payload.Interrupted == true ? "interrupted" : "settled", payload.Usage);
-                    if (!assemblers.TryGetValue(key, out var assembler)) assemblers[key] = assembler = new BlockAssembler();
-                    if (payload.Message.Content.Count > 0)
-                    {
-                        nodes.Add(new ConversationNode
-                        {
-                            Key = $"a-{e.Seq}",
-                            Kind = "assistant",
-                            Turn = payload.Turn,
-                            Step = payload.Step,
-                            Blocks = payload.Message.Content,
-                            StepStatus = payload.Interrupted == true ? "interrupted" : "settled",
-                            Usage = payload.Usage,
-                        });
-                    }
-                    break;
-                }
-                case SessionEventTypes.ToolCall:
-                {
-                    var call = SessionEventRead.ToolCallOf(e);
-                    var definition = tools.Get(call.Name, agent?.ScopeKey);
-                    ToolCallView? view = null;
-                    try
-                    {
-                        using var doc = System.Text.Json.JsonDocument.Parse(call.Arguments.Length == 0 ? "{}" : call.Arguments);
-                        view = definition?.PresentCall(doc.RootElement.Clone());
-                    }
-                    catch
-                    {
-                        view = null;
-                    }
-                    nodes.Add(new ConversationNode
-                    {
-                        Key = $"t-{e.Seq}",
-                        Kind = "tool",
-                        Turn = call.Turn,
-                        Step = call.Step,
-                        ToolName = call.Name,
-                        CallId = call.CallId,
-                        ArgsJson = call.Arguments,
-                        ToolStatus = "running",
-                        CallView = view,
-                    });
-                    break;
-                }
-                case SessionEventTypes.ToolResult:
-                {
-                    var result = SessionEventRead.ToolResultOf(e);
-                    var callId = result.Message.Content.OfType<ToolResultBlock>().First().ToolCallId;
-                    var target = nodes.FirstOrDefault(n => n.Kind == "tool" && n.CallId == callId && n.ToolStatus == "running");
-                    if (target is not null)
-                    {
-                        var text = string.Join("\n", result.Message.Content.OfType<ToolResultBlock>().First().Content
-                            .OfType<TextBlock>().Select(b => b.Text));
-                        nodes[nodes.IndexOf(target)] = target with
-                        {
-                            ToolStatus = result.Error is not null ? "error" : "done",
-                            ResultText = text,
-                            IsError = result.Error is not null,
-                        };
-                    }
-                    break;
-                }
-                case SessionEventTypes.TurnStart:
-                    turnStart[SessionEventRead.TurnOf(e)] = e.Time;
-                    break;
-                case SessionEventTypes.TurnEnd:
-                {
-                    var turn = SessionEventRead.TurnOf(e);
-                    var reason = SessionEventRead.TurnEndReasonOf(e);
-                    long? duration = turnStart.TryGetValue(turn, out var started) ? e.Time - started : null;
-                    if (reason is TurnEndReason.Completed)
-                    {
-                        var usage = steps.Values.Select(s => s.Usage).LastOrDefault(u => u is not null);
-                        nodes.Add(new ConversationNode { Key = $"te-{e.Seq}", Kind = "turn-ok", Turn = turn, Usage = usage, DurationMs = duration });
-                    }
-                    else
-                    {
-                        nodes.Add(new ConversationNode { Key = $"te-{e.Seq}", Kind = "turn-end", Turn = turn, Reason = reason, DurationMs = duration });
-                    }
-                    break;
-                }
-                case SessionEventTypes.CommandRun:
-                {
-                    var run = SessionEventRead.CommandRunOf(e);
-                    nodes.Add(new ConversationNode
-                    {
-                        Key = $"cr-{e.Seq}",
-                        Kind = "command",
-                        CommandName = run.Name,
-                        CommandArgs = run.Args,
-                    });
-                    break;
-                }
-                case SessionEventTypes.CommandDone:
-                {
-                    var done = SessionEventRead.CommandDoneOf(e);
-                    var last = nodes.LastOrDefault(n => n.Kind == "command" && n.CommandText is null);
-                    if (last is not null)
-                    {
-                        nodes[nodes.IndexOf(last)] = last with { CommandText = done.Text, CommandOk = done.Kind == "success" };
-                    }
-                    break;
-                }
-                case SessionEventTypes.CompactionSummary:
-                {
-                    var summary = SessionJson.FromElement<CompactionSummaryPayload>(e.Data);
-                    nodes.Add(new ConversationNode
-                    {
-                        Key = $"cp-{e.Seq}",
-                        Kind = "command",
-                        CommandName = "compaction",
-                        CommandArgs = $"{summary.ShadowedSeqs.Count} messages",
-                        CommandText = "Context compacted: earlier conversation was summarized to keep working within the window.",
-                        CommandOk = true,
-                    });
-                    break;
-                }
-                case SessionEventTypes.SandboxMode:
-                {
-                    var mode = SessionEventRead.SandboxModeOf(e);
-                    nodes.Add(new ConversationNode
-                    {
-                        Key = $"sm-{e.Seq}",
-                        Kind = "command",
-                        CommandName = "permission",
-                        CommandArgs = mode.Mode,
-                        CommandText = $"permission preset switched to {mode.Mode}",
-                        CommandOk = true,
-                    });
-                    break;
-                }
-            }
+            ProcessEvent(events[_processed], agent);
+            _processed++;
+            fresh = true;
         }
+        if (fresh) _todos = _session.LatestTodos() ?? [];
 
-        // Any still-streaming step (chunks without a terminal message) renders live at the tail.
-        foreach (var ((turn, step), assembler) in assemblers)
+        // Live tail nodes are regenerated from the retained assemblers each update:
+        // drop the previous generation, then re-add the still-streaming steps.
+        if (_liveKeys.Count > 0)
         {
-            if (steps.ContainsKey((turn, step))) continue;
+            var live = _liveKeys.ToHashSet();
+            _nodes.RemoveAll(n => n.Kind == "assistant" && live.Contains((n.Turn, n.Step)) && n.Key.StartsWith("live-"));
+            _liveKeys.Clear();
+        }
+        var agentRunning = agent?.Status == Core.Agent.AgentStatus.Running;
+        foreach (var ((turn, step), assembler) in _assemblers)
+        {
+            if (_steps.ContainsKey((turn, step))) continue;
+            var dead = _endedTurns.Contains(turn) || (!agentRunning && _turnStart.ContainsKey(turn));
             var blocks = assembler.Blocks();
-            if (blocks.Count == 0 && assembler.InterruptedBlocks().Count == 0) continue;
-            nodes.Add(new ConversationNode
+            var interruptedBlocks = assembler.InterruptedBlocks();
+            if (blocks.Count == 0 && interruptedBlocks.Count == 0) continue;
+            var visible = (blocks.Count > 0 ? blocks : interruptedBlocks)
+                .Where(b => b is not ToolCallBlock).ToList();
+            if (visible.Count == 0) continue;
+            var key = (turn, step);
+            _liveKeys.Add(key);
+            _nodes.Add(new ConversationNode
             {
                 Key = $"live-{turn}-{step}",
                 Kind = "assistant",
                 Turn = turn,
                 Step = step,
-                Blocks = blocks.Count > 0 ? blocks : assembler.InterruptedBlocks(),
-                StepStatus = "streaming",
+                Blocks = visible,
+                StepStatus = dead ? "interrupted" : "streaming",
             });
         }
 
-        return new ConversationSnapshot
+        var context = _meter is not null && agent is not null
+            ? _meter.Measure(agent, (_usageIn, _usageOut, _usageCacheRead, _usageCacheWrite), _declaredWindow)
+            : null;
+
+        _last = new ConversationSnapshot
         {
-            Nodes = [.. nodes.OrderBy(n => SortKey(n))],
-            Todos = todos,
+            Nodes = [.. _nodes.OrderBy(ConversationAssemblerSort.Key)],
+            Todos = _todos,
             Status = agent?.Status ?? "idle",
             LastSeq = events.Count > 0 ? events[^1].Seq : -1,
-            Title = session.LatestTitle(),
-            SandboxMode = session.LatestSandboxMode(),
-            Context = meter is not null && agent is not null ? meter.Measure(agent) : null,
+            Title = _session.LatestTitle(),
+            SandboxMode = _session.LatestSandboxMode(),
+            Context = context,
         };
+        return _last;
     }
 
-    private static int SortKey(ConversationNode node)
+    private void ProcessEvent(SessionEvent e, Agent? agent)
     {
-        // Nodes carry their originating seq in the key: u-{seq}, a-{seq}, t-{seq}, te-{seq}, live-*
+        if (e.Data.ValueKind == System.Text.Json.JsonValueKind.Object
+            && e.Data.TryGetProperty("turn", out var turnValue)
+            && turnValue.ValueKind == System.Text.Json.JsonValueKind.Number)
+        {
+            _turnLastSeen[turnValue.GetInt32()] = e.Seq;
+        }
+
+        switch (e.Type)
+        {
+            case SessionEventTypes.UserMessage:
+            {
+                var message = SessionEventRead.MessageOf(e);
+                if (message.Source.Kind == "plugin") break; // runtime-context snapshots stay hidden
+                _nodes.Add(new ConversationNode
+                {
+                    Key = $"u-{e.Seq}",
+                    Kind = "user",
+                    Message = message,
+                    Source = message.Source.Kind,
+                });
+                break;
+            }
+            case SessionEventTypes.AssistantChunk:
+            {
+                var payload = SessionJson.FromElement<SessionPayloads.AssistantChunk>(e.Data);
+                var key = (payload.Turn, payload.Step);
+                if (!_assemblers.TryGetValue(key, out var assembler)) _assemblers[key] = assembler = new BlockAssembler();
+                assembler.Push(payload.Chunk);
+                break;
+            }
+            case SessionEventTypes.AssistantMessage:
+            {
+                var payload = SessionEventRead.AssistantMessageOf(e);
+                var key = (payload.Turn, payload.Step);
+                _steps[key] = (payload.Interrupted == true ? "interrupted" : "settled", payload.Usage);
+                if (!_assemblers.TryGetValue(key, out var assembler)) _assemblers[key] = assembler = new BlockAssembler();
+                // Tool calls render as their own tool cards; repeating them here is noise.
+                var content = payload.Message.Content.Where(b => b is not ToolCallBlock).ToList();
+                if (payload.Usage is { } usage)
+                {
+                    _usageIn += usage.InputTokens;
+                    _usageOut += usage.OutputTokens;
+                    _usageCacheRead += usage.CacheReadTokens ?? 0;
+                    _usageCacheWrite += usage.CacheWriteTokens ?? 0;
+                }
+                if (content.Count > 0)
+                {
+                    _nodes.Add(new ConversationNode
+                    {
+                        Key = $"a-{e.Seq}",
+                        Kind = "assistant",
+                        Turn = payload.Turn,
+                        Step = payload.Step,
+                        Blocks = content,
+                        StepStatus = payload.Interrupted == true ? "interrupted" : "settled",
+                        Usage = payload.Usage,
+                    });
+                }
+                break;
+            }
+            case SessionEventTypes.ToolCall:
+            {
+                var call = SessionEventRead.ToolCallOf(e);
+                var definition = _tools.Get(call.Name, agent?.ScopeKey);
+                ToolCallView? view = null;
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(call.Arguments.Length == 0 ? "{}" : call.Arguments);
+                    view = definition?.PresentCall(doc.RootElement.Clone());
+                }
+                catch
+                {
+                    view = null;
+                }
+                _nodes.Add(new ConversationNode
+                {
+                    Key = $"t-{e.Seq}",
+                    Kind = "tool",
+                    Turn = call.Turn,
+                    Step = call.Step,
+                    ToolName = call.Name,
+                    CallId = call.CallId,
+                    ArgsJson = call.Arguments,
+                    ToolStatus = "running",
+                    CallView = view,
+                    StartedAt = e.Time,
+                });
+                break;
+            }
+            case SessionEventTypes.ToolResult:
+            {
+                var result = SessionEventRead.ToolResultOf(e);
+                var callId = result.Message.Content.OfType<ToolResultBlock>().First().ToolCallId;
+                var target = _nodes.FirstOrDefault(n => n.Kind == "tool" && n.CallId == callId && n.ToolStatus == "running");
+                if (target is not null)
+                {
+                    var text = string.Join("\n", result.Message.Content.OfType<ToolResultBlock>().First().Content
+                        .OfType<TextBlock>().Select(b => b.Text));
+                    _nodes[_nodes.IndexOf(target)] = target with
+                    {
+                        ToolStatus = result.Error is not null ? "error" : "done",
+                        ResultText = text,
+                        IsError = result.Error is not null,
+                        DurationMs = target.StartedAt is { } started ? e.Time - started : null,
+                    };
+                }
+                break;
+            }
+            case SessionEventTypes.TurnStart:
+                _turnStart[SessionEventRead.TurnOf(e)] = (e.Time, e.Seq);
+                break;
+            case SessionEventTypes.TurnEnd:
+            {
+                var turn = SessionEventRead.TurnOf(e);
+                _endedTurns.Add(turn);
+                var reason = SessionEventRead.TurnEndReasonOf(e);
+                long? duration = _turnStart.TryGetValue(turn, out var started) ? e.Time - started.Time : null;
+                if (reason is TurnEndReason.Completed)
+                {
+                    var usage = _steps.Values.Select(s => s.Usage).LastOrDefault(u => u is not null);
+                    _nodes.Add(new ConversationNode { Key = $"te-{e.Seq}", Kind = "turn-ok", Turn = turn, Usage = usage, DurationMs = duration });
+                }
+                else
+                {
+                    _nodes.Add(new ConversationNode { Key = $"te-{e.Seq}", Kind = "turn-end", Turn = turn, Reason = reason, DurationMs = duration });
+                }
+                break;
+            }
+            case SessionEventTypes.CommandRun:
+            {
+                var run = SessionEventRead.CommandRunOf(e);
+                _nodes.Add(new ConversationNode
+                {
+                    Key = $"cr-{e.Seq}",
+                    Kind = "command",
+                    CommandName = run.Name,
+                    CommandArgs = run.Args,
+                });
+                break;
+            }
+            case SessionEventTypes.CommandDone:
+            {
+                var done = SessionEventRead.CommandDoneOf(e);
+                var last = _nodes.LastOrDefault(n => n.Kind == "command" && n.CommandText is null);
+                if (last is not null)
+                {
+                    _nodes[_nodes.IndexOf(last)] = last with { CommandText = done.Text, CommandOk = done.Kind == "success" };
+                }
+                break;
+            }
+            case SessionEventTypes.RequestContext:
+            {
+                var payload = SessionJson.FromElement<SessionPayloads.RequestContextPayload>(e.Data);
+                _declaredWindow = payload.ContextWindow; // latest declaration wins
+                break;
+            }
+            case SessionEventTypes.CompactionSummary:
+            {
+                var summary = SessionJson.FromElement<CompactionSummaryPayload>(e.Data);
+                _nodes.Add(new ConversationNode
+                {
+                    Key = $"cp-{e.Seq}",
+                    Kind = "command",
+                    CommandName = "compaction",
+                    CommandArgs = $"{summary.ShadowedSeqs.Count} messages",
+                    CommandText = "Context compacted: earlier conversation was summarized to keep working within the window.",
+                    CommandOk = true,
+                });
+                break;
+            }
+            case SessionEventTypes.SandboxMode:
+            {
+                var mode = SessionEventRead.SandboxModeOf(e);
+                _nodes.Add(new ConversationNode
+                {
+                    Key = $"sm-{e.Seq}",
+                    Kind = "command",
+                    CommandName = "permission",
+                    CommandArgs = mode.Mode,
+                    CommandText = $"permission preset switched to {mode.Mode}",
+                    CommandOk = true,
+                });
+                break;
+            }
+        }
+    }
+}
+
+internal static class ConversationAssemblerSort
+{
+    /// <summary>Live tail nodes render last; everything else orders by originating seq.</summary>
+    public static int Key(ConversationNode node)
+    {
         var parts = node.Key.Split('-');
         if (node.Kind == "assistant" && node.Key.StartsWith("live-")) return int.MaxValue - 1;
         return parts.Length == 2 && int.TryParse(parts[1], out var seq) ? seq : int.MaxValue;

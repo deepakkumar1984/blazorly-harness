@@ -20,7 +20,7 @@ public class AgentLoopTests
         await using var harness = TestHarness.Create(options =>
         {
             calls.Add(options);
-            return ReplayScript.Text("Hello there!");
+            return Scripted.Text("Hello there!");
         });
         var agent = harness.CreateAgent();
         agent.Followup(Message.CreateUserText("hi"));
@@ -52,8 +52,8 @@ public class AgentLoopTests
         {
             calls.Add(options);
             return calls.Count == 1
-                ? ReplayScript.ToolCall("bash", new { command = "echo roundtrip", description = "Echo test" })
-                : ReplayScript.Text("done: " + (calls.Count > 1 && calls[1].Messages.Any(m => m.Content.OfType<ToolResultBlock>().Any())
+                ? Scripted.ToolCall("bash", new { command = "echo roundtrip", description = "Echo test" })
+                : Scripted.Text("done: " + (calls.Count > 1 && calls[1].Messages.Any(m => m.Content.OfType<ToolResultBlock>().Any())
                     ? calls[1].Messages.OfType<Message>().SelectMany(m => m.Content).OfType<ToolResultBlock>().First().Content.OfType<TextBlock>().First().Text.Trim()
                     : "missing"));
         });
@@ -81,7 +81,7 @@ public class AgentLoopTests
     public async Task FollowupQueue_ProducesTwoTurns()
     {
         var turns = new List<int>();
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("ok"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
         var agent = harness.CreateAgent();
         agent.Session.Subscribe(e =>
         {
@@ -104,9 +104,9 @@ public class AgentLoopTests
         await using var harness = TestHarness.Create(options =>
         {
             calls.Add(options);
-            if (calls.Count == 1) return ReplayScript.ToolCall("probe", new { value = "slow", delayMs = 300 });
+            if (calls.Count == 1) return Scripted.ToolCall("probe", new { value = "slow", delayMs = 300 });
             var sawSteer = options.Messages.Any(m => m.FlattenText().Contains("STEER:"));
-            return ReplayScript.Text(sawSteer ? "steered" : "not-steered");
+            return Scripted.Text(sawSteer ? "steered" : "not-steered");
         });
         harness.Tools.Register(probe);
         var agent = harness.CreateAgent();
@@ -129,8 +129,8 @@ public class AgentLoopTests
     [Fact]
     public async Task Cancel_MidStreamAbortsTurn()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("never finishes"));
-        harness.Replay.ChunkDelayMs = 5_000;
+        await using var harness = TestHarness.Create(_ => Scripted.Text("never finishes"));
+        harness.ScriptedLlm.ChunkDelayMs = 5_000;
         var agent = harness.CreateAgent();
         agent.Followup(Message.CreateUserText("start"));
         await Task.Delay(150); // the stream is now in-flight and slow
@@ -151,8 +151,8 @@ public class AgentLoopTests
         {
             attempts++;
             return attempts <= 2
-                ? ReplayScript.Error(LlmErrorCodes.Server, "boom")
-                : ReplayScript.Text("recovered");
+                ? Scripted.Error(LlmErrorCodes.Server, "boom")
+                : Scripted.Text("recovered");
         });
         var agent = harness.CreateAgent();
         agent.RetryLimit = 3;
@@ -168,7 +168,7 @@ public class AgentLoopTests
     [Fact]
     public async Task RequestError_NonRetriableFailsTheTurn()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Error(LlmErrorCodes.InvalidCredential, "bad key"));
+        await using var harness = TestHarness.Create(_ => Scripted.Error(LlmErrorCodes.InvalidCredential, "bad key"));
         var agent = harness.CreateAgent();
         agent.RetryLimit = 3;
         agent.Followup(Message.CreateUserText("fail fast"));
@@ -184,7 +184,7 @@ public class AgentLoopTests
     {
         var steered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var harness = TestHarness.Create(options =>
-            options.Messages.Any(m => m.FlattenText().Contains("VETO")) ? ReplayScript.Text("vetoed handled") : ReplayScript.Text("first pass"));
+            options.Messages.Any(m => m.FlattenText().Contains("VETO")) ? Scripted.Text("vetoed handled") : Scripted.Text("first pass"));
         var agent = harness.CreateAgent();
         harness.Ctx.Events.On<TurnStoppingEvent>("agent/turn-stopping", async (e, _) =>
         {
@@ -206,7 +206,7 @@ public class AgentLoopTests
     [Fact]
     public async Task PreStepReject_ClosesTurnWithNoStep()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("never"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("never"));
         var agent = harness.CreateAgent();
         harness.Ctx.Events.OnWaterfall<PreStepEvent, List<Message>, PreStepDecision>(
             "agent/pre-step", (_, _, _, _) => Task.FromResult(PreStepDecision.Reject()));
@@ -222,7 +222,7 @@ public class AgentLoopTests
     public async Task SystemPrompt_IncludesIdentitySectionAndToolSchemas()
     {
         GenerateOptions? seen = null;
-        await using var harness = TestHarness.Create(options => { seen = options; return ReplayScript.Text("ok"); });
+        await using var harness = TestHarness.Create(options => { seen = options; return Scripted.Text("ok"); });
         var agent = harness.CreateAgent();
         agent.Followup(Message.CreateUserText("hi"));
         await agent.WhenIdleAsync();
@@ -249,11 +249,11 @@ public class ToolSchedulerTests
         {
             calls++;
             return calls == 1
-                ? ReplayScript.ToolCalls(
+                ? Scripted.ToolCalls(
                     ("probe", new { value = "a", delayMs = 120 }),
                     ("probe", new { value = "b", delayMs = 10 }),
                     ("probe", new { value = "c", delayMs = 60 }))
-                : ReplayScript.Text("done");
+                : Scripted.Text("done");
         });
         harness.Tools.Register(probe);
         harness.Ctx.Events.On<ToolPostExecute>("tools/result", (e, _) =>
@@ -286,11 +286,11 @@ public class ToolSchedulerTests
         {
             calls++;
             return calls == 1
-                ? ReplayScript.ToolCalls(
+                ? Scripted.ToolCalls(
                     ("probe", new { value = "fast" }),
                     ("probe", new { value = "exclusive" }),
                     ("probe", new { value = "after" }))
-                : ReplayScript.Text("done");
+                : Scripted.Text("done");
         });
         harness.Tools.Register(probe);
         probe.BodyStarted += v => { lock (started) started.Add(v); };

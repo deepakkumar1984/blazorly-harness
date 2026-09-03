@@ -17,9 +17,6 @@ public sealed record AcpServerOptions
     /// <summary>Workspace root for sessions; defaults to the invoking directory.</summary>
     public string? WorkspacePath { get; init; }
 
-    /// <summary>Replay-provider chunk pacing in ms (pacing knob for tests/demos).</summary>
-    public int ChunkDelayMs { get; init; }
-
     /// <summary>"auto" (default) never asks; "ask" routes every tool call of ACP sessions through session/request_permission.</summary>
     public string Permission { get; init; } = "auto";
 }
@@ -69,7 +66,6 @@ public static class AcpServer
         bootstrapper.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
         try
         {
-            if (options.ChunkDelayMs > 0) bootstrapper.Replay.ChunkDelayMs = options.ChunkDelayMs;
             var root = options.WorkspacePath ?? Environment.CurrentDirectory;
             var workspace = bootstrapper.Workspaces.Ensure(root);
 
@@ -220,7 +216,7 @@ public static class AcpServer
                         return JsonSerializer.SerializeToElement(new
                         {
                             sessionId = agent.Session.Id,
-                            configOptions = BuildConfigOptions(agent.Options.Provider ?? "replay", agent.Options.Model ?? "default"),
+                            configOptions = BuildConfigOptions(agent.Options.Provider ?? "", agent.Options.Model ?? "default"),
                         }, FrameOptions);
                     }
 

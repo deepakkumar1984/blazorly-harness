@@ -71,7 +71,7 @@ public class LspTests
     [Fact]
     public async Task Tool_WithoutServer_IsErrorWithLspUnavailable()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("ok"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
         new LspPlugin([]).Apply(harness.Ctx); // explicitly not configured
         var agent = harness.CreateAgent();
 
@@ -87,7 +87,7 @@ public class LspTests
     public async Task Tool_Definition_RendersPathAndLine()
     {
         if (!PythonAvailable()) return;
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("ok"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
         new LspPlugin(["python3", FakeLspPath()], "/tmp").Apply(harness.Ctx);
         var agent = harness.CreateAgent(cwd: "/tmp");
 
@@ -216,7 +216,7 @@ public class HooksTests
             """
             [{"point":"pre-step","matcher":null,"command":"printf '{\"decision\":\"block\",\"reason\":\"not allowed\"}'"}]
             """);
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("never"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("never"));
         new HooksPlugin(path).Apply(harness.Ctx);
         var agent = harness.CreateAgent(cwd: Path.GetDirectoryName(path));
 
@@ -244,7 +244,7 @@ public class HooksTests
             """
             [{"point":"pre-step","command":"true"}]
             """);
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("done"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
         new HooksPlugin(path).Apply(harness.Ctx);
         var agent = harness.CreateAgent(cwd: Path.GetDirectoryName(path));
 
@@ -265,7 +265,7 @@ public class HooksTests
             """
             [{"point":"turn-end","command":"echo '{\"decision\":\"allow\"}'"}]
             """);
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("fin"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("fin"));
         new HooksPlugin(path).Apply(harness.Ctx);
         var agent = harness.CreateAgent(cwd: Path.GetDirectoryName(path));
 

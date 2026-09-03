@@ -8,13 +8,17 @@ namespace Blazorly.Harness.Tests;
 /// Real-process tests: the SDK client spawns the built CLI (`serve-stdio`) in an isolated
 /// BLAZORLY_HOME and drives sessions over the wire.
 /// </summary>
+[Collection("BlazorlyHome")]
 public class SdkClientTests : BootstrapperTestBase, IAsyncDisposable
 {
     private readonly string _workspace = Path.Combine(Path.GetTempPath(), "blazorly-sdk-ws-" + Guid.NewGuid().ToString("N")[..8]);
+    private FakeOpenAiServer? _llm;
 
     private HarnessClient Spawn()
     {
         Directory.CreateDirectory(_workspace);
+        _llm = new FakeOpenAiServer();
+        ScriptedSettings.WriteFakeRoute(Home, _llm.BaseUrl);
         var serverDll = typeof(Blazorly.Harness.Cli.HeadlessRunner).Assembly.Location;
         return HarnessClient.Spawn(new HarnessSpawnOptions
         {
@@ -50,11 +54,11 @@ public class SdkClientTests : BootstrapperTestBase, IAsyncDisposable
             var statuses = new List<string>();
             using var statusSub = client.SubscribeStatus((_, status) => statuses.Add(status));
 
-            var result = await client.RunAsync("run the demo task", onEvent: _ => { });
+            var result = await client.RunAsync("run the scripted task", onEvent: _ => { });
 
             Assert.Equal("completed", result.Finish);
             Assert.Contains("session-", result.SessionId);
-            Assert.Contains("demo run completed", result.Response);
+            Assert.Contains("scripted run completed", result.Response);
             Assert.Contains(result.Events, f => f.Type == "user/message");
             Assert.Contains(result.Events, f => f.Type == "tool/result");
             Assert.Contains(result.Events, f => f.Type == "assistant/message");
@@ -75,7 +79,7 @@ public class SdkClientTests : BootstrapperTestBase, IAsyncDisposable
         try
         {
             await client.ConnectAsync();
-            var first = await client.RunAsync("run the demo task");
+            var first = await client.RunAsync("run the scripted task");
 
             var ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             long lastSeq = first.Events.Count == 0 ? -1 : first.Events.Max(f => f.Seq);
@@ -141,6 +145,7 @@ public class SdkClientTests : BootstrapperTestBase, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _llm?.Dispose();
         try { Directory.Delete(_workspace, recursive: true); } catch (IOException) { }
         await Task.CompletedTask;
     }

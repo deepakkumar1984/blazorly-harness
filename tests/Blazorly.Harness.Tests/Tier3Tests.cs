@@ -10,7 +10,12 @@ using Xunit;
 
 namespace Blazorly.Harness.Tests;
 
-/// <summary>Boots the real composition in an isolated BLAZORLY_HOME (env restored per test).</summary>
+/// <summary>Boots the real composition in an isolated BLAZORLY_HOME (env restored per test).
+/// All classes deriving from this base must also carry [Collection("BlazorlyHome")]: they share
+/// the process-global BLAZORLY_HOME, so they must never run concurrently with each other.</summary>
+[CollectionDefinition("BlazorlyHome", DisableParallelization = true)]
+public class BlazorlyHomeCollection { }
+
 public abstract class BootstrapperTestBase : IDisposable
 {
     protected readonly string Home = Path.Combine(Path.GetTempPath(), "blazorly-cli-" + Guid.NewGuid().ToString("N")[..8]);
@@ -28,18 +33,33 @@ public abstract class BootstrapperTestBase : IDisposable
     }
 }
 
+[Collection("BlazorlyHome")]
 public class HeadlessRunnerTests : BootstrapperTestBase
 {
-    private string Workspace() => Path.Combine(Path.GetTempPath(), "blazorly-cli-ws-" + Guid.NewGuid().ToString("N")[..8]);
+    private string Workspace()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "blazorly-cli-ws-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir); // bash runs with this cwd; a missing dir fails tools fast and breaks timeout timing
+        return dir;
+    }
+
+    /// <summary>Routes the isolated home at a local OpenAI-compatible fake (tools then summary).</summary>
+    private FakeOpenAiServer FakeRoute(int chunkDelayMs = 0)
+    {
+        var server = new FakeOpenAiServer(chunkDelayMs);
+        ScriptedSettings.WriteFakeRoute(Home, server.BaseUrl);
+        return server;
+    }
 
     [Fact]
     public async Task Run_CompletesWithExitZero_PersistsSession_StreamsJsonEnvelope()
     {
         var workspace = Workspace();
         var output = new StringWriter();
+        using var server = FakeRoute();
         var result = await HeadlessRunner.RunAsync(new HeadlessOptions
         {
-            Job = "run the demo task",
+            Job = "run the scripted task",
             WorkspacePath = workspace,
             Json = true,
             Out = output,
@@ -50,7 +70,7 @@ public class HeadlessRunnerTests : BootstrapperTestBase
         Assert.NotNull(result.SessionId);
         var envelope = JsonDocument.Parse(output.ToString()).RootElement;
         Assert.Equal(result.SessionId, envelope.GetProperty("sessionId").GetString());
-        Assert.Contains("demo run completed", envelope.GetProperty("response").GetString());
+        Assert.Contains("scripted run completed", envelope.GetProperty("response").GetString());
         Assert.True(Directory.Exists(Path.Combine(Home, "sessions")));
         Assert.True(Directory.Exists(Path.Combine(Home, "spills"))); // the full composition booted
     }
@@ -59,9 +79,10 @@ public class HeadlessRunnerTests : BootstrapperTestBase
     public async Task Resume_ContinuesTheSameSession()
     {
         var workspace = Workspace();
+        using var server = FakeRoute();
         var first = await HeadlessRunner.RunAsync(new HeadlessOptions
         {
-            Job = "run the demo task",
+            Job = "run the scripted task",
             WorkspacePath = workspace,
             Quiet = true,
         });
@@ -76,17 +97,17 @@ public class HeadlessRunnerTests : BootstrapperTestBase
         });
         Assert.Equal(0, second.ExitCode);
         Assert.Equal(first.SessionId, second.SessionId);
-        Assert.Contains("demo run completed", second.Response);
+        Assert.Contains("scripted run completed", second.Response);
     }
 
     [Fact]
     public async Task Timeout_AbortsTheRun_ExitThree()
     {
+        using var server = FakeRoute(); // no pacing: the scripted bash sleeps 2.5s, so the 1s timeout lands mid-tool (abort); pacing the SSE stream would cancel mid-read, which HTTP adapters report as a turn error, not an abort
         var result = await HeadlessRunner.RunAsync(new HeadlessOptions
         {
-            Job = "run the demo task",
+            Job = "run the scripted task",
             WorkspacePath = Workspace(),
-            ChunkDelayMs = 400, // pace the scripted stream so the run outlives the timeout
             TimeoutSeconds = 1,
             Quiet = true,
         });
@@ -113,9 +134,10 @@ public class HeadlessRunnerTests : BootstrapperTestBase
     public async Task SessionsCommand_ListsPersistedSessions()
     {
         var workspace = Workspace();
+        using var server = FakeRoute();
         var run = await HeadlessRunner.RunAsync(new HeadlessOptions
         {
-            Job = "run the demo task",
+            Job = "run the scripted task",
             WorkspacePath = workspace,
             Quiet = true,
         });
@@ -185,7 +207,7 @@ public class CompactionPrunerTests
         await using var harness = TestHarness.Create(options =>
         {
             llmCalls++;
-            return ReplayScript.Text("should not be needed");
+            return Scripted.Text("should not be needed");
         });
         // trigger ~2211 tokens: header (~1364) + bulk (~1250) + fill crosses it; pruning the bulk clears it.
         var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions
@@ -215,9 +237,9 @@ public class CompactionPrunerTests
             if (options.Purpose == "compaction")
             {
                 summaryInput = string.Join("\n", options.Messages.Select(m => m.FlattenText()));
-                return ReplayScript.Text("SUMMARY: pruned and summarized.");
+                return Scripted.Text("SUMMARY: pruned and summarized.");
             }
-            return ReplayScript.Text("ok");
+            return Scripted.Text("ok");
         });
         var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions
         {
@@ -252,7 +274,7 @@ public class CompactionPrunerTests
         Assert.Equal(1_000, compaction.ResolveWindow(tinyAgent));
         Assert.Equal(500, compaction.TriggerFor(tinyAgent));
 
-        harness.Loop.DefaultSelection = new LlmCallConfig { Provider = "replay", Model = "demo" };
+        harness.Loop.DefaultSelection = new LlmCallConfig { Provider = "scripted", Model = "test" };
         var defaultAgent = harness.CreateAgent(); // replay/demo has no catalog window
         Assert.Equal(100_000, compaction.ResolveWindow(defaultAgent));
     }
@@ -267,11 +289,14 @@ public class CompactionPrunerTests
     }
 }
 
+[Collection("BlazorlyHome")]
 public class CompactCommandTests : BootstrapperTestBase
 {
     [Fact]
     public async Task CompactCommand_GuardsThenCompacts()
     {
+        using var llm = new FakeOpenAiServer();
+        ScriptedSettings.WriteFakeRoute(Home, llm.BaseUrl);
         var bootstrapper = new HarnessBootstrapper();
         await bootstrapper.StartAsync(CancellationToken.None);
         try
@@ -285,7 +310,7 @@ public class CompactCommandTests : BootstrapperTestBase
             Assert.False(empty!.Ok);
             Assert.Contains("nothing to compact", empty.Text);
 
-            facade.Prompt(session.Id, "run the demo task", "queue");
+            facade.Prompt(session.Id, "run the scripted task", "queue");
             for (var i = 0; i < 100 && session.Events.All(e => e.Type != SessionEventTypes.TurnEnd); i++)
             {
                 await Task.Delay(100);
@@ -311,13 +336,15 @@ public class CompactCommandTests : BootstrapperTestBase
     [Fact]
     public async Task CompactCommand_IsRejectedWhileRunning()
     {
+        using var llm = new FakeOpenAiServer(chunkDelayMs: 50);
+        ScriptedSettings.WriteFakeRoute(Home, llm.BaseUrl);
         var bootstrapper = new HarnessBootstrapper();
         await bootstrapper.StartAsync(CancellationToken.None);
         try
         {
             var facade = new SessionFacade(bootstrapper, new UiEventBroker());
             var session = facade.CreateSession();
-            facade.Prompt(session.Id, "run the demo task", "queue");
+            facade.Prompt(session.Id, "run the scripted task", "queue");
             for (var i = 0; i < 100 && session.Events.All(e => e.Type != SessionEventTypes.StepStart); i++)
             {
                 await Task.Delay(100);

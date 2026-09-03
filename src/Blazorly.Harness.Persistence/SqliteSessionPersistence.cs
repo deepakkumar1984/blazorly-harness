@@ -165,6 +165,19 @@ public sealed class SqliteSessionPersistence : ISessionPersistence, IDisposable,
 
     public Task FlushAllAsync(CancellationToken ct = default) => Task.CompletedTask;
 
+    public Task DeleteAsync(string sessionId, CancellationToken ct = default)
+    {
+        return WrapIo(() =>
+        {
+            using var cmd = _connection.CreateCommand();
+            // events cascade via the foreign key.
+            cmd.CommandText = "DELETE FROM sessions WHERE id = $id";
+            cmd.Parameters.AddWithValue("$id", sessionId);
+            cmd.ExecuteNonQuery();
+            return Task.CompletedTask;
+        }, ct);
+    }
+
     public void Dispose()
     {
         _connection.Dispose();

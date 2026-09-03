@@ -32,8 +32,8 @@ public class TeamTests
         string? leadId = null;
         await using var harness = TestHarness.Create(options =>
             IsChildSession(options, leadId)
-                ? ReplayScript.Text("Teammate ready for assignments.")
-                : ReplayScript.Text("lead reply"));
+                ? Scripted.Text("Teammate ready for assignments.")
+                : Scripted.Text("lead reply"));
         var subagents = SubagentService.Mount(harness.Ctx);
         new TeamPlugin().Apply(harness.Ctx);
         var lead = harness.CreateAgent();
@@ -60,8 +60,8 @@ public class TeamTests
         string? leadId = null;
         await using var harness = TestHarness.Create(options =>
             IsChildSession(options, leadId)
-                ? ReplayScript.Text("Teammate standing by.")
-                : ReplayScript.Text("lead reply"));
+                ? Scripted.Text("Teammate standing by.")
+                : Scripted.Text("lead reply"));
         var subagents = SubagentService.Mount(harness.Ctx);
         new TeamPlugin().Apply(harness.Ctx);
         var service = TeamService.Mount(harness.Ctx);
@@ -93,8 +93,8 @@ public class TeamTests
     {
         await using var harness = TestHarness.Create(options =>
             options.Messages.LastOrDefault()?.FlattenText().Contains("FIND-THE-ANSWER") == true
-                ? ReplayScript.Text("pong: answer found")
-                : ReplayScript.Text("teammate standing by."));
+                ? Scripted.Text("pong: answer found")
+                : Scripted.Text("teammate standing by."));
         SubagentService.Mount(harness.Ctx);
         new TeamPlugin().Apply(harness.Ctx);
         var service = TeamService.Mount(harness.Ctx);
@@ -116,7 +116,7 @@ public class TeamTests
     [Fact]
     public async Task TeamTasks_CreateUpdateList_FoldLatestWins()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("unused"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("unused"));
         SubagentService.Mount(harness.Ctx);
         new TeamPlugin().Apply(harness.Ctx);
         var lead = harness.CreateAgent();
@@ -179,9 +179,9 @@ public class WorkflowTests
         {
             calls.Add(options);
             var last = options.Messages.LastOrDefault()?.FlattenText() ?? "";
-            if (last.Contains("STEP-ONE")) return ReplayScript.Text("did step A");
-            if (last.Contains("STEP-TWO")) return ReplayScript.Text("did step B");
-            return ReplayScript.Text("lead fallback");
+            if (last.Contains("STEP-ONE")) return Scripted.Text("did step A");
+            if (last.Contains("STEP-TWO")) return Scripted.Text("did step B");
+            return Scripted.Text("lead fallback");
         });
         var subagents = SubagentService.Mount(harness.Ctx);
         new WorkflowPlugin().Apply(harness.Ctx);
@@ -223,8 +223,8 @@ public class WorkflowTests
         string? leadId = null;
         await using var harness = TestHarness.Create(options =>
             IsChild(options, leadId)
-                ? ReplayScript.Text("working\nOBJECTIVE_COMPLETE")
-                : ReplayScript.Text("lead reply"));
+                ? Scripted.Text("working\nOBJECTIVE_COMPLETE")
+                : Scripted.Text("lead reply"));
         var subagents = SubagentService.Mount(harness.Ctx);
         new WorkflowPlugin().Apply(harness.Ctx);
         var lead = harness.CreateAgent();
@@ -253,10 +253,10 @@ public class WorkflowTests
             {
                 childCalls.Add(options);
                 return childCalls.Count == 1
-                    ? ReplayScript.Text("stuck\nOBJECTIVE_BLOCKED: missing file")
-                    : ReplayScript.Text("done\nOBJECTIVE_COMPLETE");
+                    ? Scripted.Text("stuck\nOBJECTIVE_BLOCKED: missing file")
+                    : Scripted.Text("done\nOBJECTIVE_COMPLETE");
             }
-            return ReplayScript.Text("lead reply");
+            return Scripted.Text("lead reply");
         });
         var subagents = SubagentService.Mount(harness.Ctx);
         new WorkflowPlugin().Apply(harness.Ctx);
@@ -290,9 +290,9 @@ public class WorkflowTests
             if (IsChild(options, leadId))
             {
                 childCalls.Add(options);
-                return ReplayScript.Text($"round {childCalls.Count}: still working");
+                return Scripted.Text($"round {childCalls.Count}: still working");
             }
-            return ReplayScript.Text("lead reply");
+            return Scripted.Text("lead reply");
         });
         var subagents = SubagentService.Mount(harness.Ctx);
         new WorkflowPlugin().Apply(harness.Ctx);

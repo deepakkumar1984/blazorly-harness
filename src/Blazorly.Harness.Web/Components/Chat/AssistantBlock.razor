@@ -14,10 +14,39 @@ else if (Block is ReasoningBlock reasoning)
 }
 else if (Block is ToolCallBlock call)
 {
-    <div class="inline-tool-call">calls <code>@call.Name</code></div>
+    <div class="inline-tool-call">🔧 running <code>@call.Name</code>@if (InlineArgs(call) is { Length: > 0 } args)
+    {<span class="itc-args">@args</span>}</div>
 }
 
 @code {
     [Parameter] public ContentBlock? Block { get; set; }
     [Parameter] public MarkdownService Markdown { get; set; } = null!;
+
+    /// <summary>First string argument of the call, for a human-readable running line.</summary>
+    private static string InlineArgs(ToolCallBlock call)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(call.Arguments.Length == 0 ? "{}" : call.Arguments);
+            string? found = null;
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var property in doc.RootElement.EnumerateObject())
+                {
+                    if (property.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        found = property.Value.GetString();
+                        break;
+                    }
+                }
+            }
+            if (string.IsNullOrWhiteSpace(found)) return "";
+            var line = found.Split('\n').First(l => l.Trim().Length > 0).Trim();
+            return line.Length > 60 ? line[..60] + "…" : line;
+        }
+        catch
+        {
+            return "";
+        }
+    }
 }

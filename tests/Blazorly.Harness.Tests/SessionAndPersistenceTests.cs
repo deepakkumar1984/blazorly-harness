@@ -73,7 +73,7 @@ public class SessionTests
         var callId = "call_1";
         session.Append(SessionEventTypes.AssistantChunk,
             new SessionPayloads.AssistantChunk(1, 1, new TextDeltaChunk(0, "hi")));
-        var assistant = Message.CreateAssistant("replay", "demo", [new TextBlock("hi")]);
+        var assistant = Message.CreateAssistant("scripted", "demo", [new TextBlock("hi")]);
         session.Append(SessionEventTypes.AssistantMessage, new SessionPayloads.AssistantMessage(1, 1, assistant),
             new Session.AppendOptions(SourceEventSeqs: [2], SurfaceOp: new SurfaceOp.Append()));
         session.Append(SessionEventTypes.ToolCall, new SessionPayloads.ToolCall(1, 1, callId, "bash", "{}"));
@@ -99,7 +99,7 @@ public class SessionTests
         var (session, _) = NewSession();
         OpenTurn(session);
         session.Append(SessionEventTypes.StepStart, new SessionPayloads.StepStart(1, 1));
-        var empty = Message.CreateAssistant("replay", "demo", []);
+        var empty = Message.CreateAssistant("scripted", "demo", []);
         session.Append(SessionEventTypes.AssistantMessage,
             new SessionPayloads.AssistantMessage(1, 1, empty, new TokenUsage(5, 0)),
             new Session.AppendOptions(SourceEventSeqs: Array.Empty<int>(), SurfaceOp: new SurfaceOp.Append()));

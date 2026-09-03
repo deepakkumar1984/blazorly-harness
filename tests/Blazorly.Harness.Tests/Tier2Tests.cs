@@ -207,14 +207,14 @@ public class TokenMeterTests
     [Fact]
     public async Task Measure_ReportsPressureProviderAnchorTotalsAndBreakdown()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("ok"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
         var meter = TokenMeterService.Mount(harness.Ctx);
         meter.ContextWindowTokens = 10_000;
         var agent = harness.CreateAgent();
 
         agent.Session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
         agent.Session.Append(SessionEventTypes.StepStart, new SessionPayloads.StepStart(1, 1));
-        var message = Llm.Message.CreateAssistant("replay", "demo", [new TextBlock("working…")]);
+        var message = Llm.Message.CreateAssistant("scripted", "demo", [new TextBlock("working…")]);
         agent.Session.Append(SessionEventTypes.AssistantMessage,
             new SessionPayloads.AssistantMessage(1, 1, message, new TokenUsage(InputTokens: 120, OutputTokens: 40, CacheReadTokens: 30, CacheWriteTokens: 10)),
             new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
@@ -236,7 +236,7 @@ public class TokenMeterTests
 
 public class ScheduleTests : IAsyncDisposable, IDisposable
 {
-    private readonly TestHarness _harness = TestHarness.Create(_ => ReplayScript.Text("done"));
+    private readonly TestHarness _harness = TestHarness.Create(_ => Scripted.Text("done"));
     private readonly ScheduleService _schedules;
     private readonly Agent _agent;
 

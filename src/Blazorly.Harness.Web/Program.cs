@@ -204,57 +204,14 @@ app.MapPost("/api/llm.discover", async (HttpContext http, HarnessBootstrapper ha
     var body = await http.Request.ReadFromJsonAsync<DiscoverRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.Provider)) return Results.BadRequest(new { error = "provider is required" });
 
-    string baseUrl;
-    string apiKey;
-    Action<HttpRequestMessage>? configure = null;
-    var custom = harness.Settings.CustomProviders.FirstOrDefault(c => c.Name == body.Provider);
-    if (custom is not null)
-    {
-        baseUrl = custom.BaseUrl;
-        apiKey = custom.ApiKey
-            ?? (custom.ApiKeyEnv is { Length: > 0 } env ? Environment.GetEnvironmentVariable(env) : null)
-            ?? "";
-    }
-    else if (body.Provider == harness.Settings.Provider)
-    {
-        baseUrl = harness.Settings.BaseUrl;
-        apiKey = harness.Settings.EffectiveApiKey ?? "";
-        if (body.Provider == "anthropic")
-        {
-            configure = request =>
-            {
-                request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
-                request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-            };
-        }
-    }
-    else
-    {
-        return Results.BadRequest(new { error = "unknown provider route" });
-    }
+    // Same path the Settings UI uses: fetch GET /models, persist the list, rebuild the route.
+    var knownRoute = body.Provider == harness.Settings.Provider
+        || harness.Settings.CustomProviders.Any(c => c.Name == body.Provider);
+    if (!knownRoute) return Results.BadRequest(new { error = "unknown provider route" });
 
-    try
-    {
-        var models = await LlmModelDiscovery.DiscoverAsync(body.Provider, baseUrl, apiKey, HarnessBootstrapper.StreamingHttp, configure);
-        if (custom is not null)
-        {
-            foreach (var model in models)
-            {
-                if (!custom.Models.Contains(model.Id)) custom.Models.Add(model.Id);
-            }
-            harness.SaveSettings();
-            harness.ApplyProviderSelection(); // rebuild the route so its model list reflects discovery
-        }
-        return Results.Json(new { provider = body.Provider, models });
-    }
-    catch (Blazorly.Harness.Llm.LlmException ex)
-    {
-        return Results.BadRequest(new { error = ex.Message, code = ex.Code });
-    }
-    catch (HttpRequestException ex)
-    {
-        return Results.BadRequest(new { error = ex.Message, code = "TRANSPORT" });
-    }
+    var (ids, error) = await harness.DiscoverModelsAsync(body.Provider, body.BaseUrl, body.ApiKey);
+    if (error is not null) return Results.BadRequest(new { error });
+    return Results.Json(new { provider = body.Provider, models = harness.RuntimeModels(body.Provider) });
 });
 
 app.MapGet("/api/credentials.describe", (HarnessBootstrapper harness) => Results.Json(new
@@ -352,4 +309,4 @@ public sealed record AnswerRequest(string? Id, string? Answer);
 public sealed record WorkspaceRequest(string? Id, string? Name, string? Root);
 public sealed record ArchiveRequest(string? SessionId, bool Archived);
 public sealed record CredentialRequest(string? Name, string? Value);
-public sealed record DiscoverRequest(string? Provider);
+public sealed record DiscoverRequest(string? Provider, string? BaseUrl = null, string? ApiKey = null);

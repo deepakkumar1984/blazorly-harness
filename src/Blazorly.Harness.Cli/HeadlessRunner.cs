@@ -18,8 +18,6 @@ public sealed record HeadlessOptions
     public int? TimeoutSeconds { get; init; }
     public bool Json { get; init; }
     public bool Quiet { get; init; }
-    /// <summary>Replay-provider chunk pacing in ms (simulates slow streams; test/pacing knob).</summary>
-    public int ChunkDelayMs { get; init; }
     /// <summary>ACP permission mode: auto (default) or ask (route tool calls to the client).</summary>
     public string? Permission { get; init; }
     public TextWriter Out { get; init; } = Console.Out;
@@ -53,7 +51,6 @@ public static class HeadlessRunner
             // Route overrides must land before the selection is applied.
             if (!string.IsNullOrWhiteSpace(options.Provider)) bootstrapper.Settings.Provider = options.Provider;
             if (!string.IsNullOrWhiteSpace(options.Model)) bootstrapper.Settings.Model = options.Model;
-            if (options.ChunkDelayMs > 0) bootstrapper.Replay.ChunkDelayMs = options.ChunkDelayMs;
             bootstrapper.ApplyProviderSelection();
             bootstrapper.ApplyDefaultSelection();
 

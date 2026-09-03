@@ -102,7 +102,7 @@ public class ProjectInstructionsTests : IDisposable
     {
         File.WriteAllText(Path.Combine(_root, "AGENTS.md"), "ROOT RULES");
         await using var harness = TestHarness.Create(options =>
-            options.Purpose == "compaction" ? ReplayScript.Text("SUMMARY: compacted.") : ReplayScript.Text("ok"));
+            options.Purpose == "compaction" ? Scripted.Text("SUMMARY: compacted.") : Scripted.Text("ok"));
         var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions
         {
             ContextWindowTokens = 8_192,
@@ -141,7 +141,7 @@ public class RetryServiceTests
     public async Task RetryableFailure_IsRetriedWithDurableTrail()
     {
         await using var harness = HarnessWithFlaky((options, calls) =>
-            calls == 0 ? ReplayScript.Error(LlmErrorCodes.RateLimit, "slow down") : ReplayScript.Text("recovered"));
+            calls == 0 ? Scripted.Error(LlmErrorCodes.RateLimit, "slow down") : Scripted.Text("recovered"));
         RetryService.Mount(harness.Ctx, new RetryOptions
         {
             Default = new RetryPolicyConfig { InitialDelayMs = 1, MaxDelayMs = 5 },
@@ -166,7 +166,7 @@ public class RetryServiceTests
     public async Task NonRetryableFailure_IsNotRetried()
     {
         await using var harness = HarnessWithFlaky((options, calls) =>
-            calls == 0 ? ReplayScript.Error(LlmErrorCodes.Auth, "bad key") : ReplayScript.Text("unreachable"));
+            calls == 0 ? Scripted.Error(LlmErrorCodes.Auth, "bad key") : Scripted.Text("unreachable"));
         RetryService.Mount(harness.Ctx, new RetryOptions
         {
             Default = new RetryPolicyConfig { InitialDelayMs = 1, MaxDelayMs = 5 },
@@ -186,7 +186,7 @@ public class RetryServiceTests
     public async Task AlwaysMode_RetriesAnyCodeWithoutAttemptCeiling()
     {
         await using var harness = HarnessWithFlaky((options, calls) =>
-            calls == 0 ? ReplayScript.Error(LlmErrorCodes.Auth, "transient gateway hiccup") : ReplayScript.Text("recovered"));
+            calls == 0 ? Scripted.Error(LlmErrorCodes.Auth, "transient gateway hiccup") : Scripted.Text("recovered"));
         RetryService.Mount(harness.Ctx, new RetryOptions
         {
             Default = new RetryPolicyConfig { Mode = "always", InitialDelayMs = 1, MaxDelayMs = 5 },
@@ -477,7 +477,7 @@ public class SessionTitleTests : IDisposable
     public async Task FirstTurn_GeneratesTitleFromLlm()
     {
         await using var harness = TestHarness.Create(options =>
-            options.Purpose == "session-title" ? ReplayScript.Text("Fix the login bug") : ReplayScript.Text("done"));
+            options.Purpose == "session-title" ? Scripted.Text("Fix the login bug") : Scripted.Text("done"));
         SessionTitleService.Mount(harness.Ctx);
         var agent = harness.CreateAgent(_root);
 
@@ -494,7 +494,7 @@ public class SessionTitleTests : IDisposable
     public async Task EmptyGeneration_FallsBackToFirstUserText()
     {
         await using var harness = TestHarness.Create(options =>
-            options.Purpose == "session-title" ? ReplayScript.Text("") : ReplayScript.Text("done"));
+            options.Purpose == "session-title" ? Scripted.Text("") : Scripted.Text("done"));
         SessionTitleService.Mount(harness.Ctx);
         var agent = harness.CreateAgent(_root);
 
@@ -511,7 +511,7 @@ public class SessionTitleTests : IDisposable
     public async Task ManualRename_IsNeverOverwritten()
     {
         await using var harness = TestHarness.Create(options =>
-            options.Purpose == "session-title" ? ReplayScript.Text("Generated Title") : ReplayScript.Text("done"));
+            options.Purpose == "session-title" ? Scripted.Text("Generated Title") : Scripted.Text("done"));
         SessionTitleService.Mount(harness.Ctx);
         var agent = harness.CreateAgent(_root);
         agent.Session.Append(SessionEventTypes.SessionTitle,

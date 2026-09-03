@@ -157,6 +157,20 @@ public sealed class JsonlSessionPersistence : ISessionPersistence
 
     public Task FlushAllAsync(CancellationToken ct = default) => Task.CompletedTask;
 
+    public Task DeleteAsync(string sessionId, CancellationToken ct = default)
+    {
+        return WrapIo(() =>
+        {
+            var path = FindFile(sessionId);
+            if (path is not null)
+            {
+                var dir = Path.GetDirectoryName(path);
+                if (dir is not null && Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+            }
+            return Task.CompletedTask;
+        }, ct);
+    }
+
     private string? FindFile(string sessionId)
     {
         foreach (var projectDir in Directory.EnumerateDirectories(_root))

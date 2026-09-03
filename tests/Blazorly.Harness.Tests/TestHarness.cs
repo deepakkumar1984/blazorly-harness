@@ -20,7 +20,7 @@ public sealed class TestHarness : IAsyncDisposable
     public SystemPromptService Prompt { get; private set; } = null!;
     public AgentRuntime Agents { get; private set; } = null!;
     public AgentLoopService Loop { get; private set; } = null!;
-    public ReplayAdapter Replay { get; private set; } = null!;
+    public ScriptedLlmAdapter ScriptedLlm { get; private set; } = null!;
     public FsObservationTracker Tracker { get; } = new();
     public SandboxPolicy Sandbox { get; } = new() { DefaultMode = SandboxPolicy.DangerFullAccess };
 
@@ -28,8 +28,8 @@ public sealed class TestHarness : IAsyncDisposable
     {
         var harness = new TestHarness();
         harness.Llm = LlmRuntime.Mount(harness.Ctx);
-        harness.Replay = new ReplayAdapter(script ?? (_ => ReplayScript.Text("(no script)")));
-        harness.Llm.RegisterAdapter(harness.Replay);
+        harness.ScriptedLlm = new ScriptedLlmAdapter(script ?? (_ => Scripted.Text("(no script)")));
+        harness.Llm.RegisterAdapter(harness.ScriptedLlm);
         harness.Prompt = SystemPromptService.Mount(harness.Ctx);
         harness.Tools = ToolRuntime.Mount(harness.Ctx, harness.Prompt);
         harness.Sessions = SessionStore.Mount(harness.Ctx, persistence);
@@ -37,7 +37,7 @@ public sealed class TestHarness : IAsyncDisposable
         harness.Loop = AgentLoopService.Mount(harness.Ctx);
         harness.Loop.RegisterDefaultPrompt();
         new BuiltInToolsPlugin(harness.Tracker, harness.Sandbox).Apply(harness.Ctx);
-        harness.Loop.DefaultSelection = new LlmCallConfig { Provider = "replay", Model = "demo" };
+        harness.Loop.DefaultSelection = new LlmCallConfig { Provider = "scripted", Model = "test" };
         return harness;
     }
 

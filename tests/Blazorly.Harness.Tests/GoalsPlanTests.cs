@@ -95,7 +95,7 @@ public class GoalTests
     [Fact]
     public async Task ActiveGoal_SteersASecondStepAndAdvancesRound()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("ok"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
         new GoalPlugin().Apply(harness.Ctx);
         var agent = harness.CreateAgent();
         await harness.Tools.Execute(Input(agent, "create_goal", new { objective = "write the report", max_goal_rounds = 2 }));
@@ -114,7 +114,7 @@ public class GoalTests
     [Fact]
     public async Task CappedGoal_DoesNotSteer()
     {
-        await using var harness = TestHarness.Create(_ => ReplayScript.Text("ok"));
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
         new GoalPlugin().Apply(harness.Ctx);
         var agent = harness.CreateAgent();
         await harness.Tools.Execute(Input(agent, "create_goal", new { objective = "one shot", max_goal_rounds = 1 }));

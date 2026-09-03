@@ -73,7 +73,7 @@
     {
         <div class="popover">
             @{
-                var currentModel = ProviderCatalog.For(_agent?.Options.Provider ?? "", Facade.Harness.Settings.BaseUrl)
+                var currentModel = Facade.Harness.RuntimeModels(_agent?.Options.Provider ?? "")
                     .FirstOrDefault(m => m.Id == _agent?.Options.Model);
             }
             @foreach (var provider in Facade.Harness.Llm.ListProviders())
@@ -331,22 +331,13 @@
     }
 
     <footer class="composer">
-        @if (_commandMenu)
-        {
-            <div class="command-menu">
-                <button class="command-option" @onclick='() => PickCommand("/permission ")'><code>/permission</code> switch sandbox preset</button>
-                <button class="command-option" @onclick='() => PickCommand("/model ")'><code>/model</code> switch model route</button>
-                <button class="command-option" @onclick='() => PickCommand("/effort ")'><code>/effort</code> set reasoning effort (off/low/high/max…)</button>
-                <button class="command-option" @onclick='() => PickCommand("/title ")'><code>/title</code> rename session</button>
-                <button class="command-option" @onclick='() => PickCommand("/help")'><code>/help</code> list commands</button>
-            </div>
-        }
+        <div class="command-menu" style="display:none" @ref="_slashMenu"></div>
         <div class="composer-input">
             <span class="composer-cwd" title="@(_session?.Header.Cwd)">@WorkspaceLabel</span>
             <textarea
+                @ref="_composerTa"
                 @bind="_draft"
                 @bind:event="oninput"
-                @bind:after="DraftChanged"
                 @onkeydown="OnKeyDown"
                 placeholder="@Placeholder"
                 rows="1"></textarea>
@@ -379,7 +370,9 @@
     private string _view = "chat";
     private bool _modelMenu;
     private bool _permissionMenu;
-    private bool _commandMenu;
+    private ElementReference _composerTa;
+    private ElementReference _slashMenu;
+    private Microsoft.JSInterop.DotNetObjectReference<Session>? _slashRef;
     private bool _editingTitle;
     private string _titleDraft = "";
     private Llm.Message? _editingQueue;
@@ -402,16 +395,72 @@
         ? "Queue for the next turn (⏎) or type and hit Steer…"
         : "Describe a task… or type / for commands";
 
-    protected override async Task OnInitializedAsync()
+    private string? _loadedSessionId;
+    private bool _pendingScroll;
+    private Blazorly.Harness.Web.Services.ConversationFolder? _folder;
+
+    protected override Task OnInitializedAsync()
     {
-        _session = await Facade.OpenSessionAsync(SessionId);
+        _coalesce = new System.Timers.Timer(120);
+        _coalesce.Elapsed += (_, _) =>
+        {
+            if (!_dirty && !_pendingChanged) return;
+            _dirty = false;
+            _pendingChanged = false;
+            _ = InvokeAsync(async () =>
+            {
+                try
+                {
+                    _snapshot = _folder?.Update(_agent) ?? Assembler.Fold(_session, _agent);
+                    _running = _agent.Status == "running";
+                    RefreshPending();
+                    StateHasChanged();
+                    if (_pinned && _view == "chat") await ScrollToBottom();
+                }
+                catch (Exception ex) when (ex is not TaskCanceledException)
+                {
+                    Console.Error.WriteLine($"[ui] fold failed for {SessionId}: {ex}");
+                }
+            });
+        };
+        _coalesce.AutoReset = true;
+        _coalesce.Enabled = true;
+        return LoadSessionAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Sidebar navigation between two sessions reuses this component instance and only
+        // changes the SessionId parameter — OnInitialized does not run again.
+        if (_loadedSessionId == SessionId) return;
+        await LoadSessionAsync();
+    }
+
+    private async Task LoadSessionAsync()
+    {
+        _loadedSessionId = SessionId;
+        var sessionId = SessionId;
+        _subscription?.Dispose();
+        _subscription = null;
+        _session = await Facade.OpenSessionAsync(sessionId);
         _agent = Facade.EnsureAgent(_session);
-        _snapshot = Assembler.Fold(_session, _agent);
+        _folder = Assembler.CreateFolder(_session);
+        _snapshot = _folder.Update(_agent);
         _running = _agent.Status == "running";
+        _draft = "";
+        _modelMenu = false;
+        _permissionMenu = false;
+        _editingTitle = false;
+        _editingQueue = null;
+        _statsOpen = false;
+        _rawTrajectory = false;
+        _pendingApproval = null;
+        _pendingQuestion = null;
+        _dirty = false;
 
         _subscription = Broker.Subscribe(frame =>
         {
-            if (frame.SessionId != SessionId) return Task.CompletedTask;
+            if (frame.SessionId != sessionId) return Task.CompletedTask;
             if (frame.Event.Type.StartsWith("ui/"))
             {
                 InvokeAsync(() =>
@@ -425,31 +474,30 @@
             return Task.CompletedTask;
         });
 
-        _coalesce = new System.Timers.Timer(120);
-        _coalesce.Elapsed += (_, _) =>
-        {
-            if (!_dirty && !_pendingChanged) return;
-            _dirty = false;
-            _pendingChanged = false;
-            _ = InvokeAsync(async () =>
-            {
-                try
-                {
-                    _snapshot = Assembler.Fold(_session, _agent);
-                    _running = _agent.Status == "running";
-                    RefreshPending();
-                    StateHasChanged();
-                    if (_pinned && _view == "chat") await ScrollToBottom();
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[ui] fold failed for {SessionId}: {ex}");
-                }
-            });
-        };
-        _coalesce.AutoReset = true;
-        _coalesce.Enabled = true;
         RefreshPending();
+        _pendingScroll = true;
+        StateHasChanged();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _slashRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
+            try
+            {
+                await Js.InvokeVoidAsync("blazorly.slash.attach", _composerTa, _slashMenu,
+                    SlashCommands.Select(c => new { name = c.Name, args = c.Args, description = c.Description }),
+                    _slashRef);
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+        }
+        if (_pendingScroll)
+        {
+            _pendingScroll = false;
+            await ScrollToBottom(force: true);
+        }
     }
 
     private volatile bool _pendingChanged;
@@ -466,28 +514,41 @@
         }
     }
 
-    private async Task ScrollToBottom()
+    private async Task ScrollToBottom(bool force = false)
     {
         try
         {
-            await Js.InvokeVoidAsync("blazorly.scrollBottom", _transcript);
+            await Js.InvokeVoidAsync("blazorly.scrollBottom", _transcript, force);
         }
         catch (JSDisconnectedException) { }
         catch (ObjectDisposedException) { }
+        catch (TaskCanceledException) { }
+        catch (OperationCanceledException) { }
     }
 
     private Task DraftChanged()
     {
-        _commandMenu = _draft.StartsWith('/');
-        StateHasChanged();
         return Task.CompletedTask;
     }
 
-    private void OnKeyDown(KeyboardEventArgs args)
+    private async Task OnKeyDown(KeyboardEventArgs args)
     {
         if (args.Key == "Enter" && !args.ShiftKey)
         {
             // Enter always queues (dsh default); steering is the explicit button while running.
+            // The JS slash menu gets first claim on Enter while it is open (pick vs send).
+            try
+            {
+                var menu = await Js.InvokeAsync<SlashMenuState>("blazorly.slash.state");
+                if (menu.Open)
+                {
+                    if (menu.ArgsEmpty) SubmitSlash(menu.Name);
+                    else await CompleteSlash(menu.Name + " ");
+                    return;
+                }
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
             SendQueue();
         }
     }
@@ -499,7 +560,6 @@
         if (text.StartsWith('/'))
         {
             _draft = "";
-            _commandMenu = false;
             Facade.TryCommand(SessionId, text);
         }
         else
@@ -519,11 +579,35 @@
         _dirty = true;
     }
 
-    private void PickCommand(string command)
+    /// <summary>Slash-command vocabulary for the JS autocomplete (name, arg hint, description).</summary>
+    internal static readonly (string Name, string Args, string Description)[] SlashCommands =
+    [
+        ("/permission", "<read-only|workspace-write|danger-full-access>", "switch sandbox preset"),
+        ("/model", "<provider/model>", "switch the model route"),
+        ("/effort", "<off|low|high|max>", "set reasoning effort"),
+        ("/title", "<text>", "rename this session"),
+        ("/plan", "", "toggle plan mode (restricts mutations until approved)"),
+        ("/goal", "<objective>", "set a persistent goal"),
+        ("/compact", "", "prune + summarize older context now"),
+        ("/help", "", "list commands"),
+    ];
+
+    [JSInvokable] public Task CompleteSlash(string text)
     {
-        _draft = command;
-        _commandMenu = false;
+        _draft = text;
+        StateHasChanged();
+        return Task.CompletedTask;
     }
+
+    [JSInvokable] public void SubmitSlash(string text)
+    {
+        _draft = "";
+        Facade.TryCommand(SessionId, text);
+        _dirty = true;
+        StateHasChanged();
+    }
+
+    private sealed record SlashMenuState(bool Open, string Name = "", bool ArgsEmpty = true);
 
     private void CancelTurn()
     {
@@ -763,12 +847,14 @@
 
     private static string DescribeReason(TurnEndReason? reason) => reason switch
     {
-        TurnEndReason.Aborted aborted => $"aborted ({aborted.Cause})",
-        TurnEndReason.Error error => $"error: {error.Message}",
-        TurnEndReason.MaxTokens => "max tokens reached",
+        TurnEndReason.Aborted aborted => aborted.Cause == "user"
+            ? "stopped — you pressed Stop"
+            : $"stopped ({aborted.Cause})",
+        TurnEndReason.Error error => $"failed — {error.Message}",
+        TurnEndReason.MaxTokens => "stopped — the model reached its output limit for this turn",
         TurnEndReason.Blocked => "blocked before starting",
-        TurnEndReason.Interrupted => "interrupted by restart",
-        _ => "unknown",
+        TurnEndReason.Interrupted => "interrupted — the app restarted while this turn was running; send a new message to continue",
+        _ => "ended",
     };
 
     private static char TodoGlyph(string status) => status switch
@@ -782,5 +868,6 @@
     {
         _coalesce?.Dispose();
         _subscription?.Dispose();
+        _slashRef?.Dispose();
     }
 }

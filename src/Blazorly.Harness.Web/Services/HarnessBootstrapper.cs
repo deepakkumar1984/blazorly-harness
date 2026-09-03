@@ -17,9 +17,13 @@ namespace Blazorly.Harness.Web.Services;
 /// <summary>User-editable runtime settings persisted under the harness home.</summary>
 public sealed class HarnessSettings
 {
-    public string Provider { get; set; } = "replay";
-    public string Model { get; set; } = "demo";
+    public string Provider { get; set; } = "deepseek";
+    public string Model { get; set; } = "deepseek-v4-flash";
     public string? ApiKey { get; set; }
+    /// <summary>API key stash per provider id so switching providers keeps each key typed once.</summary>
+    public Dictionary<string, string> ProviderKeys { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>Model ids loaded live from each provider's /models endpoint; replaces catalog seeds once present.</summary>
+    public Dictionary<string, List<string>> DiscoveredModels { get; set; } = new(StringComparer.Ordinal);
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
     public string WorkspaceRoot { get; set; } = Directory.GetCurrentDirectory();
     public string SandboxMode { get; set; } = SandboxPolicy.WorkspaceWrite;
@@ -69,6 +73,13 @@ public sealed class HarnessSettings
         get
         {
             if (!string.IsNullOrWhiteSpace(ApiKey)) return ApiKey;
+            if (ProviderKeys.TryGetValue(Provider, out var stashed) && !string.IsNullOrWhiteSpace(stashed)) return stashed;
+            var catalogEnv = ProviderCatalog.Info(Provider)?.ApiKeyEnv;
+            if (!string.IsNullOrWhiteSpace(catalogEnv))
+            {
+                var fromCatalog = Environment.GetEnvironmentVariable(catalogEnv);
+                if (!string.IsNullOrWhiteSpace(fromCatalog)) return fromCatalog;
+            }
             var providerSpecific = Environment.GetEnvironmentVariable(
                 $"{Provider.ToUpperInvariant().Replace('-', '_')}_API_KEY"); // DEEPSEEK/OPENAI/ANTHROPIC_API_KEY
             if (!string.IsNullOrWhiteSpace(providerSpecific)) return providerSpecific;
@@ -113,7 +124,6 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     public SandboxPolicy Sandbox { get; private set; } = null!;
     public WorkspaceRegistry Workspaces { get; private set; } = null!;
     public HarnessSettings Settings { get; private set; } = new();
-    public ReplayAdapter Replay { get; private set; } = null!;
 
     private readonly Dictionary<string, IDisposable> _routeEffects = new(StringComparer.Ordinal);
     private readonly string _home;
@@ -155,10 +165,6 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         Loop = AgentLoopService.Mount(Context);
         Loop.RegisterDefaultPrompt();
 
-        // The replay provider is always mounted: keyless demo and tests.
-        Replay = new ReplayAdapter(DemoScript.Respond);
-        Llm.RegisterAdapter(Replay);
-
         ApplyProviderSelection();
 
         new BuiltInToolsPlugin(new FsObservationTracker(), Sandbox).Apply(Context);
@@ -188,6 +194,13 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         }
         Meter = Core.TokenMeter.TokenMeterService.Mount(Context);
         Meter.ContextWindowTokens = Settings.ContextWindowTokens;
+        // The current route's catalog entry is the authority on the context window;
+        // historical request/context declarations can be stale after a catalog change.
+        // A 0 window means "unknown" (discovered/local models) — fall through to declarations.
+        Meter.ModelWindowResolver = (provider, model) => RuntimeModels(provider ?? "")
+            .FirstOrDefault(m => m.Id == model)?.ContextWindowTokens is { } window && window > 0
+                ? window
+                : null;
         if (Settings.EnableSpill)
         {
             Spills = Core.Spill.SpillService.Mount(Context, Path.Combine(_home, "spills"),
@@ -289,6 +302,76 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             ? new AnthropicAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver())
             : new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver());
 
+    /// <summary>The selectable model list for a route: the live API list once discovered (known ids
+    /// keep their catalog metadata — names, windows, effort levels), otherwise the catalog seeds.</summary>
+    public IReadOnlyList<LlmModelInfo> RuntimeModels(string provider)
+    {
+        var catalog = ProviderCatalog.For(provider, Settings.BaseUrl);
+        if (Settings.DiscoveredModels.TryGetValue(provider, out var ids) && ids.Count > 0)
+        {
+            var byId = catalog.GroupBy(m => m.Id, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+            return [.. ids.Select(id => byId.TryGetValue(id, out var known) ? known : new LlmModelInfo(provider, id, id))];
+        }
+        return catalog;
+    }
+
+    /// <summary>Loads the provider's model list from GET /models, persists it, and rebuilds the route.
+    /// Typed values (pre-Save UI state) win over stored settings. Returns an error message instead of throwing.</summary>
+    public async Task<(IReadOnlyList<string> Models, string? Error)> DiscoverModelsAsync(
+        string provider, string? typedBaseUrl = null, string? typedApiKey = null)
+    {
+        if (string.IsNullOrWhiteSpace(provider)) return ([], "provider is required");
+        var custom = Settings.CustomProviders.FirstOrDefault(c => c.Name == provider);
+        string baseUrl;
+        string apiKey;
+        Action<HttpRequestMessage>? configure = null;
+        if (custom is not null)
+        {
+            baseUrl = typedBaseUrl ?? custom.BaseUrl;
+            apiKey = typedApiKey
+                ?? (custom.ApiKeyEnv is { Length: > 0 } env ? Environment.GetEnvironmentVariable(env) : null)
+                ?? custom.ApiKey
+                ?? "";
+        }
+        else
+        {
+            baseUrl = typedBaseUrl ?? Settings.BaseUrl;
+            apiKey = typedApiKey ?? Settings.EffectiveApiKey ?? "";
+            if (provider == "anthropic")
+            {
+                configure = request =>
+                {
+                    request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
+                    request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+                };
+            }
+        }
+        try
+        {
+            var models = await LlmModelDiscovery.DiscoverAsync(provider, baseUrl, apiKey, StreamingHttp, configure).ConfigureAwait(false);
+            var ids = models.Select(m => m.Id).ToList();
+            if (custom is not null)
+            {
+                foreach (var id in ids)
+                {
+                    if (!custom.Models.Contains(id)) custom.Models.Add(id);
+                }
+            }
+            else
+            {
+                Settings.DiscoveredModels[provider] = ids;
+            }
+            SaveSettings();
+            ApplyProviderSelection();
+            return (ids, null);
+        }
+        catch (Exception ex) when (ex is LlmException or HttpRequestException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return ([], ex.Message);
+        }
+    }
+
     private void RegisterRoute(LlmAdapter adapter)
     {
         if (_routeEffects.Remove(adapter.Provider, out var stale)) stale.Dispose();
@@ -298,10 +381,10 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     public void ApplyProviderSelection()
     {
         var desired = new HashSet<string>(StringComparer.Ordinal);
-        if (Settings.Provider != "replay")
+        if (!string.IsNullOrWhiteSpace(Settings.Provider))
         {
             RegisterRoute(BuildRoute(Settings.Provider, Settings.BaseUrl, Settings.EffectiveApiKey,
-                ProviderCatalog.For(Settings.Provider, Settings.BaseUrl)));
+                RuntimeModels(Settings.Provider)));
             desired.Add(Settings.Provider);
         }
         foreach (var custom in Settings.CustomProviders)
@@ -340,6 +423,10 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                 Threshold = Settings.CompactionThreshold,
             };
         }
+        if (Meter is not null)
+        {
+            Meter.ContextWindowTokens = Settings.ContextWindowTokens;
+        }
         Workspaces = new WorkspaceRegistry(_home).EnsureDefault(Settings.WorkspaceRoot);
     }
 
@@ -376,6 +463,18 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     }
 }
 
+/// <summary>A built-in provider route: display metadata plus defaults for the Settings UI.</summary>
+/// <param name="Category">demo | us | china | local | generic — drives the grouped picker.</param>
+public sealed record ProviderInfo(
+    string Id,
+    string Name,
+    string Category,
+    string DefaultBaseUrl,
+    string? ApiKeyEnv = null)
+{
+    public bool Local => Category == "local";
+}
+
 public static class ProviderCatalog
 {
     /// <summary>dsh llm-deepseek reasoning.efforts (off/low/high/max, default high).</summary>
@@ -383,15 +482,56 @@ public static class ProviderCatalog
     /// <summary>OpenAI-style reasoning_effort pass-through for OpenAI-compatible routes.</summary>
     private static readonly string[] OpenAiEfforts = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
+    public static readonly IReadOnlyList<ProviderInfo> All =
+    [
+        // US-hosted
+        new("openai", "OpenAI", "us", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+        new("anthropic", "Anthropic", "us", "https://api.anthropic.com", "ANTHROPIC_API_KEY"),
+        new("xai", "xAI (Grok)", "us", "https://api.x.ai/v1", "XAI_API_KEY"),
+        new("google", "Google (Gemini)", "us", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+        new("mistral", "Mistral AI", "us", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
+        new("perplexity", "Perplexity", "us", "https://api.perplexity.ai", "PERPLEXITY_API_KEY"),
+        new("together", "Together AI", "us", "https://api.together.xyz/v1", "TOGETHER_API_KEY"),
+        new("groq", "Groq", "us", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+        new("fireworks", "Fireworks AI", "us", "https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY"),
+        new("openrouter", "OpenRouter (aggregator)", "us", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+        new("cerebras", "Cerebras", "us", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
+        new("cohere", "Cohere", "us", "https://api.cohere.ai/compatibility/v1", "COHERE_API_KEY"),
+        // China-hosted
+        new("deepseek", "DeepSeek", "china", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
+        new("qwen", "Alibaba Qwen (DashScope)", "china", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
+        new("moonshot", "Moonshot AI (Kimi)", "china", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
+        new("zhipu", "Zhipu AI (GLM)", "china", "https://open.bigmodel.ai/api/paas/v4", "ZHIPU_API_KEY"),
+        new("minimax", "MiniMax", "china", "https://api.minimaxi.chat/v1", "MINIMAX_API_KEY"),
+        new("doubao", "ByteDance Doubao (Ark)", "china", "https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY"),
+        new("ernie", "Baidu ERNIE (Qianfan)", "china", "https://qianfan.baidubce.com/v2", "QIANFAN_API_KEY"),
+        new("hunyuan", "Tencent Hunyuan", "china", "https://api.hunyuan.cloud.tencent.com/v1", "HUNYUAN_API_KEY"),
+        new("stepfun", "StepFun", "china", "https://api.stepfun.com/v1", "STEPFUN_API_KEY"),
+        new("yi", "01.AI (Yi)", "china", "https://api.lingyiwanwu.com/v1", "YI_API_KEY"),
+        // Local / self-hosted
+        new("ollama", "Ollama (local)", "local", "http://localhost:11434/v1"),
+        new("lmstudio", "LM Studio (local)", "local", "http://localhost:1234/v1"),
+        new("omlx", "oMLX (local, MLX)", "local", "http://localhost:8000/v1"),
+        new("unsloth", "Unsloth", "local", "https://api.unsloth.ai/v1", "UNSLOTH_API_KEY"),
+        new("openai-compatible", "Custom OpenAI-compatible", "generic", "https://gateway.example.com/v1"),
+    ];
+
+    public static readonly IReadOnlyList<string> Providers = [.. All.Select(p => p.Id)];
+
+    public static ProviderInfo? Info(string provider) => All.FirstOrDefault(p => p.Id == provider);
+
+    public static IReadOnlyList<string> Categories => ["us", "china", "local", "generic"];
+
     public static IReadOnlyList<LlmModelInfo> For(string provider, string baseUrl) => provider switch
     {
         "deepseek" =>
         [
-            new LlmModelInfo(provider, "deepseek-v4-flash", "DeepSeek V4 Flash (fast)", ContextWindowTokens: 131_072, MaxOutputTokens: 8_192,
+            // Window/output sizes: dsh llm-deepseek DEFAULT_CONTEXT_WINDOW (1M) / DEFAULT_MAX_TOKENS (256K).
+            new LlmModelInfo(provider, "deepseek-v4-flash", "DeepSeek V4 Flash (fast)", ContextWindowTokens: 1_000_000, MaxOutputTokens: 256_000,
                 SupportsReasoning: true, ReasoningEfforts: DeepSeekEfforts, DefaultEffort: "low"),
-            new LlmModelInfo(provider, "deepseek-v4-pro", "DeepSeek V4 Pro", ContextWindowTokens: 131_072, MaxOutputTokens: 8_192,
+            new LlmModelInfo(provider, "deepseek-v4-pro", "DeepSeek V4 Pro", ContextWindowTokens: 1_000_000, MaxOutputTokens: 256_000,
                 SupportsReasoning: true, ReasoningEfforts: DeepSeekEfforts, DefaultEffort: "high"),
-            new LlmModelInfo(provider, "deepseek-v4-flash-vision-exp", "DeepSeek V4 Flash Vision (experimental)", ContextWindowTokens: 131_072, MaxOutputTokens: 8_192,
+            new LlmModelInfo(provider, "deepseek-v4-flash-vision-exp", "DeepSeek V4 Flash Vision (experimental)", ContextWindowTokens: 1_000_000, MaxOutputTokens: 256_000,
                 SupportsReasoning: true, ReasoningEfforts: DeepSeekEfforts, DefaultEffort: "low"),
         ],
         "anthropic" =>
@@ -407,6 +547,168 @@ public static class ProviderCatalog
             new LlmModelInfo(provider, "o4-mini", "o4-mini", ContextWindowTokens: 200_000, MaxOutputTokens: 100_000,
                 SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "medium"),
         ],
+        "xai" =>
+        [
+            new LlmModelInfo(provider, "grok-4", "Grok 4", ContextWindowTokens: 256_000, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "grok-4-fast", "Grok 4 Fast", ContextWindowTokens: 2_000_000, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "grok-3", "Grok 3", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "grok-3-mini", "Grok 3 Mini", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "low"),
+        ],
+        "google" =>
+        [
+            new LlmModelInfo(provider, "gemini-2.5-pro", "Gemini 2.5 Pro", ContextWindowTokens: 1_047_576, MaxOutputTokens: 65_536,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "medium"),
+            new LlmModelInfo(provider, "gemini-2.5-flash", "Gemini 2.5 Flash", ContextWindowTokens: 1_047_576, MaxOutputTokens: 65_536,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "medium"),
+            new LlmModelInfo(provider, "gemini-2.0-flash", "Gemini 2.0 Flash", ContextWindowTokens: 1_047_576, MaxOutputTokens: 8_192),
+        ],
+        "mistral" =>
+        [
+            new LlmModelInfo(provider, "mistral-large-latest", "Mistral Large", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "mistral-medium-latest", "Mistral Medium", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "codestral-latest", "Codestral", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "magistral-medium-latest", "Magistral Medium (reasoning)", ContextWindowTokens: 40_960, MaxOutputTokens: 40_960,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts),
+        ],
+        "perplexity" =>
+        [
+            new LlmModelInfo(provider, "sonar-pro", "Sonar Pro", ContextWindowTokens: 200_000, MaxOutputTokens: 8_192),
+            new LlmModelInfo(provider, "sonar", "Sonar", ContextWindowTokens: 127_072, MaxOutputTokens: 8_192),
+            new LlmModelInfo(provider, "sonar-reasoning-pro", "Sonar Reasoning Pro", ContextWindowTokens: 127_072, MaxOutputTokens: 8_192,
+                SupportsReasoning: true),
+            new LlmModelInfo(provider, "sonar-deep-research", "Sonar Deep Research", ContextWindowTokens: 127_072, MaxOutputTokens: 8_192),
+        ],
+        "together" =>
+        [
+            new LlmModelInfo(provider, "deepseek-ai/DeepSeek-V3", "DeepSeek V3", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "meta-llama/Llama-3.3-70B-Instruct-Turbo", "Llama 3.3 70B Turbo", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "meta-llama/Meta-Llama-4-Maverick-17B-128E-Instruct-FP8", "Llama 4 Maverick", ContextWindowTokens: 1_047_576, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "Qwen/Qwen2.5-Coder-32B-Instruct-Turbo", "Qwen2.5 Coder 32B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+        ],
+        "groq" =>
+        [
+            new LlmModelInfo(provider, "llama-3.3-70b-versatile", "Llama 3.3 70B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "llama-3.1-8b-instant", "Llama 3.1 8B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "openai/gpt-oss-120b", "GPT-OSS 120B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "qwen/qwen3-32b", "Qwen3 32B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "deepseek-r1-distill-llama-70b", "DeepSeek R1 Distill 70B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768,
+                SupportsReasoning: true),
+        ],
+        "fireworks" =>
+        [
+            new LlmModelInfo(provider, "accounts/fireworks/models/deepseek-v3", "DeepSeek V3", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "accounts/fireworks/models/kimi-k2-instruct", "Kimi K2", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct", "Qwen3 Coder 480B", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "accounts/fireworks/models/llama4-maverick-instruct-basic", "Llama 4 Maverick", ContextWindowTokens: 1_047_576, MaxOutputTokens: 32_768),
+        ],
+        "openrouter" =>
+        [
+            new LlmModelInfo(provider, "deepseek/deepseek-chat", "DeepSeek Chat", ContextWindowTokens: 163_840, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5", ContextWindowTokens: 200_000, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "openai/gpt-4.1-mini", "GPT-4.1 mini", ContextWindowTokens: 1_047_576, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "qwen/qwen3-coder", "Qwen3 Coder", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "moonshotai/kimi-k2", "Kimi K2", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+        ],
+        "cerebras" =>
+        [
+            new LlmModelInfo(provider, "llama-3.3-70b", "Llama 3.3 70B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "llama3.1-8b", "Llama 3.1 8B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "qwen-3-32b", "Qwen3 32B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "gpt-oss-120b", "GPT-OSS 120B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+        ],
+        "cohere" =>
+        [
+            new LlmModelInfo(provider, "command-a-03-2025", "Command A", ContextWindowTokens: 262_144, MaxOutputTokens: 8_192),
+            new LlmModelInfo(provider, "command-r-plus-08-2024", "Command R+", ContextWindowTokens: 131_072, MaxOutputTokens: 4_096),
+            new LlmModelInfo(provider, "command-r7b-12-2024", "Command R7B", ContextWindowTokens: 131_072, MaxOutputTokens: 4_096),
+        ],
+        "qwen" =>
+        [
+            new LlmModelInfo(provider, "qwen3-max", "Qwen3 Max", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "qwen3-plus", "Qwen3 Plus", ContextWindowTokens: 131_072, MaxOutputTokens: 16_384),
+            new LlmModelInfo(provider, "qwen3-coder-plus", "Qwen3 Coder Plus", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "qwen2.5-coder-32b-instruct", "Qwen2.5 Coder 32B", ContextWindowTokens: 131_072, MaxOutputTokens: 8_192),
+        ],
+        "moonshot" =>
+        [
+            new LlmModelInfo(provider, "kimi-k2-0905-preview", "Kimi K2 (0905)", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "kimi-k2-instruct", "Kimi K2 Instruct", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "moonshot-v1-128k", "Moonshot V1 128K", ContextWindowTokens: 131_072, MaxOutputTokens: 8_192),
+            new LlmModelInfo(provider, "moonshot-v1-8k", "Moonshot V1 8K", ContextWindowTokens: 8_192, MaxOutputTokens: 8_192),
+        ],
+        "zhipu" =>
+        [
+            new LlmModelInfo(provider, "glm-4.6", "GLM-4.6", ContextWindowTokens: 204_800, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "glm-4.5", "GLM-4.5", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "glm-4.5-air", "GLM-4.5 Air", ContextWindowTokens: 131_072, MaxOutputTokens: 16_384),
+            new LlmModelInfo(provider, "glm-4-flash", "GLM-4 Flash (free tier)", ContextWindowTokens: 131_072, MaxOutputTokens: 4_096),
+        ],
+        "minimax" =>
+        [
+            new LlmModelInfo(provider, "MiniMax-M2", "MiniMax M2", ContextWindowTokens: 204_800, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "MiniMax-M1", "MiniMax M1", ContextWindowTokens: 1_000_000, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "medium"),
+            new LlmModelInfo(provider, "abab6.5s-chat", "abab6.5s", ContextWindowTokens: 245_760, MaxOutputTokens: 8_192),
+        ],
+        "doubao" =>
+        [
+            new LlmModelInfo(provider, "doubao-seed-1-6", "Doubao Seed 1.6", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "doubao-seed-code-1-6", "Doubao Seed Code 1.6", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "doubao-1-5-pro-256k", "Doubao 1.5 Pro 256K", ContextWindowTokens: 262_144, MaxOutputTokens: 16_384),
+            new LlmModelInfo(provider, "doubao-pro-32k", "Doubao Pro 32K", ContextWindowTokens: 32_768, MaxOutputTokens: 8_192),
+        ],
+        "ernie" =>
+        [
+            new LlmModelInfo(provider, "ernie-4.5-turbo-128k", "ERNIE 4.5 Turbo 128K", ContextWindowTokens: 131_072, MaxOutputTokens: 16_384,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts),
+            new LlmModelInfo(provider, "ernie-4.5-300k-a47b", "ERNIE 4.5 300K", ContextWindowTokens: 307_200, MaxOutputTokens: 16_384,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts),
+            new LlmModelInfo(provider, "ernie-x1-turbo-32k", "ERNIE X1 Turbo 32K", ContextWindowTokens: 32_768, MaxOutputTokens: 16_384,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts),
+            new LlmModelInfo(provider, "ernie-speed-128k", "ERNIE Speed 128K", ContextWindowTokens: 131_072, MaxOutputTokens: 8_192),
+        ],
+        "hunyuan" =>
+        [
+            new LlmModelInfo(provider, "hunyuan-turbos-1t", "Hunyuan Turbos 1T", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
+            new LlmModelInfo(provider, "hunyuan-turbo-latest", "Hunyuan Turbo", ContextWindowTokens: 32_768, MaxOutputTokens: 8_192),
+            new LlmModelInfo(provider, "hunyuan-standard", "Hunyuan Standard", ContextWindowTokens: 32_768, MaxOutputTokens: 8_192),
+        ],
+        "stepfun" =>
+        [
+            new LlmModelInfo(provider, "step-2-16k", "Step 2 16K", ContextWindowTokens: 16_384, MaxOutputTokens: 8_192,
+                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts),
+            new LlmModelInfo(provider, "step-2-mini", "Step 2 Mini", ContextWindowTokens: 8_192, MaxOutputTokens: 4_096),
+            new LlmModelInfo(provider, "step-1v-8k", "Step 1V 8K", ContextWindowTokens: 8_192, MaxOutputTokens: 4_096),
+        ],
+        "yi" =>
+        [
+            new LlmModelInfo(provider, "yi-lightning", "Yi Lightning", ContextWindowTokens: 32_768, MaxOutputTokens: 16_384),
+            new LlmModelInfo(provider, "yi-large", "Yi Large", ContextWindowTokens: 32_768, MaxOutputTokens: 16_384),
+        ],
+        "ollama" =>
+        [
+            new LlmModelInfo(provider, "llama3.2", "llama3.2 (if pulled)"),
+            new LlmModelInfo(provider, "qwen2.5-coder:7b", "qwen2.5-coder:7b (if pulled)"),
+            new LlmModelInfo(provider, "deepseek-r1:8b", "deepseek-r1:8b (if pulled)"),
+        ],
+        "lmstudio" => [], // model ids are loadout-specific; use Discover models
+        "omlx" => [],    // serves whatever is in the HF/LM Studio model cache; use Discover models
+        "unsloth" =>
+        [
+            new LlmModelInfo(provider, "gpt-oss-120b", "GPT-OSS 120B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "gpt-oss-20b", "GPT-OSS 20B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
+            new LlmModelInfo(provider, "qwen3-coder-480b-a35b-instruct", "Qwen3 Coder 480B", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768),
+        ],
         "openai-compatible" =>
         [
             new LlmModelInfo(provider, "default", $"{baseUrl} (default model)", ReasoningEfforts: OpenAiEfforts),
@@ -414,48 +716,7 @@ public static class ProviderCatalog
         _ => [],
     };
 
-    public static string DefaultModel(string provider) => provider switch
-    {
-        "replay" => "demo",
-        "deepseek" => "deepseek-v4-flash",
-        "openai" => "gpt-4.1-mini",
-        "anthropic" => "claude-sonnet-4-5",
-        _ => "default",
-    };
-
-    public static readonly IReadOnlyList<string> Providers = ["replay", "deepseek", "openai", "anthropic", "openai-compatible"];
-}
-
-/// <summary>The keyless demo script: a small deterministic agent run over the real pipeline.</summary>
-public static class DemoScript
-{
-    private static readonly ConcurrentDictionary<string, int> Step = new(StringComparer.Ordinal);
-
-    public static IReadOnlyList<StreamChunk> Respond(GenerateOptions options)
-    {
-        if (options.Purpose == "session-title")
-        {
-            return ReplayScript.Text("Blazorly demo run");
-        }
-        var hasToolResults = options.Messages.SelectMany(m => m.Content).OfType<Llm.ToolResultBlock>().Any();
-        var step = Step.AddOrUpdate(options.SessionId ?? "anon", 1, (_, current) => current + 1);
-        if (!hasToolResults && step == 1)
-        {
-            return ReplayScript.ToolCalls(
-                ("bash", new { command = "sleep 2.5 && echo \"hello from blazorly harness\" && date", description = "Greet and print the date" }),
-                ("todo_write", new { todos = new object[]
-                    {
-                        new { content = "Run the demo greeting", status = "completed" },
-                        new { content = "Summarize the result", status = "in_progress" },
-                    } }));
-        }
-        var bashOutput = options.Messages
-            .SelectMany(m => m.Content).OfType<Llm.ToolResultBlock>()
-            .SelectMany(b => b.Content).OfType<TextBlock>()
-            .Select(t => t.Text).FirstOrDefault() ?? "";
-        var summary = bashOutput.Contains("hello from blazorly harness")
-            ? "The demo run completed: I executed `bash` (you can expand the card above to inspect it) and updated the todo list. This provider is `replay` — configure a real provider in Settings to use a live model."
-            : "The demo run completed.";
-        return ReplayScript.Text(summary);
-    }
+    public static string DefaultModel(string provider) =>
+        For(provider, "").Count > 0 ? For(provider, "")[0].Id
+        : "default";
 }

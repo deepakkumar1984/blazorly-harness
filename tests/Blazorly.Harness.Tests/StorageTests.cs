@@ -28,7 +28,7 @@ public class SqlitePersistenceTests : IDisposable
             Cwd = "/tmp/proj",
             ParentSession = "sq-parent",
             DelegationDepth = 1,
-            AgentPreset = "demo",
+            AgentPreset = "test",
         });
         session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
         session.Append(SessionEventTypes.UserMessage, Message.CreateUserText("first"),

@@ -42,6 +42,10 @@ public sealed class TokenMeterService
     /// <summary>Default window when neither the host nor the newest request/context declares one.</summary>
     public long ContextWindowTokens { get; set; } = 65_536;
 
+    /// <summary>Host-supplied lookup for the current route's real context window (model catalog).
+    /// When set, it wins over historical request declarations, which may be stale.</summary>
+    public Func<string?, string?, long?>? ModelWindowResolver { get; set; }
+
     public static TokenMeterService Mount(HarnessContext ctx)
     {
         var service = new TokenMeterService(ctx.Get<SystemPromptService>(SystemPromptService.ServiceKey));
@@ -50,6 +54,12 @@ public sealed class TokenMeterService
     }
 
     public ContextMeterReading Measure(Agent.Agent agent)
+        => Measure(agent, null, null);
+
+    /// <summary>Same measurement with usage totals supplied by an incremental folder (skips
+    /// the full event scan). <paramref name="declaredWindow"/> is the latest request/context
+    /// declaration; the resolver (current route's catalog window) still wins when set.</summary>
+    public ContextMeterReading Measure(Agent.Agent agent, (long Input, long Output, long CacheRead, long CacheWrite)? totals, long? declaredWindow)
     {
         var assembly = _systemPrompt.Assemble(agent, agent.Session.Header.Cwd);
         var systemText = SystemPromptService.RenderPrompt(assembly);
@@ -59,28 +69,44 @@ public sealed class TokenMeterService
         var messageTokens = TokenEstimator.EstimateMessages(messages);
 
         long? providerPressure = null;
-        long? declaredWindow = null;
+        long? historicalWindow = null;
         long input = 0, output = 0, cacheRead = 0, cacheWrite = 0;
-        foreach (var e in agent.Session.Events)
+        if (totals is { } t)
         {
-            if (e.Type == SessionEventTypes.AssistantMessage)
+            input = t.Input;
+            output = t.Output;
+            cacheRead = t.CacheRead;
+            cacheWrite = t.CacheWrite;
+            providerPressure = t.Input + t.CacheRead + t.CacheWrite;
+        }
+        else
+        {
+            foreach (var e in agent.Session.Events)
             {
-                var usage = SessionEventRead.AssistantMessageOf(e).Usage;
-                if (usage is not null)
+                if (e.Type == SessionEventTypes.AssistantMessage)
                 {
-                    input += usage.InputTokens;
-                    output += usage.OutputTokens;
-                    cacheRead += usage.CacheReadTokens ?? 0;
-                    cacheWrite += usage.CacheWriteTokens ?? 0;
-                    providerPressure = usage.InputTokens + (usage.CacheReadTokens ?? 0) + (usage.CacheWriteTokens ?? 0);
+                    var usage = SessionEventRead.AssistantMessageOf(e).Usage;
+                    if (usage is not null)
+                    {
+                        input += usage.InputTokens;
+                        output += usage.OutputTokens;
+                        cacheRead += usage.CacheReadTokens ?? 0;
+                        cacheWrite += usage.CacheWriteTokens ?? 0;
+                        providerPressure = usage.InputTokens + (usage.CacheReadTokens ?? 0) + (usage.CacheWriteTokens ?? 0);
+                    }
+                }
+                else if (e.Type == SessionEventTypes.RequestContext)
+                {
+                    var payload = SessionJson.FromElement<SessionPayloads.RequestContextPayload>(e.Data);
+                    historicalWindow = payload.ContextWindow; // latest declaration wins
                 }
             }
-            else if (e.Type == SessionEventTypes.RequestContext)
-            {
-                var payload = SessionJson.FromElement<SessionPayloads.RequestContextPayload>(e.Data);
-                declaredWindow ??= payload.ContextWindow;
-            }
         }
+
+        var routeWindow = ModelWindowResolver?.Invoke(agent.Options.Provider, agent.Options.Model);
+        var window = routeWindow is { } rw and > 0 ? rw
+            : (declaredWindow ?? historicalWindow) is { } dw and > 0 ? dw
+            : ContextWindowTokens;
 
         return new ContextMeterReading(
             PressureTokens: systemTokens + toolsTokens + messageTokens,
@@ -88,7 +114,7 @@ public sealed class TokenMeterService
             ToolsTokens: toolsTokens,
             MessageTokens: messageTokens,
             ProviderPressureTokens: providerPressure,
-            ContextWindowTokens: declaredWindow ?? ContextWindowTokens,
+            ContextWindowTokens: window,
             TotalInputTokens: input,
             TotalOutputTokens: output,
             TotalCacheReadTokens: cacheRead,

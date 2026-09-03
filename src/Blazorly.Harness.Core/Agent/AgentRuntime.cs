@@ -83,7 +83,7 @@ public sealed class AgentLoopService
     }
 
     /// <summary>Default model selection when AgentOptions omit provider/model.</summary>
-    public LlmCallConfig DefaultSelection { get; set; } = new() { Provider = "replay", Model = "demo" };
+    public LlmCallConfig DefaultSelection { get; set; } = new() { Provider = "deepseek", Model = "deepseek-v4-flash" };
 
     public int MaxParallelToolCalls { get; set; } = 10;
 

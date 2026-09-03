@@ -2,14 +2,14 @@
 
 An agentic coding harness: a complete agent runtime (agent loop, tool pipeline, sandboxing, session persistence) with four front-ends — a Blazor web UI, a headless CLI, and JSON-RPC / ACP stdio servers for editors and automation.
 
-Works out of the box with zero configuration: a keyless `replay` provider runs a scripted demo agent over the real pipeline, so you can boot the web app and start a session immediately. Point it at a real LLM provider when you're ready.
+Configure an LLM provider to start working sessions: set `provider`, `model`, and an API key in `settings.json` (or pick them in the web Settings page, which discovers models live from each provider's API). The provider dropdown groups routes into US companies, Chinese companies, local & self-hosted, and other — plus any custom OpenAI-compatible routes you add.
 
 ## Solution layout
 
 | Project | What it is |
 |---|---|
 | `src/Blazorly.Harness.Kernel` | Event bus, harness context, plugin host, scoped layers |
-| `src/Blazorly.Harness.Llm` | LLM routing: provider adapters (Anthropic, OpenAI-compatible, replay), streaming, token estimation, model discovery |
+| `src/Blazorly.Harness.Llm` | LLM routing: provider adapters (Anthropic, OpenAI-compatible), streaming, token estimation, model discovery |
 | `src/Blazorly.Harness.Core` | Agent loop, sessions, compaction, subagents, jobs, credentials, MCP client, schedules, telemetry, and other core services |
 | `src/Blazorly.Harness.Tools` | Built-in tools (bash, fs, web, LSP, terminals, code mode, …) and the Landlock sandbox |
 | `src/Blazorly.Harness.Persistence` | Session persistence: JSONL and SQLite backends |
@@ -124,7 +124,7 @@ Set `provider`, `model`, and optionally `apiKey`/`baseUrl` in `settings.json` (o
 }
 ```
 
-Built-in providers: `replay` (keyless scripted demo — the default), `deepseek`, `openai`, `anthropic`, `openai-compatible` (any OpenAI-compatible endpoint). Extra custom OpenAI-compatible routes can be added under `customProviders` in settings or from the Settings page (with live model discovery via `POST /api/llm.discover`).
+Built-in providers: `deepseek` (the default), `openai`, `anthropic`, `openai-compatible` (any OpenAI-compatible endpoint), plus local routes (`ollama`, …) and other hosted providers. Extra custom OpenAI-compatible routes can be added under `customProviders` in settings or from the Settings page (with live model discovery via `POST /api/llm.discover`).
 
 API keys resolve per request, in this order — and one provider's key is never sent to another provider's route:
 
@@ -141,7 +141,7 @@ dotnet run --project src/Blazorly.Harness.Web
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `provider` / `model` | `replay` / `demo` | Default LLM route and model |
+| `provider` / `model` | `deepseek` / `deepseek-v4-flash` | Default LLM route and model |
 | `baseUrl` | `https://api.deepseek.com` | Endpoint for the main route |
 | `apiKey` | — | Stored key (env vars take precedence only if this is empty) |
 | `sandboxMode` | `workspace-write` | Tool sandbox: `read-only` or `workspace-write` |

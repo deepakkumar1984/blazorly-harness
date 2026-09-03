@@ -23,9 +23,9 @@ public class SubagentResumeTests
             options =>
             {
                 var text = options.Messages.SelectMany(m => m.Content).OfType<TextBlock>().LastOrDefault()?.Text ?? "";
-                if (text.Contains("FOLLOWUP")) return ReplayScript.Text("FOLLOWUP-OK");
-                if (text.Contains("Task:")) return ReplayScript.Text("TASK-DONE");
-                return ReplayScript.Text("PARENT-OK");
+                if (text.Contains("FOLLOWUP")) return Scripted.Text("FOLLOWUP-OK");
+                if (text.Contains("Task:")) return Scripted.Text("TASK-DONE");
+                return Scripted.Text("PARENT-OK");
             },
             persistence: persistenceRoot is null ? null : new JsonlSessionPersistence(persistenceRoot));
 
@@ -44,7 +44,7 @@ public class SubagentResumeTests
         Assert.Null(descriptor.SurfaceOp);
         var payload = SessionEventRead.SubagentDescriptorOf(descriptor);
         Assert.Equal(SessionPayloads.SubagentModeContinuable, payload.Mode);
-        Assert.Equal("replay", payload.Provider);
+        Assert.Equal("scripted", payload.Provider);
         // log-only: exactly the task message and the reply project into model history
         Assert.Equal(2, child.DeriveMessages().Count);
     }

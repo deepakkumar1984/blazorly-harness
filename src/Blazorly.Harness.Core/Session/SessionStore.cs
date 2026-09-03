@@ -17,6 +17,9 @@ public interface ISessionPersistence
 
     Task<IReadOnlyList<SessionHeader>> ListAsync(CancellationToken ct = default);
 
+    /// <summary>Permanently removes the persisted log (and any live copy).</summary>
+    Task DeleteAsync(string sessionId, CancellationToken ct = default);
+
     /// <summary>Durability barrier for one session.</summary>
     Task FlushAsync(string sessionId, CancellationToken ct = default);
 
@@ -109,6 +112,13 @@ public sealed class SessionStore
     public IReadOnlyList<Session> LiveSessions()
     {
         lock (_gate) return [.. _live.Values];
+    }
+
+    /// <summary>Removes the live copy and the persisted log. Stopped/idle sessions only; the caller guards.</summary>
+    public async Task Delete(string sessionId)
+    {
+        lock (_gate) _live.Remove(sessionId);
+        if (Persistence is not null) await Persistence.DeleteAsync(sessionId).ConfigureAwait(false);
     }
 
     /// <summary>Forks a session at a boundary (inclusive seq); the child log is the prefix [0..boundary].</summary>

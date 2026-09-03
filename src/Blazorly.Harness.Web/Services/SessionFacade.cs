@@ -139,6 +139,16 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
 
     public void Archive(string sessionId, bool archived) => harness.Workspaces.Archive(sessionId, archived);
 
+    /// <summary>Permanently deletes a chat. Returns an error message, or null on success.</summary>
+    public async Task<string?> DeleteSession(string sessionId)
+    {
+        var agent = harness.Agents.Get(sessionId);
+        if (agent is { Status: Core.Agent.AgentStatus.Running })
+            return "this chat is still running — stop it before deleting";
+        await harness.Sessions.Delete(sessionId);
+        return null;
+    }
+
     // ---- the human command plane ----
 
     public sealed record CommandOutcome(string Name, bool Ok, string Text);
@@ -184,7 +194,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     {
         var agent = harness.Agents.Get(sessionId);
         if (agent is null) return ("no active agent for this session", false);
-        var model = ProviderCatalog.For(agent.Options.Provider ?? "", harness.Settings.BaseUrl)
+        var model = harness.RuntimeModels(agent.Options.Provider ?? "")
             .FirstOrDefault(m => m.Id == agent.Options.Model);
         if (model is null || model.ReasoningEfforts is not { Length: > 0 } efforts)
             return ($"model '{agent.Options.Model}' offers no reasoning effort levels", false);

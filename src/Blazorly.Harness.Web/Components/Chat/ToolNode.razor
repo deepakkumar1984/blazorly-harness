@@ -5,7 +5,15 @@
         <span class="tool-dot @Node.ToolStatus"></span>
         <span class="tool-name">@Node.ToolName</span>
         <span class="tool-title">@(Node.CallView?.Title ?? CompactArgs)</span>
-        <span class="tool-state">@(Node.ToolStatus == "running" ? "…" : Node.ToolStatus == "error" ? "✕" : "✓")</span>
+        @if (ResultPreview.Length > 0)
+        {
+            <span class="tool-preview">@ResultPreview</span>
+        }
+        @if (Node.DurationMs is { } ms)
+        {
+            <span class="tool-state">@(ms >= 1000 ? $"{ms / 1000.0:F1}s" : $"{ms}ms")</span>
+        }
+        <span class="tool-state">@(Node.ToolStatus == "running" ? "…" : Node.ToolStatus == "error" ? "✕ failed" : "✓")</span>
     </button>
     @if (_expanded)
     {
@@ -97,6 +105,18 @@
     private bool _rawArgs;
     private System.Text.Json.JsonElement? _resultJson;
     private bool _resultParsed;
+
+    /// <summary>First meaningful line of the result, for the collapsed row.</summary>
+    private string ResultPreview
+    {
+        get
+        {
+            if (Node.ResultText is not { Length: > 0 }) return "";
+            var line = Node.ResultText.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? "";
+            if (line.Length == 0) return "";
+            return line.Length > 90 ? line[..90] + "…" : line;
+        }
+    }
 
     private System.Text.Json.JsonElement? ArgsJsonElement
     {

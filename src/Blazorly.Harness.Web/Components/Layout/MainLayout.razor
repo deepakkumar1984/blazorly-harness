@@ -52,6 +52,10 @@
                     <div class="workspace-group @(group.Workspace.Id == UnfiledId ? "unfiled" : "")">
                         <div class="workspace-head" title="@group.Workspace.Root">
                             <span class="workspace-name">@group.Workspace.Name</span>
+                            @if (group.RootEmpty)
+                            {
+                                <span class="workspace-empty-hint" title="This folder has no files yet — the agent will have nothing to read until you add some">empty</span>
+                            }
                             @if (group.Workspace.Id != UnfiledId)
                             {
                                 <span class="workspace-actions">
@@ -67,12 +71,10 @@
                                     <span class="session-dot @(item.Running ? "running" : "")"></span>
                                     <span class="session-title">@item.Title</span>
                                 </a>
-                                @if (item.Id == ActiveSessionId)
-                                {
-                                    <button class="icon archive" title="@(item.Archived ? "Unarchive" : "Archive")" @onclick="() => ToggleArchive(item.Id, item.Archived)">
-                                        @(item.Archived ? "⇪" : "⌄")
-                                    </button>
-                                }
+                                <button class="icon archive" title="@(item.Archived ? "Unarchive" : "Archive")" @onclick="() => ToggleArchive(item.Id, item.Archived)">
+                                    @(item.Archived ? "⇪" : "⌄")
+                                </button>
+                                <button class="icon danger delete" title="Delete chat" @onclick="() => AskDelete(item)">🗑</button>
                             </div>
                         }
                         @if (group.Sessions.Count == 0)
@@ -98,6 +100,7 @@
                                         <span class="session-title">@item.Title</span>
                                     </a>
                                     <button class="icon archive" title="Unarchive" @onclick="() => ToggleArchive(item.Id, true)">⇪</button>
+                                    <button class="icon danger delete" title="Delete chat" @onclick="() => AskDelete(item)">🗑</button>
                                 </div>
                             }
                         }
@@ -144,6 +147,10 @@
                 {
                     <button type="button" class="browse-entry" @onclick="() => Browse(entry.FullPath)">
                         <span class="browse-entry-icon">📁</span><span class="browse-entry-name">@entry.Name</span>
+                        @if (entry.Empty)
+                        {
+                            <span class="browse-entry-hint" title="This folder has no files yet">empty</span>
+                        }
                     </button>
                 }
             </div>
@@ -163,9 +170,37 @@
             {
                 <div class="form-error">@_workspaceError</div>
             }
+            <label class="browse-check">
+                <input type="checkbox" @bind="_startChatAfterAdd" />
+                <span>Open a new chat in it right away</span>
+            </label>
             <div class="modal-actions">
                 <button class="ghost" @onclick="CloseAddWorkspace">Cancel</button>
                 <button class="primary" @onclick="AddWorkspace">Add workspace</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_confirmDelete is { } doomed)
+{
+    <div class="modal-overlay" @onclick='() => _confirmDelete = null'>
+        <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Delete chat" @onclick:stopPropagation="true">
+            <div class="modal-head">
+                <h3>Delete chat?</h3>
+                <button class="icon modal-close" title="Cancel" @onclick='() => _confirmDelete = null'>✕</button>
+            </div>
+            <p class="confirm-text">
+                “@doomed.Title” and its entire transcript will be permanently deleted.
+                This cannot be undone.
+            </p>
+            @if (_deleteError is { Length: > 0 })
+            {
+                <div class="form-error">@_deleteError</div>
+            }
+            <div class="modal-actions">
+                <button class="ghost" @onclick='() => _confirmDelete = null'>Cancel</button>
+                <button class="danger" @onclick="DeleteConfirmed" disabled="@doomed.Running">Delete chat</button>
             </div>
         </div>
     </div>
@@ -192,6 +227,32 @@
     private System.Timers.Timer? _refresh;
     private string _theme = "dark";
     private bool _drawerOpen;
+    private bool _startChatAfterAdd = true;
+    private SessionItem? _confirmDelete;
+    private string? _deleteError;
+
+    private void AskDelete(SessionItem item)
+    {
+        _deleteError = null;
+        _confirmDelete = item;
+    }
+
+    private async Task DeleteConfirmed()
+    {
+        if (_confirmDelete is not { } doomed) return;
+        var error = await Facade.DeleteSession(doomed.Id);
+        if (error is not null)
+        {
+            _deleteError = error;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        var wasActive = doomed.Id == ActiveSessionId;
+        _confirmDelete = null;
+        _deleteError = null;
+        Refresh();
+        if (wasActive) Navigation.NavigateTo("/", forceLoad: false);
+    }
 
     [Inject] private Microsoft.AspNetCore.Components.NavigationManager Navigation { get; set; } = null!;
 
@@ -258,7 +319,7 @@
         catch (JSDisconnectedException) { }
     }
 
-    public sealed record WorkspaceGroup(Workspace Workspace, List<SessionItem> Sessions);
+    public sealed record WorkspaceGroup(Workspace Workspace, List<SessionItem> Sessions, bool RootEmpty = false);
 
     /// <summary>Pseudo-group for sessions whose cwd matches no registered workspace.</summary>
     private const string UnfiledId = "unfiled";
@@ -276,7 +337,7 @@
     {
         var groups = Facade.Workspaces()
             .OrderBy(w => w.Order)
-            .Select(w => new WorkspaceGroup(w, []))
+            .Select(w => new WorkspaceGroup(w, [], DirectoryBrowser.IsEmptyFolder(w.Root)))
             .ToList();
         var unfiled = new List<SessionItem>();
         foreach (var item in _sessions.Where(entry => !entry.Archived))
@@ -383,6 +444,12 @@
             _browsePath = listing.Path;
             _browseParent = listing.Parent;
             _browseEntries = [.. listing.Entries];
+            // The folder you are looking at is the tentative selection; a stale pin must not win.
+            if (_workspaceRoot.Length > 0 && !string.Equals(_workspaceRoot, listing.Path, StringComparison.Ordinal))
+            {
+                _workspaceRoot = "";
+                _workspaceName = "";
+            }
         }
         catch (Exception ex)
         {
@@ -403,6 +470,7 @@
             _workspaceRoot = "";
             _workspaceName = "";
             Refresh();
+            if (_startChatAfterAdd) NewSessionIn(workspace.Id);
         }
         catch (Exception ex)
         {

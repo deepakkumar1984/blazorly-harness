@@ -21,6 +21,8 @@
 clr-debug-pid-*.log
 msbuild.binlog
 *.binlog
+/docs
+/scripts
 
 # Publish output
 [Pp]ublish/

@@ -26,8 +26,8 @@ static int Help()
                            session workspace on first use. Streams the assistant text.
                            Flags:
                              --workspace <path>   workspace root (default: current dir)
-                             --provider <name>    replay | deepseek | openai | anthropic |
-                                                  openai-compatible | a configured custom route
+                             --provider <name>    deepseek | openai | anthropic | ... any built-in
+                                                  provider, or a configured custom route
                              --model <id>         model id for the run
                              --resume <id>        continue a persisted session
                              --timeout <seconds>  cancel the run after N seconds (exit 3)
@@ -46,14 +46,13 @@ static int Help()
                            session/set_config_option; session/update notifications,
                            session/request_permission in ask mode). Flags:
                              --workspace <path>     default session workspace
-                             --chunk-delay <ms>     replay-provider pacing (tests/demos)
                              --permission <mode>    auto (default) or ask: route every
                                                     tool call to the client as a
                                                     session/request_permission prompt
 
         Provider keys resolve from ~/.blazorly/settings.json, then the provider's environment
-        variable (DEEPSEEK_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY). The `replay`
-        provider runs a scripted demo agent with no key.
+        variable (DEEPSEEK_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY and per-provider
+        equivalents like XAI_API_KEY / GEMINI_API_KEY).
 
         Exit codes (run): 0 completed · 2 error · 3 aborted · 1 harness failure.
         """);
@@ -88,9 +87,6 @@ static (HeadlessOptions Options, List<string> Positional) Parse(string[] args)
                 break;
             case "--timeout" when i + 1 < args.Length && int.TryParse(args[++i], out var seconds):
                 options = options with { TimeoutSeconds = seconds };
-                break;
-            case "--chunk-delay" when i + 1 < args.Length && int.TryParse(args[++i], out var delayMs):
-                options = options with { ChunkDelayMs = delayMs };
                 break;
             case "--permission" when i + 1 < args.Length:
                 options = options with { Permission = args[++i] };
@@ -149,7 +145,6 @@ static async Task<int> ServeAcpAsync(string[] args)
         new AcpServerOptions
         {
             WorkspacePath = options.WorkspacePath,
-            ChunkDelayMs = options.ChunkDelayMs,
             Permission = options.Permission ?? "auto",
         },
         Console.In,

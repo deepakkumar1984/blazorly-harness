@@ -24,12 +24,12 @@ public class SubagentToolPipelineTests
         {
             var sessionId = options.SessionId ?? "";
             var hasToolResults = options.Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>().Any();
-            if (sessionId.Contains("sub")) return ReplayScript.Text(childReply);
+            if (sessionId.Contains("sub")) return Scripted.Text(childReply);
             if (!hasToolResults)
             {
-                return ReplayScript.ToolCalls(("subagent_start", new { prompt = "FRESH-CHILD-TASK", description = "delegate the work" }));
+                return Scripted.ToolCalls(("subagent_start", new { prompt = "FRESH-CHILD-TASK", description = "delegate the work" }));
             }
-            return ReplayScript.Text("parent done");
+            return Scripted.Text("parent done");
         });
 
     private static async Task<Agent> RunToIdleAsync(TestHarness harness, string prompt)
@@ -76,12 +76,12 @@ public class SubagentToolPipelineTests
         {
             var sessionId = options.SessionId ?? "";
             var hasToolResults = options.Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>().Any();
-            if (sessionId.Contains("sub")) return ReplayScript.Text("background child finished its work");
+            if (sessionId.Contains("sub")) return Scripted.Text("background child finished its work");
             if (!hasToolResults)
             {
-                return ReplayScript.ToolCalls(("subagent_start", new { prompt = "BACKGROUND-TASK", mode = "background" }));
+                return Scripted.ToolCalls(("subagent_start", new { prompt = "BACKGROUND-TASK", mode = "background" }));
             }
-            return ReplayScript.Text("parent done");
+            return Scripted.Text("parent done");
         });
         await using var _ = harness;
         var subagents = SubagentService.Mount(harness.Ctx);
@@ -108,16 +108,16 @@ public class SubagentToolPipelineTests
         {
             var sessionId = options.SessionId ?? "";
             var hasToolResults = options.Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>().Any();
-            if (sessionId.Contains("sub")) return ReplayScript.Text("42");
+            if (sessionId.Contains("sub")) return Scripted.Text("42");
             if (!hasToolResults)
             {
-                return ReplayScript.ToolCalls(("subagent_start", new
+                return Scripted.ToolCalls(("subagent_start", new
                 {
                     prompt = "STRUCTURED-TASK",
                     output_schema = JsonSerializer.Deserialize<JsonElement>("{\"type\":\"integer\"}"),
                 }));
             }
-            return ReplayScript.Text("parent done");
+            return Scripted.Text("parent done");
         });
         await using (var harness = validHarness)
         {
@@ -132,16 +132,16 @@ public class SubagentToolPipelineTests
         {
             var sessionId = options.SessionId ?? "";
             var hasToolResults = options.Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>().Any();
-            if (sessionId.Contains("sub")) return ReplayScript.Text("I refuse to emit JSON");
+            if (sessionId.Contains("sub")) return Scripted.Text("I refuse to emit JSON");
             if (!hasToolResults)
             {
-                return ReplayScript.ToolCalls(("subagent_start", new
+                return Scripted.ToolCalls(("subagent_start", new
                 {
                     prompt = "STRUCTURED-TASK",
                     output_schema = JsonSerializer.Deserialize<JsonElement>("{\"type\":\"integer\"}"),
                 }));
             }
-            return ReplayScript.Text("parent done");
+            return Scripted.Text("parent done");
         });
         await using (var harness = invalidHarness)
         {
@@ -160,15 +160,15 @@ public class SubagentToolPipelineTests
         var harness = TestHarness.Create(options =>
         {
             var allText = string.Join("\n", options.Messages.SelectMany(m => m.Content).OfType<TextBlock>().Select(b => b.Text));
-            if (allText.Contains("Task: FORK-CHILD-TASK")) return ReplayScript.Text("fork child done");
+            if (allText.Contains("Task: FORK-CHILD-TASK")) return Scripted.Text("fork child done");
             if (options.Messages.SelectMany(m => m.Content).OfType<ToolCallBlock>().Any(c => c.Name == "subagent_start"))
-                return ReplayScript.Text("parent done");
+                return Scripted.Text("parent done");
             if (allText.Contains("FORK-NOW"))
             {
-                return ReplayScript.ToolCalls(("subagent_start", new { prompt = "FORK-CHILD-TASK", fork = true }));
+                return Scripted.ToolCalls(("subagent_start", new { prompt = "FORK-CHILD-TASK", fork = true }));
             }
-            if (options.Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>().Any()) return ReplayScript.Text("context seeded");
-            return ReplayScript.ToolCalls(("bash", new { command = "echo seed", description = "seed context" }));
+            if (options.Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>().Any()) return Scripted.Text("context seeded");
+            return Scripted.ToolCalls(("bash", new { command = "echo seed", description = "seed context" }));
         });
         await using var _ = harness;
         var subagents = SubagentService.Mount(harness.Ctx);
@@ -301,8 +301,8 @@ public class TelemetryTests
             {
                 var hasToolResults = options.Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>().Any();
                 return hasToolResults
-                    ? ReplayScript.Text("done")
-                    : ReplayScript.ToolCalls(("bash", new { command = "echo telemetry" }));
+                    ? Scripted.Text("done")
+                    : Scripted.ToolCalls(("bash", new { command = "echo telemetry" }));
             });
             await using (var _ = harness)
             {
@@ -336,7 +336,7 @@ public class TelemetryTests
         var storePath = Path.Combine(Path.GetTempPath(), "blazorly-tel-off-" + Guid.NewGuid().ToString("N")[..8] + ".json");
         try
         {
-            var harness = TestHarness.Create(_ => ReplayScript.Text("done"));
+            var harness = TestHarness.Create(_ => Scripted.Text("done"));
             await using var _ = harness;
             var telemetry = UsageTelemetryService.Mount(harness.Ctx, storePath, enabled: false);
             await RunTurnAsync(harness, "no collection");
@@ -355,6 +355,7 @@ public class TelemetryTests
 /// ACP extras over the real stdio process: the request_permission round-trip in ask mode
 /// (allow and reject), per-session model config, and client-provided MCP mounts.
 /// </summary>
+[Collection("BlazorlyHome")]
 public class AcpTier7WireTests : BootstrapperTestBase
 {
     private string Workspace() => Path.Combine(Path.GetTempPath(), "blazorly-acp7-ws-" + Guid.NewGuid().ToString("N")[..8]);
@@ -422,9 +423,9 @@ public class AcpTier7WireTests : BootstrapperTestBase
         {
             sessionId,
             configId = "model",
-            value = new[] { "replay", "demo" },
+            value = new[] { "scripted", "test" },
         });
-        Assert.Equal(JsonSerializer.Serialize(new[] { "replay", "demo" }),
+        Assert.Equal(JsonSerializer.Serialize(new[] { "scripted", "test" }),
             updated.GetProperty("configOptions")[0].GetProperty("currentValue").GetString());
 
         var promptTask = client.RequestAsync("session/prompt", new { sessionId, prompt = TextPrompt("start the demo") });
@@ -433,7 +434,7 @@ public class AcpTier7WireTests : BootstrapperTestBase
         {
             sessionId,
             configId = "model",
-            value = new[] { "replay", "demo" },
+            value = new[] { "scripted", "test" },
         }));
         Assert.Equal(-32602, busy.Code);
         await client.NotifyAsync("session/cancel", new { sessionId });

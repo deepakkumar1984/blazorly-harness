@@ -20,6 +20,7 @@ public sealed class AcpServerFaultException(long code, string message) : Excepti
 public sealed class AcpTestClient : IAsyncDisposable
 {
     private readonly Process _process;
+    private readonly FakeOpenAiServer _llm;
     private readonly CancellationTokenSource _closed = new();
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly List<(string SessionId, JsonElement Update)> _updates = new();
@@ -35,18 +36,20 @@ public sealed class AcpTestClient : IAsyncDisposable
         get { lock (_serverRequests) return [.. _serverRequests]; }
     }
 
-    private AcpTestClient(Process process)
+    private AcpTestClient(Process process, FakeOpenAiServer llm)
     {
         _process = process;
+        _llm = llm;
         _ = Task.Run(ReadLoop);
     }
 
     public static AcpTestClient Spawn(string home, string workspace, int chunkDelayMs = 0, string? permission = null)
     {
         Directory.CreateDirectory(workspace);
+        var llm = new FakeOpenAiServer(chunkDelayMs); // pace the stream when asked
+        ScriptedSettings.WriteFakeRoute(home, llm.BaseUrl);
         var serverDll = typeof(Blazorly.Harness.Cli.HeadlessRunner).Assembly.Location;
         var arguments = $"\"{serverDll}\" serve-acp --workspace \"{workspace}\"";
-        if (chunkDelayMs > 0) arguments += $" --chunk-delay {chunkDelayMs}";
         if (permission is not null) arguments += $" --permission {permission}";
         var start = new ProcessStartInfo("dotnet", arguments)
         {
@@ -58,7 +61,7 @@ public sealed class AcpTestClient : IAsyncDisposable
         };
         start.Environment["BLAZORLY_HOME"] = home;
         var process = Process.Start(start) ?? throw new InvalidOperationException("failed to start serve-acp");
-        return new AcpTestClient(process);
+        return new AcpTestClient(process, llm);
     }
 
     private async Task ReadLoop()
@@ -150,6 +153,7 @@ public sealed class AcpTestClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _llm.Dispose();
         _closed.Cancel();
         try
         {
@@ -169,6 +173,7 @@ public sealed class AcpTestClient : IAsyncDisposable
 /// Real-process ACP wire tests: handshake and gating, committed-event updates, error
 /// discipline, cancellation, the single prompt slot, and load replay from another process.
 /// </summary>
+[Collection("BlazorlyHome")]
 public class AcpServerTests : BootstrapperTestBase
 {
     private string Workspace() => Path.Combine(Path.GetTempPath(), "blazorly-acp-ws-" + Guid.NewGuid().ToString("N")[..8]);
@@ -206,7 +211,7 @@ public class AcpServerTests : BootstrapperTestBase
         await client.RequestAsync("initialize");
         var sessionId = (await client.RequestAsync("session/new", new { cwd = workspace })).GetProperty("sessionId").GetString()!;
 
-        var result = await client.RequestAsync("session/prompt", new { sessionId, prompt = TextPrompt("run the demo task") });
+        var result = await client.RequestAsync("session/prompt", new { sessionId, prompt = TextPrompt("run the scripted task") });
 
         Assert.Equal("end_turn", result.GetProperty("stopReason").GetString());
         var updates = client.Updates(sessionId);
@@ -234,7 +239,7 @@ public class AcpServerTests : BootstrapperTestBase
         Assert.Equal("in_progress", plan.GetProperty("entries")[1].GetProperty("status").GetString());
 
         var chunk = updates.Single(u => u.GetProperty("sessionUpdate").GetString() == "agent_message_chunk");
-        Assert.Contains("demo run completed", chunk.GetProperty("content").GetProperty("text").GetString());
+        Assert.Contains("scripted run completed", chunk.GetProperty("content").GetProperty("text").GetString());
         Assert.False(string.IsNullOrEmpty(chunk.GetProperty("messageId").GetString()));
 
         var usage = updates.Last(u => u.GetProperty("sessionUpdate").GetString() == "usage_update");
@@ -317,7 +322,7 @@ public class AcpServerTests : BootstrapperTestBase
         await using var first = AcpTestClient.Spawn(Home, workspace);
         await first.RequestAsync("initialize");
         var sessionId = (await first.RequestAsync("session/new", new { cwd = workspace })).GetProperty("sessionId").GetString()!;
-        Assert.Equal("end_turn", (await first.RequestAsync("session/prompt", new { sessionId, prompt = TextPrompt("run the demo task") }))
+        Assert.Equal("end_turn", (await first.RequestAsync("session/prompt", new { sessionId, prompt = TextPrompt("run the scripted task") }))
             .GetProperty("stopReason").GetString());
 
         var active = await Assert.ThrowsAsync<AcpServerFaultException>(() =>
