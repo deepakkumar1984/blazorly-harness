@@ -44,7 +44,11 @@ public static class PluginHost
         return ctx;
     }
 
-    public static async Task ApplyAllAsync(HarnessContext ctx, IEnumerable<IHarnessPlugin> plugins)
+    public static Task ApplyAllAsync(HarnessContext ctx, IEnumerable<IHarnessPlugin> plugins)
+        => ApplyAllAsync(ctx, plugins, appliedOrder: null);
+
+    public static async Task ApplyAllAsync(
+        HarnessContext ctx, IEnumerable<IHarnessPlugin> plugins, IList<string>? appliedOrder)
     {
         var pending = plugins.ToList();
         var applied = new HashSet<string>(StringComparer.Ordinal);
@@ -71,6 +75,7 @@ public static class PluginHost
                 }
                 if (!applied.Add(plugin.Name))
                     throw new HarnessException("DUPLICATE_PLUGIN", $"plugin '{plugin.Name}' applied twice");
+                appliedOrder?.Add(plugin.Name);
                 pending.Remove(plugin);
             }
         }

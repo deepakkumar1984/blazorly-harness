@@ -62,7 +62,7 @@ app.MapPost("/api/session.prompt", async (HttpContext http, SessionFacade facade
     var body = await http.Request.ReadFromJsonAsync<PromptRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.SessionId) || string.IsNullOrWhiteSpace(body.Content))
         return Results.BadRequest(new { error = "sessionId and content are required" });
-    facade.Prompt(body.SessionId, body.Content, string.IsNullOrWhiteSpace(body.Mode) ? "queue" : body.Mode);
+    await facade.PromptAsync(body.SessionId, body.Content, string.IsNullOrWhiteSpace(body.Mode) ? "queue" : body.Mode);
     await facade.FlushAsync(body.SessionId);
     return Results.Json(new { ok = true });
 });
@@ -218,6 +218,13 @@ app.MapPost("/api/session.command", async (HttpContext http, SessionFacade facad
 
 app.MapGet("/api/session.search", (string q, SessionFacade facade) =>
     Results.Json(new { hits = facade.Search(q).Select(h => new { h.SessionId, h.Title, h.Kind, h.Snippet }) }));
+
+app.MapGet("/api/session.files", (string sessionId, string? q, SessionFacade facade) =>
+{
+    if (string.IsNullOrWhiteSpace(sessionId)) return Results.BadRequest(new { error = "sessionId is required" });
+    var files = facade.FileCandidates(sessionId, q);
+    return Results.Json(new { files = files.Select(f => new { f.Path, isDir = f.IsDir, f.Size }) });
+});
 
 // ---- credentials + jobs surface ----
 

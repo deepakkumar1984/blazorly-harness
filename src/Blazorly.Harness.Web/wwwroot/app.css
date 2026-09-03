@@ -946,6 +946,16 @@ button.link:hover { text-decoration: underline; }
 .command-args { color: var(--text-faint); font-family: var(--mono); font-size: 11px; margin: 0 6px; }
 .command-desc { color: var(--text-dim); }
 
+/* @-file mention menu: same option chrome, but paths need ellipsis + scroll */
+.mention-menu { max-height: 240px; overflow-y: auto; }
+.mention-menu .command-option code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 480px;
+}
+.mention-menu .command-desc { margin-left: auto; flex: none; font-family: var(--mono); font-size: 11px; }
+
 .composer-input { position: relative; }
 .composer-cwd {
     position: absolute;

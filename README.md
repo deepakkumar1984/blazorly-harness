@@ -15,7 +15,7 @@ Configure an LLM provider to start working sessions: set `provider`, `model`, an
 | `src/Blazorly.Harness.Persistence` | Session persistence: JSONL and SQLite backends |
 | `src/Blazorly.Harness.Sdk` | Client SDK over the automation protocol |
 | `src/Blazorly.Harness.Web` | Blazor Server UI + REST/WebSocket API |
-| `src/Blazorly.Harness.Cli` | `blazorly` CLI launcher (run, sessions, serve-stdio, serve-acp) |
+| `src/Blazorly.Harness.Cli` | `blazorly` CLI launcher (run, sessions, eval, serve-stdio, serve-acp) |
 | `tests/Blazorly.Harness.Tests` | xUnit test suite |
 
 ## Prerequisites
@@ -41,6 +41,10 @@ With the default `http` launch profile this serves **http://localhost:5080** (th
 
 From the UI you can create/rename/fork/archive sessions, chat with the agent, watch tool calls stream in, manage workspaces, edit credentials, and configure providers on the **Settings** page — which is just a friendly editor for `settings.json` (see below).
 
+**@file references** — type `@` in the composer to autocomplete files under the session workspace (keyboard: arrows/Tab/Enter). Referenced files are attached to the outgoing message: text bodies travel as content blocks (256 KB cap per file, binary and oversized files degrade to notices), and images (`png`/`jpg`/`gif`/`webp`, ≤ 8 MB) go through the attachment store so vision models see them directly. Directories and misses produce an explicit note instead of silent failure.
+
+**Runtime context** — every turn's context snapshot carries the current wall-clock time (minute precision, the `time` plugin) and, when a tmux server is running, a listing of its sessions/panes/commands (the `tmux` plugin — fail-soft, cached 30 s). Both are mount plugins, disable via `disabledPlugins: ["time", "tmux"]`.
+
 ### REST / WebSocket API
 
 The same surface is available over HTTP for scripting:
@@ -53,6 +57,7 @@ The same surface is available over HTTP for scripting:
 | `GET /api/session.projection?sessionId=…&name=…` | Cached log folds (`stats`, `turns`) — same numbers as the web stats dock |
 | `GET /api/session.export?id=…` | Session ZIP (`session.jsonl` + `transcript.md`) |
 | `POST /api/session.rename` · `/api/session.archive` · `/api/session.command` | Session management and slash commands |
+| `GET /api/session.files?sessionId=…&q=…` | @-mention autocomplete candidates under the session cwd |
 | `GET /api/events?sessionId=…` (WebSocket) | Live session event stream |
 | `GET /api/workspace.list` · `POST /api/workspace.add` · `/api/workspace.remove` | Workspace registry |
 | `GET /api/llm.providers` · `POST /api/llm.discover` | Provider/model catalog and live model discovery |
@@ -72,7 +77,7 @@ dotnet run --project src/Blazorly.Harness.Cli -- run "summarize this repo's stru
 
 # Common flags
 --workspace <path>    # workspace root (default: current directory)
---provider <name>     # replay | deepseek | openai | anthropic | openai-compatible | a configured custom route
+--provider <name>     # deepseek | openai | anthropic | openai-compatible | a configured custom route
 --model <id>          # model id for the run
 --resume <sessionId>  # continue a persisted session
 --timeout <seconds>   # cancel the run after N seconds
@@ -86,10 +91,61 @@ dotnet run --project src/Blazorly.Harness.Cli -- run "summarize this repo's stru
 ... -- sessions                      # list persisted sessions (newest last)
 ... -- serve-stdio                   # JSON-RPC automation protocol on stdin/stdout
 ... -- serve-acp                     # Agent Client Protocol for editors
-                                     #   flags: --workspace, --chunk-delay <ms>, --permission auto|ask
+                                     #   flags: --workspace, --permission auto|ask
 ```
 
 Exit codes for `run`: `0` completed · `2` turn error/blocked · `3` aborted (e.g. timeout) · `1` harness failure.
+
+**Task benchmark** (each `eval/tasks/<id>/task.json` runs headless in an isolated workspace,
+then shell checks score it):
+
+```bash
+... -- eval --tasks eval/tasks --out eval/results-manual
+```
+
+Each task sets a prompt, optional workspace `setup` (files + shell commands), and `checks`
+(shell commands, exit 0 passes). Every task gets a fresh harness home seeded with your
+provider keys, so eval sessions never pollute `~/.blazorly`. Results land as per-task JSON
+plus `results.json`/`summary.md`; exit `0` means all tasks passed. **Never commit a results
+directory: the seeded home inside it contains copied provider keys** (matching `eval/results-*`
+entries in `.gitignore`).
+
+**Interruption tasks** — scored assertions about the interruption contract, not just task
+outcomes. `expectFinish` declares how the run may end (`completed`, `max-tokens`, `aborted`,
+`interrupted`, `error`, `blocked`; absent means completed) and `interrupt` injects one:
+
+```json
+{
+  "expectFinish": "aborted",
+  "interrupt": { "cancelAfterMs": 1200 }
+}
+```
+
+- `cancelAfterMs` — a user-style stop lands mid-turn; the turn must end `aborted` (user cause)
+  with every pending tool closed durably in the log.
+- `killAfterMs` — the headless process is SIGKILLed once its first tool call is durable
+  (plus this delay). With `resumePrompt`, a second process must reload the log (torn tail
+  discarded, interrupted turn repaired) and complete the session.
+
+Checks receive `BLAZORLY_SESSION_ID` and `BLAZORLY_SESSION_LOG` so they can assert on the
+durable log directly (see `eval/tasks/interrupt-*`). These tasks pin `provider: "scripted"`
+and run against a fake OpenAI-compatible server (`scripts/fake_openai.py` or the C#
+`FakeOpenAiServer` in tests); a `--timeout` CLI override replaces every task's timeout.
+
+**Benchmarks** — the interruption-first measurement suite (cancel-propagation latency,
+replay/projection cost vs. session size, FTS5 backfill throughput). Every benchmark is also
+a correctness assertion on the contract it measures:
+
+```bash
+dotnet test --filter Category=Benchmark
+```
+
+Results print to the console and land in `benchmarks/results-<timestamp>/`
+(`results.json` + `summary.md`, gitignored — numbers are per-machine). Cancel latency is
+measured per phase: mid-tool (process-tree kill dominates), mid-stream over the in-process
+adapter (the true `aborted` path with partial-message commit), and mid-SSE over a real
+HTTP adapter (surfaces as `error`/ABORTED — the documented asymmetry). Replay cost uses
+synthetic 1K–100K-event logs plus the largest real session under `~/.blazorly`.
 
 ## Configuration
 
@@ -156,6 +212,8 @@ dotnet run --project src/Blazorly.Harness.Web
 | `enableE2b`, `e2bApiKey`, `e2bTemplate`, `e2bBaseUrl` | off | Remote E2B sandbox execution (key resolves from settings, else the `E2B_API_KEY` env var) |
 | `webSearchBackend` | `duckduckgo` | `web_search` backend: `duckduckgo` (keyless), `tavily`, or `brave` (change applies after restart) |
 | `tavilyApiKey` / `braveApiKey` | — | Search API keys (or `TAVILY_API_KEY` / `BRAVE_API_KEY` env vars); without a key the backend falls back to DuckDuckGo |
+| `pluginDirs` | `<home>/plugins` | Third-party plugin directories (each `*.dll` with `IHarnessPlugin` impls loads at boot) |
+| `disabledPlugins` | `[]` | Plugin names to skip at boot (built-in, capability, or third-party) |
 
 Changes made in the Settings page persist to `settings.json` and re-apply live (provider routes are rebuilt without a restart).
 
@@ -174,6 +232,29 @@ Add stdio MCP servers to `~/.blazorly/mcp.json`; their tools appear as `mcp__<se
 ### Project instructions
 
 The agent picks up instruction files — `AGENTS.md`, `CLAUDE.md`, and their `.local.md` overlays — from the harness home, the workspace root, and any directory it touches with read/write/edit. Commit an `AGENTS.md` to a repo to steer behavior there.
+
+### Plugins
+
+Everything mounts as plugins: core services join the same topological boot as capability
+plugins (`PluginHost.ApplyAllAsync` orders by `Inject` keys, failing fast on deadlocks and
+duplicate names). Third-party plugins are plain C# classes deriving from `HarnessPlugin`
+(or `AsyncHarnessPlugin`) with public parameterless constructors — drop the compiled `*.dll`
+into `~/.blazorly/plugins/` (or set `pluginDirs`) and they join the boot, injecting any
+service key (`tools`, `sessions`, `systemPrompt`, …). Updating a plugin takes an app restart;
+a name colliding with a built-in fails the boot with `DUPLICATE_PLUGIN`.
+
+Machine-specific overrides without touching the managed `settings.json` go in
+`~/.blazorly/patches.json` (absent file = no-op; bad entries warn and are skipped):
+
+```json
+{
+  "set": { "contextWindowTokens": 100000, "enableTeams": true },
+  "disable": ["terminals"]
+}
+```
+
+`set` keys are top-level settings fields (case-insensitive); `disable` maps plugin names to
+their `Enable*` flags (`web` → `enableWeb`).
 
 ## License
 

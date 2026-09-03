@@ -13,16 +13,29 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
     /// <summary>A local stand-in for a provider's OpenAI-compatible /models endpoint.</summary>
     private sealed class FakeModelsServer : IDisposable
     {
-        private readonly HttpListener _listener = new();
-        public string BaseUrl { get; }
+        private HttpListener _listener = new();
+        public string BaseUrl { get; private set; } = "";
         public string? SeenAuthorization;
 
         public FakeModelsServer(params string[] modelIds)
         {
-            var port = Random.Shared.Next(20000, 60000);
-            _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-            BaseUrl = $"http://127.0.0.1:{port}/v1";
-            _listener.Start();
+            // Same port range as the other test fakes — retry on collision instead of failing.
+            for (var attempt = 0; ; attempt++)
+            {
+                var port = Random.Shared.Next(20000, 60000);
+                _listener = new HttpListener();
+                _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+                try
+                {
+                    _listener.Start();
+                    BaseUrl = $"http://127.0.0.1:{port}/v1";
+                    break;
+                }
+                catch (HttpListenerException) when (attempt < 20)
+                {
+                    _listener.Close();
+                }
+            }
             _ = Task.Run(async () =>
             {
                 try

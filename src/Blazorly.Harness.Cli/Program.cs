@@ -10,6 +10,7 @@ return args.Length == 0 ? Help() : args[0] switch
 {
     "run" => await RunAsync(args[1..]),
     "sessions" => await SessionsAsync(args[1..]),
+    "eval" => await EvalAsync(args[1..]),
     "serve-stdio" => await ServeStdioAsync(args[1..]),
     "serve-acp" => await ServeAcpAsync(args[1..]),
     "--help" or "-h" or "help" => Help(),
@@ -33,8 +34,18 @@ static int Help()
                              --timeout <seconds>  cancel the run after N seconds (exit 3)
                              --json               print one JSON envelope instead of the stream
                              --quiet              suppress streamed output
-          sessions         List persisted sessions (newest last). Flag:
-                             --workspace <path>   only sessions for this root
+           sessions         List persisted sessions (newest last). Flag:
+                              --workspace <path>   only sessions for this root
+           eval             Run a task benchmark: each <tasks>/<id>/task.json runs
+                            headless in an isolated workspace + fresh home, then
+                            shell checks score it. Writes results.json/summary.md.
+                            Flags:
+                              --tasks <dir>        task directory (default: eval/tasks)
+                              --out <dir>          output directory (default:
+                                                   eval/results-<timestamp>)
+                              --provider <name>    route override for all tasks
+                              --model <id>         model override for all tasks
+                              --timeout <seconds>  per-task timeout override
           serve-stdio      Serve the JSON-RPC automation protocol on stdin/stdout
                            (initialize, session/new, session/prompt, session/cancel,
                            shutdown; session.event + session.status notifications).
@@ -123,6 +134,57 @@ static async Task<int> SessionsAsync(string[] args)
 {
     var (options, positional) = Parse(args);
     return await HeadlessRunner.ListSessionsAsync(options);
+}
+
+static async Task<int> EvalAsync(string[] args)
+{
+    var tasksDir = "eval/tasks";
+    string? outDir = null;
+    string? provider = null;
+    string? model = null;
+    var timeout = 0;
+    for (var i = 0; i < args.Length; i++)
+    {
+        switch (args[i])
+        {
+            case "--tasks" when i + 1 < args.Length:
+                tasksDir = args[++i];
+                break;
+            case "--out" when i + 1 < args.Length:
+                outDir = args[++i];
+                break;
+            case "--provider" when i + 1 < args.Length:
+                provider = args[++i];
+                break;
+            case "--model" when i + 1 < args.Length:
+                model = args[++i];
+                break;
+            case "--timeout" when i + 1 < args.Length && int.TryParse(args[++i], out var seconds):
+                timeout = seconds;
+                break;
+            default:
+                Console.Error.WriteLine($"unknown eval flag '{args[i]}'");
+                return 1;
+        }
+    }
+    outDir ??= Path.Combine("eval", "results-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+    try
+    {
+        var summary = await EvalRunner.RunAsync(new EvalOptions
+        {
+            TasksDir = tasksDir,
+            OutDir = outDir,
+            Provider = provider,
+            Model = model,
+            DefaultTimeoutSeconds = timeout,
+        });
+        return summary.Failed == 0 ? 0 : 1;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"eval failed: {ex.Message}");
+        return 1;
+    }
 }
 
 static async Task<int> ServeStdioAsync(string[] args)

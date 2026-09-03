@@ -23,6 +23,10 @@ msbuild.binlog
 *.binlog
 /docs
 /scripts
+# Eval outputs contain a seeded home with copied provider keys — never commit them.
+/eval/results-*
+# Benchmark result directories (methodology lives in the test suite, numbers are per-machine).
+/benchmarks/results-*
 
 # Publish output
 [Pp]ublish/

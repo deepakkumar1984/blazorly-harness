@@ -310,7 +310,7 @@ public class CompactCommandTests : BootstrapperTestBase
             Assert.False(empty!.Ok);
             Assert.Contains("nothing to compact", empty.Text);
 
-            facade.Prompt(session.Id, "run the scripted task", "queue");
+            await facade.PromptAsync(session.Id, "run the scripted task", "queue");
             for (var i = 0; i < 100 && session.Events.All(e => e.Type != SessionEventTypes.TurnEnd); i++)
             {
                 await Task.Delay(100);
@@ -344,7 +344,7 @@ public class CompactCommandTests : BootstrapperTestBase
         {
             var facade = new SessionFacade(bootstrapper, new UiEventBroker());
             var session = facade.CreateSession();
-            facade.Prompt(session.Id, "run the scripted task", "queue");
+            await facade.PromptAsync(session.Id, "run the scripted task", "queue");
             for (var i = 0; i < 100 && session.Events.All(e => e.Type != SessionEventTypes.StepStart); i++)
             {
                 await Task.Delay(100);

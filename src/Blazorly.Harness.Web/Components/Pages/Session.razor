@@ -332,6 +332,7 @@
 
     <footer class="composer">
         <div class="command-menu" style="display:none" @ref="_slashMenu"></div>
+        <div class="command-menu mention-menu" style="display:none" @ref="_mentionMenu"></div>
         <div class="composer-input">
             <span class="composer-cwd" title="@(_session?.Header.Cwd)">@WorkspaceLabel</span>
             <textarea
@@ -372,6 +373,7 @@
     private bool _permissionMenu;
     private ElementReference _composerTa;
     private ElementReference _slashMenu;
+    private ElementReference _mentionMenu;
     private Microsoft.JSInterop.DotNetObjectReference<Session>? _slashRef;
     private bool _editingTitle;
     private string _titleDraft = "";
@@ -489,6 +491,7 @@
                 await Js.InvokeVoidAsync("blazorly.slash.attach", _composerTa, _slashMenu,
                     SlashCommands.Select(c => new { name = c.Name, args = c.Args, description = c.Description }),
                     _slashRef);
+                await Js.InvokeVoidAsync("blazorly.mention.attach", _composerTa, _mentionMenu, SessionId);
             }
             catch (JSDisconnectedException) { }
             catch (ObjectDisposedException) { }
@@ -536,7 +539,7 @@
         if (args.Key == "Enter" && !args.ShiftKey)
         {
             // Enter always queues (dsh default); steering is the explicit button while running.
-            // The JS slash menu gets first claim on Enter while it is open (pick vs send).
+            // The JS menus get first claim on Enter while open (pick vs send).
             try
             {
                 var menu = await Js.InvokeAsync<SlashMenuState>("blazorly.slash.state");
@@ -546,14 +549,20 @@
                     else await CompleteSlash(menu.Name + " ");
                     return;
                 }
+                var mention = await Js.InvokeAsync<MentionMenuState>("blazorly.mention.state");
+                if (mention.Open)
+                {
+                    await Js.InvokeVoidAsync("blazorly.mention.pick");
+                    return;
+                }
             }
             catch (JSDisconnectedException) { }
             catch (ObjectDisposedException) { }
-            SendQueue();
+            await SendQueue();
         }
     }
 
-    private void SendQueue()
+    private async Task SendQueue()
     {
         var text = _draft.Trim();
         if (text.Length == 0) return;
@@ -565,17 +574,17 @@
         else
         {
             _draft = "";
-            Facade.Prompt(SessionId, text, "queue");
+            await Facade.PromptAsync(SessionId, text, "queue");
         }
         _dirty = true;
     }
 
-    private void SendSteer()
+    private async Task SendSteer()
     {
         var text = _draft.Trim();
         if (text.Length == 0) return;
         _draft = "";
-        Facade.Prompt(SessionId, text, "steer");
+        await Facade.PromptAsync(SessionId, text, "steer");
         _dirty = true;
     }
 
@@ -608,6 +617,7 @@
     }
 
     private sealed record SlashMenuState(bool Open, string Name = "", bool ArgsEmpty = true);
+    private sealed record MentionMenuState(bool Open);
 
     private void CancelTurn()
     {

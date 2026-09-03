@@ -87,12 +87,39 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         _ = workspace;
     }
 
-    public void Prompt(string sessionId, string text, string mode)
+    public async Task PromptAsync(string sessionId, string text, string mode)
     {
         var agent = harness.Agents.Get(sessionId) ?? throw new InvalidOperationException("unknown session");
-        var message = Message.CreateUserText(text);
+        var message = await BuildUserMessageAsync(sessionId, agent, text);
         if (mode == "steer") agent.Steer(message);
         else agent.Followup(message);
+    }
+
+    /// <summary>Builds the user message, expanding "@path" references into content blocks
+    /// (file bodies, images via the attachment store, or notices). Expansion failures fall
+    /// back to the plain text — a bad reference must never block sending.</summary>
+    private async Task<Llm.Message> BuildUserMessageAsync(string sessionId, Agent agent, string text)
+    {
+        try
+        {
+            var cwd = agent.Session.Header.Cwd ?? Directory.GetCurrentDirectory();
+            var expanded = await Core.Context.FileReferences.ExpandAsync(text, cwd, sessionId, harness.Attachments);
+            return expanded.Attached.Count == 0
+                ? Llm.Message.CreateUserText(text)
+                : Llm.Message.CreateUser(expanded.Blocks);
+        }
+        catch
+        {
+            return Llm.Message.CreateUserText(text);
+        }
+    }
+
+    /// <summary>@-mention autocomplete candidates under the session cwd (bounded, best-first).</summary>
+    public IReadOnlyList<Core.Context.FileCandidate> FileCandidates(string sessionId, string? query)
+    {
+        var session = harness.Sessions.Get(sessionId);
+        if (session is null) return [];
+        return Core.Context.FileReferences.ListCandidates(session.Header.Cwd ?? "", query ?? "");
     }
 
     public void Cancel(string sessionId)

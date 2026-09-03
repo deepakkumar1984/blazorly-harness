@@ -19,6 +19,10 @@ public sealed class JsonlSessionPersistence : ISessionPersistence
         Converters = { new SurfaceOpJsonConverter() },
     };
 
+    /// <summary>BOM-less UTF-8: a BOM would glue itself to the first JSON line and trip
+    /// line-oriented external readers (the log is consumed by shell tooling, not just us).</summary>
+    private static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
+
     private readonly string _root;
     private readonly SemaphoreSlim _io = new(1, 1);
 
@@ -46,7 +50,7 @@ public sealed class JsonlSessionPersistence : ISessionPersistence
             if (File.Exists(file)) throw new HarnessException("SESSION_ALREADY_EXISTS", $"session file already exists: {file}");
             Directory.CreateDirectory(dir);
             var headerRecord = JsonSerializer.Serialize(new StorageHeader(header), EventJson);
-            await File.WriteAllTextAsync(file, headerRecord + "\n", Encoding.UTF8, ct).ConfigureAwait(false);
+            await File.WriteAllTextAsync(file, headerRecord + "\n", Utf8NoBom, ct).ConfigureAwait(false);
         }, ct);
     }
 
@@ -61,7 +65,7 @@ public sealed class JsonlSessionPersistence : ISessionPersistence
             {
                 builder.AppendLine(JsonSerializer.Serialize(new StorageEvent(e), EventJson));
             }
-            await File.AppendAllTextAsync(path, builder.ToString(), Encoding.UTF8, ct).ConfigureAwait(false);
+            await File.AppendAllTextAsync(path, builder.ToString(), Utf8NoBom, ct).ConfigureAwait(false);
         }, ct);
     }
 

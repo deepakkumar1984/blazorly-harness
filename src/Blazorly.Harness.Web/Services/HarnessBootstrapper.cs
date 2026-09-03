@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Blazorly.Harness.Core;
 using Blazorly.Harness.Core.Agent;
 using Blazorly.Harness.Core.Sessions;
@@ -46,11 +48,20 @@ public sealed class HarnessSettings
     public bool EnableAskUser { get; set; } = true;
     public bool EnableSessionQuery { get; set; } = true;
     public bool EnableProjectInstructions { get; set; } = true;
+    public bool EnableTime { get; set; } = true;
+    public bool EnableTmux { get; set; } = true;
     public bool EnableAutoTitles { get; set; } = true;
     public bool EnableSpill { get; set; } = true;
     public int SpillThresholdChars { get; set; } = 20_000;
     public bool EnableSchedule { get; set; } = true;
     public bool EnableMcp { get; set; } = true;
+
+    /// <summary>Third-party plugin directories (each *.dll with IHarnessPlugin impls loads);
+    /// empty means &lt;home&gt;/plugins. Restart to pick up changes.</summary>
+    public List<string> PluginDirs { get; set; } = [];
+
+    /// <summary>Plugin names to skip at boot (built-in, capability, or third-party).</summary>
+    public List<string> DisabledPlugins { get; set; } = [];
 
     /// <summary>web_search backend: duckduckgo (keyless default), tavily, or brave.</summary>
     public string WebSearchBackend { get; set; } = "duckduckgo";
@@ -162,116 +173,185 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
+        => StartAsyncCore();
+
+    /// <summary>
+    /// Composition root: settings (+patches) load first, then the whole harness — spine
+    /// services, capability plugins, third-party assemblies — boots through
+    /// <see cref="PluginHost.ApplyAllAsync"/> in Inject order. Everything after the boot
+    /// (provider routes, default selection, session reattach) is re-runnable state sync,
+    /// not composition: ApplyProviderSelection also runs on every Settings save.
+    /// </summary>
+    public async Task StartAsyncCore()
     {
         LoadSettings();
         Context = HarnessContext.CreateRoot();
         Context.Events.OnListenerError = (_, ex) => Console.Error.WriteLine($"[harness] listener error: {ex.Message}");
 
-        Llm = LlmRuntime.Mount(Context);
-        var prompt = SystemPromptService.Mount(Context);
-        Tools = ToolRuntime.Mount(Context, prompt);
-        Sandbox = new SandboxPolicy { DefaultMode = Settings.SandboxMode };
+        var plugins = BuildPluginList();
+        var applied = new List<string>();
+        await PluginHost.ApplyAllAsync(Context, plugins, applied).ConfigureAwait(false);
+        AppliedPlugins = applied;
+        // JobsRuntime is mounted by JobsPlugin itself (it self-mounts when absent).
+        Jobs = Context.Get<JobsRuntime>(JobsRuntime.ServiceKey);
+
+        ApplyProviderSelection();
+        ApplyDefaultSelection();
+        await ReattachPersistedSessionsAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Plugin names in the order they applied; useful diagnostics and tests.</summary>
+    public IReadOnlyList<string> AppliedPlugins { get; private set; } = [];
+
+    /// <summary>
+    /// The boot composition: spine mounts (as <see cref="MountPlugin"/> adapters so load order
+    /// derives from Inject keys), settings-gated capability plugins, then third-party assemblies.
+    /// </summary>
+    public List<IHarnessPlugin> BuildPluginList()
+    {
         Core.Sessions.ISessionPersistence persistence = Settings.Persistence == "sqlite"
             ? new SqliteSessionPersistence(Path.Combine(_home, "sessions.db"))
             : new JsonlSessionPersistence(Path.Combine(_home, "sessions"));
-        Sessions = SessionStore.Mount(Context, persistence);
-        Projections = SessionProjectionService.Mount(Context, Sessions);
-        SearchIndex = SessionSearchIndex.Mount(Context, Sessions, Path.Combine(_home, "sessions-index.db"));
-        Agents = AgentRuntime.Mount(Context);
-        var approval = ApprovalService.Mount(Context);
-        Approval = approval;
-        UserQuestions = UserQuestionsService.Mount(Context);
-        Loop = AgentLoopService.Mount(Context);
-        Loop.RegisterDefaultPrompt();
+        var tracker = new FsObservationTracker();
+        Sandbox = new SandboxPolicy { DefaultMode = Settings.SandboxMode };
+        SystemPromptService? prompt = null;
 
-        ApplyProviderSelection();
-
-        new BuiltInToolsPlugin(new FsObservationTracker(), Sandbox).Apply(Context);
-
-        // --- capability plugins (each optional via settings) ---
-        Jobs = JobsRuntime.Mount(Context);
-        Subagents = Core.Subagents.SubagentService.Mount(Context);
-        ToolPolicy = Core.Tools.ToolPolicyService.Mount(Context);
+        var plugins = new List<IHarnessPlugin>
+        {
+            MountPlugin.Sync("llm", [], ctx => Llm = LlmRuntime.Mount(ctx)),
+            MountPlugin.Sync("systemPrompt", [], ctx => prompt = SystemPromptService.Mount(ctx)),
+            MountPlugin.Sync("tools", [SystemPromptService.ServiceKey],
+                ctx => Tools = ToolRuntime.Mount(ctx, prompt!)),
+            MountPlugin.Sync("sessions", [], ctx => Sessions = SessionStore.Mount(ctx, persistence)),
+            MountPlugin.Sync("projections", [SessionStore.ServiceKey],
+                ctx => Projections = SessionProjectionService.Mount(ctx, Sessions)),
+            MountPlugin.Sync("search-index", [SessionStore.ServiceKey],
+                ctx => SearchIndex = SessionSearchIndex.Mount(ctx, Sessions, Path.Combine(_home, "sessions-index.db"))),
+            MountPlugin.Sync("agents", [], ctx => Agents = AgentRuntime.Mount(ctx)),
+            MountPlugin.Sync("approval", [], ctx => Approval = ApprovalService.Mount(ctx)),
+            MountPlugin.Sync("userQuestions", [], ctx => UserQuestions = UserQuestionsService.Mount(ctx)),
+            MountPlugin.Sync("agentLoop",
+                [AgentRuntime.ServiceKey, SessionStore.ServiceKey, LlmRuntime.ServiceKey, ToolRuntime.ServiceKey, SystemPromptService.ServiceKey],
+                ctx =>
+            {
+                Loop = AgentLoopService.Mount(ctx);
+                Loop.RegisterDefaultPrompt();
+            }),
+            new BuiltInToolsPlugin(tracker, Sandbox),
+            MountPlugin.Sync("subagents", [], ctx => Subagents = Core.Subagents.SubagentService.Mount(ctx)),
+            MountPlugin.Sync("toolPolicy", [], ctx => ToolPolicy = Core.Tools.ToolPolicyService.Mount(ctx)),
+        };
         if (Settings.TelemetryEnabled)
         {
-            Telemetry = Core.Telemetry.UsageTelemetryService.Mount(Context, Path.Combine(_home, "telemetry.json"), enabled: true);
+            plugins.Add(MountPlugin.Sync("telemetry", [], ctx =>
+                Telemetry = Core.Telemetry.UsageTelemetryService.Mount(ctx, Path.Combine(_home, "telemetry.json"), enabled: true)));
         }
-        Compaction = Core.Compaction.CompactionService.Mount(Context, new Core.Compaction.CompactionOptions
-        {
-            ContextWindowTokens = Settings.ContextWindowTokens,
-            Threshold = Settings.CompactionThreshold,
-            PrunerChars = Settings.CompactionPrunerChars,
-        });
         // Order matters: compaction owns context-overflow recovery; the retry policy handles
         // everything else before the driver's built-in default.
-        Retry = Core.Retry.RetryService.Mount(Context, new Core.Retry.RetryOptions { Default = Settings.Retry });
-        Credentials = Core.Credentials.CredentialsService.Mount(Context, Path.Combine(_home, "credentials.json"));
-        Attachments = Core.Attachments.AttachmentService.Mount(Context, Path.Combine(_home, "attachments"));
+        plugins.Add(MountPlugin.Sync("compaction", [], ctx =>
+            Compaction = Core.Compaction.CompactionService.Mount(ctx, new Core.Compaction.CompactionOptions
+            {
+                ContextWindowTokens = Settings.ContextWindowTokens,
+                Threshold = Settings.CompactionThreshold,
+                PrunerChars = Settings.CompactionPrunerChars,
+            })));
+        plugins.Add(MountPlugin.Sync("llmRetry", [], ctx =>
+            Retry = Core.Retry.RetryService.Mount(ctx, new Core.Retry.RetryOptions { Default = Settings.Retry })));
+        plugins.Add(MountPlugin.Sync("credentials", [], ctx =>
+            Credentials = Core.Credentials.CredentialsService.Mount(ctx, Path.Combine(_home, "credentials.json"))));
+        plugins.Add(MountPlugin.Sync("attachments", [], ctx =>
+            Attachments = Core.Attachments.AttachmentService.Mount(ctx, Path.Combine(_home, "attachments"))));
         if (Settings.EnableProjectInstructions)
         {
-            Instructions = Core.Instructions.ProjectInstructionsService.Mount(Context, _home);
+            plugins.Add(MountPlugin.Sync("projectInstructions", [], ctx =>
+                Instructions = Core.Instructions.ProjectInstructionsService.Mount(ctx, _home)));
         }
-        Meter = Core.TokenMeter.TokenMeterService.Mount(Context);
-        Meter.ContextWindowTokens = Settings.ContextWindowTokens;
-        // The current route's catalog entry is the authority on the context window;
-        // historical request/context declarations can be stale after a catalog change.
-        // A 0 window means "unknown" (discovered/local models) — fall through to declarations.
-        Meter.ModelWindowResolver = (provider, model) => RuntimeModels(provider ?? "")
-            .FirstOrDefault(m => m.Id == model)?.ContextWindowTokens is { } window && window > 0
-                ? window
-                : null;
+        if (Settings.EnableTime) plugins.Add(new Core.Context.TimeContextPlugin());
+        if (Settings.EnableTmux) plugins.Add(new Tools.TmuxContextPlugin());
+        plugins.Add(MountPlugin.Sync("tokenMeter", [SystemPromptService.ServiceKey], ctx =>
+        {
+            Meter = Core.TokenMeter.TokenMeterService.Mount(ctx);
+            Meter.ContextWindowTokens = Settings.ContextWindowTokens;
+            // The current route's catalog entry is the authority on the context window;
+            // historical request/context declarations can be stale after a catalog change.
+            // A 0 window means "unknown" (discovered/local models) — fall through to declarations.
+            Meter.ModelWindowResolver = (provider, model) => RuntimeModels(provider ?? "")
+                .FirstOrDefault(m => m.Id == model)?.ContextWindowTokens is { } window && window > 0
+                    ? window
+                    : null;
+        }));
         if (Settings.EnableSpill)
         {
-            Spills = Core.Spill.SpillService.Mount(Context, Path.Combine(_home, "spills"),
-                new Core.Spill.SpillOptions { ThresholdChars = Settings.SpillThresholdChars });
+            plugins.Add(MountPlugin.Sync("spill", [ToolRuntime.ServiceKey], ctx =>
+                Spills = Core.Spill.SpillService.Mount(ctx, Path.Combine(_home, "spills"),
+                    new Core.Spill.SpillOptions { ThresholdChars = Settings.SpillThresholdChars })));
         }
-        RepeatGuard = Core.Guards.RepeatCallGuard.Mount(Context);
+        plugins.Add(MountPlugin.Sync("repeatGuard", [], ctx =>
+            RepeatGuard = Core.Guards.RepeatCallGuard.Mount(ctx)));
         if (Settings.EnableSchedule)
         {
-            Schedules = Core.Schedule.ScheduleService.Mount(Context);
+            plugins.Add(MountPlugin.Sync("schedule", [ToolRuntime.ServiceKey], ctx =>
+                Schedules = Core.Schedule.ScheduleService.Mount(ctx)));
         }
         if (Settings.EnableMcp)
         {
-            Mcp = Core.Mcp.McpClientService.Mount(Context,
-                new Core.Mcp.McpOptions { ConfigPath = Path.Combine(_home, "mcp.json") });
+            plugins.Add(MountPlugin.Sync("mcp", [ToolRuntime.ServiceKey], ctx =>
+                Mcp = Core.Mcp.McpClientService.Mount(ctx,
+                    new Core.Mcp.McpOptions { ConfigPath = Path.Combine(_home, "mcp.json") })));
         }
 
-        new JobsPlugin().Apply(Context);
-        if (Settings.EnableAskUser) new AskUserPlugin().Apply(Context);
-        new SubagentToolsPlugin().Apply(Context);
-        if (Settings.EnableWeb) new WebPlugin(BuildWebProvider(Settings), ownsProvider: true).Apply(Context);
-        if (Settings.EnableSkills) new SkillPlugin().Apply(Context);
-        if (Settings.EnableSessionQuery) new SessionQueryPlugin().Apply(Context);
-        if (Settings.EnableGoals) new GoalPlugin().Apply(Context);
-        if (Settings.EnablePlanMode) new PlanModePlugin().Apply(Context);
-        if (Settings.EnableCodeMode) new CodeModePlugin().Apply(Context);
-        if (Settings.EnableTerminals) new TerminalPlugin().Apply(Context);
-        if (Settings.EnableLsp) new LspPlugin().Apply(Context);
-        if (Settings.EnableWorkflows) new WorkflowPlugin().Apply(Context);
-        if (Settings.EnableTeams) new TeamPlugin().Apply(Context);
+        plugins.Add(new JobsPlugin());
+        if (Settings.EnableAskUser) plugins.Add(new AskUserPlugin());
+        plugins.Add(new SubagentToolsPlugin());
+        if (Settings.EnableWeb) plugins.Add(new WebPlugin(BuildWebProvider(Settings), ownsProvider: true));
+        if (Settings.EnableSkills) plugins.Add(new SkillPlugin());
+        if (Settings.EnableSessionQuery) plugins.Add(new SessionQueryPlugin());
+        if (Settings.EnableGoals) plugins.Add(new GoalPlugin());
+        if (Settings.EnablePlanMode) plugins.Add(new PlanModePlugin());
+        if (Settings.EnableCodeMode) plugins.Add(new CodeModePlugin());
+        if (Settings.EnableTerminals) plugins.Add(new TerminalPlugin());
+        if (Settings.EnableLsp) plugins.Add(new LspPlugin());
+        if (Settings.EnableWorkflows) plugins.Add(new WorkflowPlugin());
+        if (Settings.EnableTeams) plugins.Add(new TeamPlugin());
         if (Settings.EnableE2b && Settings.ResolveE2bApiKey() is { Length: > 0 } e2bKey)
         {
-            RemoteSandbox = new RemoteSandboxTool(new Core.RemoteSandbox.E2bSandboxClient(
-                new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
-                new Core.RemoteSandbox.E2bOptions
-                {
-                    ApiKey = e2bKey,
-                    Template = Settings.E2bTemplate,
-                    BaseUrl = Settings.E2bBaseUrl,
-                }));
-            Context.Get<ToolRuntime>(ToolRuntime.ServiceKey).Register(RemoteSandbox);
+            plugins.Add(MountPlugin.Sync("e2b", [ToolRuntime.ServiceKey], ctx =>
+            {
+                RemoteSandbox = new RemoteSandboxTool(new Core.RemoteSandbox.E2bSandboxClient(
+                    new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
+                    new Core.RemoteSandbox.E2bOptions
+                    {
+                        ApiKey = e2bKey,
+                        Template = Settings.E2bTemplate,
+                        BaseUrl = Settings.E2bBaseUrl,
+                    }));
+                ctx.Get<ToolRuntime>(ToolRuntime.ServiceKey).Register(RemoteSandbox);
+            }));
         }
         if (Settings.EnableHooks && File.Exists(Path.Combine(_home, "hooks.json")))
         {
-            new HooksPlugin(Path.Combine(_home, "hooks.json")).Apply(Context);
+            plugins.Add(new HooksPlugin(Path.Combine(_home, "hooks.json")));
         }
         if (Settings.EnableAutoTitles)
         {
-            Titles = Core.Sessions.SessionTitleService.Mount(Context);
+            plugins.Add(MountPlugin.Sync("sessionTitle", [LlmRuntime.ServiceKey, AgentRuntime.ServiceKey], ctx =>
+                Titles = Core.Sessions.SessionTitleService.Mount(ctx)));
         }
 
-        ApplyDefaultSelection();
-        return ReattachPersistedSessionsAsync();
+        foreach (var thirdParty in LoadThirdPartyPlugins())
+            plugins.Add(thirdParty);
+
+        if (Settings.DisabledPlugins.Count > 0)
+        {
+            var disabled = new HashSet<string>(Settings.DisabledPlugins, StringComparer.OrdinalIgnoreCase);
+            plugins.RemoveAll(p =>
+            {
+                if (!disabled.Contains(p.Name)) return false;
+                Console.Error.WriteLine($"[plugins] disabled '{p.Name}' via settings");
+                return true;
+            });
+        }
+        return plugins;
     }
 
     /// <summary>Reopens the most recent persisted sessions so the sidebar, search, and the
@@ -351,8 +431,119 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         return catalog;
     }
 
-    /// <summary>Loads the provider's model list from GET /models, persists it, and rebuilds the route.
-    /// Typed values (pre-Save UI state) win over stored settings. Returns an error message instead of throwing.</summary>
+    /// <summary>Loads third-party plugins (minus disabled ones) for the boot list.</summary>
+    public List<IHarnessPlugin> LoadThirdPartyPlugins()
+    {
+        var dirs = Settings.PluginDirs.Count > 0 ? Settings.PluginDirs : [Path.Combine(_home, "plugins")];
+        var disabled = new HashSet<string>(Settings.DisabledPlugins, StringComparer.OrdinalIgnoreCase);
+        var loaded = new List<IHarnessPlugin>();
+        foreach (var dir in dirs)
+        {
+            var full = dir.StartsWith("~/")
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), dir[2..])
+                : Path.GetFullPath(dir, _home);
+            foreach (var found in PluginLoader.LoadFromDirectory(full, Console.Error))
+            {
+                if (disabled.Contains(found.Plugin.Name))
+                {
+                    Console.Error.WriteLine($"[plugins] disabled third-party '{found.Plugin.Name}' via settings");
+                    continue;
+                }
+                Console.Error.WriteLine($"[plugins] loaded '{found.Plugin.Name}' from {found.AssemblyPath}");
+                loaded.Add(found.Plugin);
+            }
+        }
+        return loaded;
+    }
+
+    /// <summary>
+    /// Applies &lt;home&gt;/patches.json over loaded settings (absent file = no-op):
+    /// <c>{"set": {"camelCaseKey": value}, "disable": ["plugin-name"]}</c>.
+    /// Unknown keys, bad values, and unmappable names warn on stderr and are skipped —
+    /// a typo'd patch must never fail a boot.
+    /// </summary>
+    public static void ApplyPatches(HarnessSettings settings, string home)
+    {
+        var path = Path.Combine(home, "patches.json");
+        if (!File.Exists(path)) return;
+        JsonObject patch;
+        try
+        {
+            patch = JsonNode.Parse(File.ReadAllText(path)) as JsonObject
+                ?? throw new InvalidOperationException("patches.json must be a JSON object");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[patches] ignoring {path}: {ex.Message}");
+            return;
+        }
+        if (patch["set"] is JsonObject set)
+        {
+            foreach (var (key, value) in set)
+                ApplyPatchKey(settings, key, value);
+        }
+        if (patch["disable"] is JsonArray disable)
+        {
+            foreach (var entry in disable)
+            {
+                if (entry?.GetValue<string>() is { } name) DisablePlugin(settings, name);
+                else Console.Error.WriteLine($"[patches] ignoring non-string disable entry in {path}");
+            }
+        }
+    }
+
+    private static void ApplyPatchKey(HarnessSettings settings, string key, JsonNode? value)
+    {
+        try
+        {
+            var node = JsonSerializer.SerializeToNode(settings, PatchJson)!.AsObject();
+            var match = node.AsObject().FirstOrDefault(kv =>
+                string.Equals(kv.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (match.Key is null)
+            {
+                Console.Error.WriteLine($"[patches] unknown settings key '{key}'; skipped");
+                return;
+            }
+            node[match.Key] = value?.DeepClone();
+            SettingsFromNode(node, settings);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[patches] cannot set '{key}': {ex.Message}; skipped");
+        }
+    }
+
+    private static readonly JsonSerializerOptions PatchJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    private static void SettingsFromNode(JsonObject node, HarnessSettings settings)
+    {
+        var patched = JsonSerializer.Deserialize<HarnessSettings>(node.ToJsonString(), PatchJson)
+            ?? throw new InvalidOperationException("patch produced empty settings");
+        foreach (var property in typeof(HarnessSettings).GetProperties())
+        {
+            if (property.CanWrite) property.SetValue(settings, property.GetValue(patched));
+        }
+    }
+
+    /// <summary>Maps a plugin name to its Enable flag (web → EnableWeb); unknown names warn.</summary>
+    internal static void DisablePlugin(HarnessSettings settings, string name)
+    {
+        var flag = "Enable" + string.Concat(name.Split(['-', '_'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
+        var property = typeof(HarnessSettings).GetProperties()
+            .FirstOrDefault(p => p.PropertyType == typeof(bool) && p.CanWrite
+                && p.Name.StartsWith("Enable", StringComparison.Ordinal)
+                && string.Equals(p.Name, flag, StringComparison.OrdinalIgnoreCase));
+        if (property is null)
+        {
+            Console.Error.WriteLine($"[patches] cannot disable '{name}': no matching Enable flag; skipped");
+            return;
+        }
+        property.SetValue(settings, false);
+    }
     public async Task<(IReadOnlyList<string> Models, string? Error)> DiscoverModelsAsync(
         string provider, string? typedBaseUrl = null, string? typedApiKey = null)
     {
@@ -483,6 +674,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         {
             Settings = System.Text.Json.JsonSerializer.Deserialize<HarnessSettings>(File.ReadAllText(path),
                 new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }) ?? new HarnessSettings();
+            ApplyPatches(Settings, _home);
         }
         catch
         {

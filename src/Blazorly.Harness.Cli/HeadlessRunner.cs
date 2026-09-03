@@ -16,6 +16,10 @@ public sealed record HeadlessOptions
     public string? Model { get; init; }
     public string? ResumeSessionId { get; init; }
     public int? TimeoutSeconds { get; init; }
+    /// <summary>User-style stop of the running turn after this many milliseconds. Same
+    /// mechanism as the timeout (agent.Cancel with the user cause) but labeled separately
+    /// so eval tasks can distinguish "user pressed stop" from "watchdog fired".</summary>
+    public int? CancelAfterMs { get; init; }
     public bool Json { get; init; }
     public bool Quiet { get; init; }
     /// <summary>ACP permission mode: auto (default) or ask (route tool calls to the client).</summary>
@@ -81,10 +85,17 @@ public static class HeadlessRunner
             using var timeoutCts = options.TimeoutSeconds is { } seconds
                 ? new CancellationTokenSource(TimeSpan.FromSeconds(seconds))
                 : null;
-            if (timeoutCts is not null)
+            using var cancelCts = options.CancelAfterMs is { } cancelMs && cancelMs > 0
+                ? new CancellationTokenSource(TimeSpan.FromMilliseconds(cancelMs))
+                : null;
+            if (timeoutCts is not null || cancelCts is not null)
             {
-                var timeoutTask = Task.Delay(Timeout.InfiniteTimeSpan, timeoutCts.Token);
-                var winner = await Task.WhenAny(turnEnded.Task, timeoutTask).ConfigureAwait(false);
+                var racers = new List<Task> { turnEnded.Task };
+                if (timeoutCts is not null)
+                    racers.Add(Task.Delay(Timeout.InfiniteTimeSpan, timeoutCts.Token));
+                if (cancelCts is not null)
+                    racers.Add(Task.Delay(Timeout.InfiniteTimeSpan, cancelCts.Token));
+                var winner = await Task.WhenAny(racers).ConfigureAwait(false);
                 if (winner != turnEnded.Task)
                 {
                     agent.Cancel(AgentCancelCause.User());

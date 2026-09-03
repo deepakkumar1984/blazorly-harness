@@ -122,12 +122,18 @@ public class TerminalTests
         Assert.False(hello.IsError);
         Assert.Contains("hello", hello.V().GetProperty("output").GetString());
 
-        // state persists: cd then pwd in the same shell
+        // state persists: cd then pwd in the same shell. The cd's prompt-settle can lag under
+        // host load, so poll pwd until the shell reports the moved cwd (bounded).
         await harness.Tools.Execute(TestInput.For(agent, "terminal_send",
             new { session_id = sessionId, text = "cd /tmp" }));
-        var pwd = await harness.Tools.Execute(TestInput.For(agent, "terminal_send",
-            new { session_id = sessionId, text = "pwd" }));
-        var pwdOutput = pwd.V().GetProperty("output").GetString()!;
+        string pwdOutput = "";
+        for (var attempt = 0; attempt < 25 && !pwdOutput.Contains("/tmp"); attempt++)
+        {
+            var pwd = await harness.Tools.Execute(TestInput.For(agent, "terminal_send",
+                new { session_id = sessionId, text = "pwd" }));
+            pwdOutput = pwd.V().GetProperty("output").GetString()!;
+            if (!pwdOutput.Contains("/tmp")) await Task.Delay(200);
+        }
         Assert.Contains("/tmp", pwdOutput);
         Assert.DoesNotContain(start, pwdOutput);
 
