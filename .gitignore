@@ -27,6 +27,8 @@ msbuild.binlog
 /eval/results-*
 # Benchmark result directories (methodology lives in the test suite, numbers are per-machine).
 /benchmarks/results-*
+# UX study outputs (per-run artifacts: screenshots, results.json)
+/study/results-*
 
 # Publish output
 [Pp]ublish/

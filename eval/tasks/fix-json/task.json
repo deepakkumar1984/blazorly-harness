@@ -1,0 +1,20 @@
+{
+  "description": "Repair invalid JSON in place so it parses and keeps its fields",
+  "prompt": "The file broken.json is invalid JSON (a trailing comma). Fix it in place so it parses; do not rename keys or change values.",
+  "timeoutSeconds": 180,
+  "setup": {
+    "files": { "broken.json": "{\n  \"name\": \"blazorly\",\n  \"version\": 2,\n  \"tags\": [\"agent\", \"harness\",],\n}\n" }
+  },
+  "checks": [
+    {
+      "name": "parses as json",
+      "run": "python3 -c \"import json; json.load(open('broken.json'))\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "fields preserved",
+      "run": "python3 -c \"import json; d = json.load(open('broken.json')); assert d['name'] == 'blazorly' and d['version'] == 2 and d['tags'] == ['agent', 'harness'], d\"",
+      "timeoutSeconds": 30
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Create notes.txt with the greeting on its only line",
+  "prompt": "Create a file named notes.txt whose single line of content is: hello from blazorly",
+  "timeoutSeconds": 180,
+  "checks": [
+    { "name": "file exists", "run": "test -f notes.txt", "timeoutSeconds": 30 },
+    { "name": "content matches", "run": "grep -qx 'hello from blazorly' notes.txt", "timeoutSeconds": 30 }
+  ]
+}

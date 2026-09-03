@@ -147,6 +147,13 @@ adapter (the true `aborted` path with partial-message commit), and mid-SSE over 
 HTTP adapter (surfaces as `error`/ABORTED — the documented asymmetry). Replay cost uses
 synthetic 1K–100K-event logs plus the largest real session under `~/.blazorly`.
 
+**Paper draft + crash study** — `paper/paper.md` states the interruption contract and
+carries the measurements; `paper/ux-study-protocol.md` is the restart-crash participant
+protocol. The automated pilot behind §4.5 is
+`python3 scripts/study-restart-ux.py [--trials N] [--seed S]` (SIGKILLs the web app
+mid-turn, restarts, verifies explanation + resumability; writes `study/results-*`,
+gitignored).
+
 ## Configuration
 
 ### Harness home
