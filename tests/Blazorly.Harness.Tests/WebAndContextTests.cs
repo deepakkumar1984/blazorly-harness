@@ -10,6 +10,7 @@ using Blazorly.Harness.Kernel;
 using Blazorly.Harness.Llm;
 using Blazorly.Harness.Llm.Adapters;
 using Blazorly.Harness.Tools;
+using Blazorly.Harness.Web.Services;
 using Xunit;
 
 namespace Blazorly.Harness.Tests;
@@ -88,7 +89,30 @@ internal sealed class CannedWebServer : IDisposable
     private static void Respond(HttpListenerContext context)
     {
         var path = context.Request.Url!.AbsolutePath;
-        var (status, contentType, body) = path switch
+        var method = context.Request.HttpMethod;
+        if (method == "POST" && path == "/search")
+        {
+            using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
+            var body = reader.ReadToEnd();
+            if (body.Contains("boom401"))
+            {
+                Write(context, 401, "application/json", "{}"u8.ToArray());
+                return;
+            }
+            Write(context, 200, "application/json", Encoding.UTF8.GetBytes(TavilyJson));
+            return;
+        }
+        if (method == "GET" && path == "/res/v1/web/search")
+        {
+            if ((context.Request.Url.Query ?? "").Contains("boom401"))
+            {
+                Write(context, 401, "application/json", "{}"u8.ToArray());
+                return;
+            }
+            Write(context, 200, "application/json", Encoding.UTF8.GetBytes(BraveJson));
+            return;
+        }
+        var (status, contentType, payload) = path switch
         {
             "/page" => (200, "text/html; charset=utf-8", Encoding.UTF8.GetBytes(PageHtml)),
             "/text" => (200, "text/plain", Encoding.UTF8.GetBytes("plain text body")),
@@ -97,6 +121,11 @@ internal sealed class CannedWebServer : IDisposable
             "/search-empty" => (200, "text/html; charset=utf-8", Encoding.UTF8.GetBytes("<html><body><div class=\"links\">nothing here</div></body></html>")),
             _ => (404, "text/plain", Encoding.UTF8.GetBytes("not found")),
         };
+        Write(context, status, contentType, payload);
+    }
+
+    private static void Write(HttpListenerContext context, int status, string contentType, byte[] body)
+    {
         context.Response.StatusCode = status;
         context.Response.ContentType = contentType;
         context.Response.ContentLength64 = body.Length;
@@ -123,6 +152,12 @@ internal sealed class CannedWebServer : IDisposable
         </div>
         </body></html>
         """;
+
+    private const string TavilyJson =
+        """{"query":"harness","results":[{"title":"Tavily Doc","url":"https://tavily.example/doc","content":"Tavily snippet about harness.","score":0.9},{"title":"Skip Me","url":"","content":"no url"}]}""";
+
+    private const string BraveJson =
+        """{"web":{"results":[{"title":"Brave Doc","url":"https://brave.example/doc","description":"Brave snippet about harness."}]}}""";
 
     public void Dispose()
     {
@@ -221,6 +256,83 @@ public class WebToolsTests
         var result = await harness.Tools.Execute(WebAndContextKit.Input("web_search", new { query = "zzz nothing" }));
         Assert.True(result.IsError);
         Assert.Equal("WEB_SEARCH_EMPTY", result.Error!.Info!.Code);
+    }
+
+    [Fact]
+    public async Task Search_Tavily_ParsesApiResults()
+    {
+        using var server = new CannedWebServer();
+        await using var harness = TestHarness.Create();
+        new WebPlugin(new TavilySearchProvider("tv-test", new Uri(server.BaseUrl))).Apply(harness.Ctx);
+
+        var result = await harness.Tools.Execute(WebAndContextKit.Input("web_search", new { query = "harness" }));
+        Assert.False(result.IsError);
+        var results = WebAndContextKit.Json(result).GetProperty("results");
+        Assert.Equal(1, results.GetArrayLength()); // the url-less entry is skipped
+        Assert.Equal("Tavily Doc", results[0].GetProperty("title").GetString());
+        Assert.Equal("https://tavily.example/doc", results[0].GetProperty("url").GetString());
+        Assert.Contains("Tavily snippet", results[0].GetProperty("snippet").GetString());
+    }
+
+    [Fact]
+    public async Task Search_Tavily_AuthFailure_MapsCode()
+    {
+        using var server = new CannedWebServer();
+        await using var harness = TestHarness.Create();
+        new WebPlugin(new TavilySearchProvider("tv-bad", new Uri(server.BaseUrl))).Apply(harness.Ctx);
+
+        var result = await harness.Tools.Execute(WebAndContextKit.Input("web_search", new { query = "boom401" }));
+        Assert.True(result.IsError);
+        Assert.Equal("WEB_SEARCH_AUTH", result.Error!.Info!.Code);
+    }
+
+    [Fact]
+    public async Task Search_Brave_ParsesApiResults()
+    {
+        using var server = new CannedWebServer();
+        await using var harness = TestHarness.Create();
+        new WebPlugin(new BraveSearchProvider("br-test", new Uri(server.BaseUrl))).Apply(harness.Ctx);
+
+        var result = await harness.Tools.Execute(WebAndContextKit.Input("web_search", new { query = "harness" }));
+        Assert.False(result.IsError);
+        var results = WebAndContextKit.Json(result).GetProperty("results");
+        Assert.Equal(1, results.GetArrayLength());
+        Assert.Equal("Brave Doc", results[0].GetProperty("title").GetString());
+        Assert.Equal("https://brave.example/doc", results[0].GetProperty("url").GetString());
+        Assert.Contains("Brave snippet", results[0].GetProperty("snippet").GetString());
+    }
+
+    [Fact]
+    public async Task Search_Brave_AuthFailure_MapsCode()
+    {
+        using var server = new CannedWebServer();
+        await using var harness = TestHarness.Create();
+        new WebPlugin(new BraveSearchProvider("br-bad", new Uri(server.BaseUrl))).Apply(harness.Ctx);
+
+        var result = await harness.Tools.Execute(WebAndContextKit.Input("web_search", new { query = "boom401" }));
+        Assert.True(result.IsError);
+        Assert.Equal("WEB_SEARCH_AUTH", result.Error!.Info!.Code);
+    }
+
+    [Fact]
+    public void WebProviderSelection_PrefersKeysAndFallsBack()
+    {
+        Assert.IsType<TavilySearchProvider>(HarnessBootstrapper.BuildWebProvider(new HarnessSettings
+        {
+            WebSearchBackend = "tavily",
+            TavilyApiKey = "tv-x",
+        }));
+        Assert.IsType<BraveSearchProvider>(HarnessBootstrapper.BuildWebProvider(new HarnessSettings
+        {
+            WebSearchBackend = "brave",
+            BraveApiKey = "br-x",
+        }));
+        // Keyed backend without a key falls back to keyless DuckDuckGo.
+        Assert.IsType<HttpWebProvider>(HarnessBootstrapper.BuildWebProvider(new HarnessSettings
+        {
+            WebSearchBackend = "tavily",
+        }));
+        Assert.IsType<HttpWebProvider>(HarnessBootstrapper.BuildWebProvider(new HarnessSettings()));
     }
 }
 
@@ -508,6 +620,102 @@ public class SessionQueryTests
             WebAndContextKit.Input("session_event_read", new { session_id = "session-missing" }));
         Assert.True(result.IsError);
         Assert.Equal("SESSION_NOT_FOUND", result.Error!.Info!.Code);
+    }
+
+    [Fact]
+    public async Task EventSearch_FindsPhraseWithinOneSessionOnly()
+    {
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
+        var agent = await RunAgent(harness, "tell me about the garden");
+        var other = await RunAgent(harness, "unrelated small talk");
+        new SessionQueryPlugin().Apply(harness.Ctx);
+
+        var result = await harness.Tools.Execute(
+            WebAndContextKit.Input("session_event_search", new { session_id = agent.Session.Id, query = "garden" }, agent));
+        Assert.False(result.IsError);
+        var hit = Assert.Single(WebAndContextKit.Json(result).GetProperty("hits").EnumerateArray());
+        Assert.Equal("user/message", hit.GetProperty("type").GetString());
+        Assert.Contains("garden", hit.GetProperty("snippet").GetString(), StringComparison.OrdinalIgnoreCase);
+
+        var scoped = await harness.Tools.Execute(
+            WebAndContextKit.Input("session_event_search", new { session_id = other.Session.Id, query = "garden" }, agent));
+        Assert.False(scoped.IsError);
+        Assert.Empty(WebAndContextKit.Json(scoped).GetProperty("hits").EnumerateArray());
+
+        var missing = await harness.Tools.Execute(
+            WebAndContextKit.Input("session_event_search", new { session_id = "session-missing", query = "garden" }, agent));
+        Assert.True(missing.IsError);
+        Assert.Equal("SESSION_NOT_FOUND", missing.Error!.Info!.Code);
+    }
+
+    [Fact]
+    public async Task Trace_ReturnsAncestorsAndDescendants()
+    {
+        await using var harness = TestHarness.Create();
+        await using var child = harness.Ctx.Extend();
+        var persistence = new MemoryPersistence();
+        SessionStore.Mount(child, persistence);
+        var parentHeader = new SessionHeader { Id = "session-lineage-parent", CreatedAt = 1_000, Cwd = Directory.GetCurrentDirectory() };
+        var forkHeader = new SessionHeader { Id = "session-lineage-fork", CreatedAt = 2_000, Cwd = Directory.GetCurrentDirectory(), ParentSession = parentHeader.Id };
+        persistence.Store[parentHeader.Id] = (parentHeader, []);
+        persistence.Store[forkHeader.Id] = (forkHeader, []);
+        new SessionQueryPlugin().Apply(child);
+        var agent = harness.CreateAgent();
+
+        var fork = await harness.Tools.Execute(
+            WebAndContextKit.Input("session_trace", new { session_id = "session-lineage-fork" }, agent));
+        Assert.False(fork.IsError);
+        var forkLineage = WebAndContextKit.Json(fork).GetProperty("lineage").EnumerateArray().ToList();
+        Assert.Equal(2, forkLineage.Count);
+        Assert.Equal("ancestor", forkLineage[0].GetProperty("relation").GetString());
+        Assert.Equal("session-lineage-parent", forkLineage[0].GetProperty("sessionId").GetString());
+        Assert.Equal("self", forkLineage[1].GetProperty("relation").GetString());
+
+        var parent = await harness.Tools.Execute(
+            WebAndContextKit.Input("session_trace", new { session_id = "session-lineage-parent" }, agent));
+        Assert.False(parent.IsError);
+        var parentLineage = WebAndContextKit.Json(parent).GetProperty("lineage").EnumerateArray().ToList();
+        Assert.Equal(2, parentLineage.Count);
+        Assert.Equal("self", parentLineage[0].GetProperty("relation").GetString());
+        Assert.Equal("descendant", parentLineage[1].GetProperty("relation").GetString());
+        Assert.Equal("session-lineage-fork", parentLineage[1].GetProperty("sessionId").GetString());
+
+        var missing = await harness.Tools.Execute(
+            WebAndContextKit.Input("session_trace", new { session_id = "session-missing" }, agent));
+        Assert.True(missing.IsError);
+        Assert.Equal("SESSION_NOT_FOUND", missing.Error!.Info!.Code);
+    }
+
+    [Fact]
+    public async Task EventTrace_LinksSourcesDerivedAndSameTurn()
+    {
+        await using var harness = TestHarness.Create();
+        await using var child = harness.Ctx.Extend();
+        var persistence = new MemoryPersistence();
+        SessionStore.Mount(child, persistence);
+        var header = new SessionHeader { Id = "session-trace-links", CreatedAt = 1_000, Cwd = Directory.GetCurrentDirectory() };
+        persistence.Store[header.Id] = (header, new List<SessionEvent>
+        {
+            new() { Type = SessionEventTypes.TurnStart, Seq = 0, Time = 1_000, Data = SessionJson.ToElement(new { turn = 1 }) },
+            new() { Type = SessionEventTypes.UserMessage, Seq = 1, Time = 1_001, Data = SessionJson.ToElement(Message.CreateUserText("why is the sky blue")) },
+            new() { Type = SessionEventTypes.StepStart, Seq = 2, Time = 1_002, Data = SessionJson.ToElement(new { turn = 1, step = 1 }), SourceEventSeqs = [1] },
+        });
+        new SessionQueryPlugin().Apply(child);
+        var agent = harness.CreateAgent();
+
+        var result = await harness.Tools.Execute(
+            WebAndContextKit.Input("session_event_trace", new { session_id = header.Id, seq = 2 }, agent));
+        Assert.False(result.IsError);
+        var related = WebAndContextKit.Json(result).GetProperty("related").EnumerateArray().ToList();
+        var source = Assert.Single(related, r => r.GetProperty("relation").GetString() == "source");
+        Assert.Equal(1, source.GetProperty("seq").GetInt32());
+        Assert.Equal("user/message", source.GetProperty("type").GetString());
+        Assert.Contains(related, r => r.GetProperty("relation").GetString() == "same-turn" && r.GetProperty("seq").GetInt32() == 0);
+
+        var missing = await harness.Tools.Execute(
+            WebAndContextKit.Input("session_event_trace", new { session_id = header.Id, seq = 99 }, agent));
+        Assert.True(missing.IsError);
+        Assert.Equal("SESSION_EVENT_NOT_FOUND", missing.Error!.Info!.Code);
     }
 
     internal sealed class MemoryPersistence : ISessionPersistence

@@ -52,6 +52,21 @@ public sealed class HarnessSettings
     public bool EnableSchedule { get; set; } = true;
     public bool EnableMcp { get; set; } = true;
 
+    /// <summary>web_search backend: duckduckgo (keyless default), tavily, or brave.</summary>
+    public string WebSearchBackend { get; set; } = "duckduckgo";
+    public string? TavilyApiKey { get; set; }
+    public string TavilyApiKeyEnv { get; set; } = "TAVILY_API_KEY";
+    public string? BraveApiKey { get; set; }
+    public string BraveApiKeyEnv { get; set; } = "BRAVE_API_KEY";
+
+    /// <summary>Settings key first, then the configured environment variable.</summary>
+    public string? ResolveTavilyApiKey()
+        => !string.IsNullOrWhiteSpace(TavilyApiKey) ? TavilyApiKey : Environment.GetEnvironmentVariable(TavilyApiKeyEnv);
+
+    /// <summary>Settings key first, then the configured environment variable.</summary>
+    public string? ResolveBraveApiKey()
+        => !string.IsNullOrWhiteSpace(BraveApiKey) ? BraveApiKey : Environment.GetEnvironmentVariable(BraveApiKeyEnv);
+
     /// <summary>Local-only usage aggregates (turns/tokens/tool calls); nothing leaves the machine.</summary>
     public bool TelemetryEnabled { get; set; } = true;
 
@@ -118,6 +133,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     public HarnessContext Context { get; private set; } = null!;
     public AgentLoopService Loop { get; private set; } = null!;
     public SessionStore Sessions { get; private set; } = null!;
+    public SessionProjectionService Projections { get; private set; } = null!;
+    public SessionSearchIndex SearchIndex { get; private set; } = null!;
     public AgentRuntime Agents { get; private set; } = null!;
     public ToolRuntime Tools { get; private set; } = null!;
     public LlmRuntime Llm { get; private set; } = null!;
@@ -158,6 +175,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             ? new SqliteSessionPersistence(Path.Combine(_home, "sessions.db"))
             : new JsonlSessionPersistence(Path.Combine(_home, "sessions"));
         Sessions = SessionStore.Mount(Context, persistence);
+        Projections = SessionProjectionService.Mount(Context, Sessions);
+        SearchIndex = SessionSearchIndex.Mount(Context, Sessions, Path.Combine(_home, "sessions-index.db"));
         Agents = AgentRuntime.Mount(Context);
         var approval = ApprovalService.Mount(Context);
         Approval = approval;
@@ -220,7 +239,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         new JobsPlugin().Apply(Context);
         if (Settings.EnableAskUser) new AskUserPlugin().Apply(Context);
         new SubagentToolsPlugin().Apply(Context);
-        if (Settings.EnableWeb) new WebPlugin().Apply(Context);
+        if (Settings.EnableWeb) new WebPlugin(BuildWebProvider(Settings), ownsProvider: true).Apply(Context);
         if (Settings.EnableSkills) new SkillPlugin().Apply(Context);
         if (Settings.EnableSessionQuery) new SessionQueryPlugin().Apply(Context);
         if (Settings.EnableGoals) new GoalPlugin().Apply(Context);
@@ -301,6 +320,22 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         => provider == "anthropic"
             ? new AnthropicAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver())
             : new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver());
+
+    /// <summary>Selects the web_search backend from settings; a keyed backend without a key
+    /// falls back to keyless DuckDuckGo (noted on stderr) so web_search keeps working.</summary>
+    public static Blazorly.Harness.Tools.IWebProvider BuildWebProvider(HarnessSettings settings)
+    {
+        if (string.Equals(settings.WebSearchBackend, "tavily", StringComparison.OrdinalIgnoreCase)
+            && settings.ResolveTavilyApiKey() is { Length: > 0 } tavilyKey)
+            return new Blazorly.Harness.Tools.TavilySearchProvider(tavilyKey);
+        if (string.Equals(settings.WebSearchBackend, "brave", StringComparison.OrdinalIgnoreCase)
+            && settings.ResolveBraveApiKey() is { Length: > 0 } braveKey)
+            return new Blazorly.Harness.Tools.BraveSearchProvider(braveKey);
+        if (!string.Equals(settings.WebSearchBackend, "duckduckgo", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(settings.WebSearchBackend))
+            Console.Error.WriteLine($"[web] unknown or keyless search backend '{settings.WebSearchBackend}'; falling back to duckduckgo");
+        return new Blazorly.Harness.Tools.HttpWebProvider();
+    }
 
     /// <summary>The selectable model list for a route: the live API list once discovered (known ids
     /// keep their catalog metadata — names, windows, effort levels), otherwise the catalog seeds.</summary>

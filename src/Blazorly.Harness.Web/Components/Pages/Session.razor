@@ -770,56 +770,13 @@
     private (List<(string Label, string Value)> Lines, List<(string Label, string Value)> Tools) SessionStats()
     {
         var lines = new List<(string Label, string Value)>();
-        var events = _session.Events;
-        var turnEnds = 0;
-        var completed = 0;
-        var errored = 0;
-        var cancelled = 0;
-        var compactions = 0;
-        var retries = 0;
-        long durationTotal = 0;
-        long turnStart = 0;
-        var tools = new Dictionary<string, long>(StringComparer.Ordinal);
+        var stats = Facade.Harness.Projections.Stats(_session);
 
-        foreach (var e in events)
-        {
-            switch (e.Type)
-            {
-                case SessionEventTypes.TurnStart:
-                    turnStart = e.Time;
-                    break;
-                case SessionEventTypes.TurnEnd:
-                {
-                    turnEnds++;
-                    durationTotal += Math.Max(0, e.Time - turnStart);
-                    switch (SessionEventRead.TurnEndReasonOf(e))
-                    {
-                        case TurnEndReason.Completed: completed++; break;
-                        case TurnEndReason.Error: errored++; break;
-                        case TurnEndReason.Interrupted or TurnEndReason.Aborted: cancelled++; break;
-                    }
-                    break;
-                }
-                case SessionEventTypes.ToolCall:
-                {
-                    var name = SessionEventRead.ToolCallOf(e).Name;
-                    tools[name] = tools.TryGetValue(name, out var count) ? count + 1 : 1;
-                    break;
-                }
-                case SessionEventTypes.CompactionStart:
-                    compactions++;
-                    break;
-                case SessionEventTypes.LlmRetryStarted:
-                    retries++;
-                    break;
-            }
-        }
-
-        lines.Add(("turns", turnEnds == 0 ? "0" : $"{turnEnds} ({completed} completed{(errored > 0 ? $", {errored} errored" : "")}{(cancelled > 0 ? $", {cancelled} cancelled" : "")})"));
-        lines.Add(("conversation", FormatMs(durationTotal)));
-        lines.Add(("events", $"{events.Count:N0}"));
-        if (compactions > 0) lines.Add(("compactions", $"{compactions}"));
-        if (retries > 0) lines.Add(("llm retries", $"{retries}"));
+        lines.Add(("turns", stats.Turns == 0 ? "0" : $"{stats.Turns} ({stats.Completed} completed{(stats.Errored > 0 ? $", {stats.Errored} errored" : "")}{(stats.Cancelled > 0 ? $", {stats.Cancelled} cancelled" : "")})"));
+        lines.Add(("conversation", FormatMs(stats.ConversationMs)));
+        lines.Add(("events", $"{stats.Events:N0}"));
+        if (stats.Compactions > 0) lines.Add(("compactions", $"{stats.Compactions}"));
+        if (stats.Retries > 0) lines.Add(("llm retries", $"{stats.Retries}"));
         if (Facade.Harness.Meter?.Measure(_agent) is { } reading)
         {
             lines.Add(("context", $"{reading.OccupancyPercent}% of {reading.ContextWindowTokens:N0}"));
@@ -827,10 +784,8 @@
                 + $" · cache {reading.TotalCacheReadTokens:N0}/{reading.TotalCacheWriteTokens:N0}"));
         }
 
-        var toolLines = tools
-            .OrderByDescending(kv => kv.Value)
-            .Take(8)
-            .Select(kv => (kv.Key, $"{kv.Value}×"))
+        var toolLines = stats.Tools
+            .Select(t => (t.Name, $"{t.Count}×"))
             .ToList();
         return (lines, toolLines);
     }

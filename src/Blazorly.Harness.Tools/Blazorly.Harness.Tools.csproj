@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Blazorly.Harness.Core\Blazorly.Harness.Core.csproj" />
+    <ProjectReference Include="..\Blazorly.Harness.ScriptRunner\Blazorly.Harness.ScriptRunner.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

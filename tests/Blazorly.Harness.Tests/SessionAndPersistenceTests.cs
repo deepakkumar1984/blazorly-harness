@@ -3,9 +3,11 @@ using Blazorly.Harness.Llm;
 using Blazorly.Harness.Kernel;
 using Blazorly.Harness.Core.Agent;
 using Blazorly.Harness.Core.Tools;
+using System.IO.Compression;
 using System.Text.Json;
 using Blazorly.Harness.Persistence;
 using Blazorly.Harness.Tools;
+using Blazorly.Harness.Web.Services;
 using Xunit;
 
 namespace Blazorly.Harness.Tests;
@@ -317,5 +319,276 @@ public class WorkspaceSandboxTests : IDisposable
     public void Dispose()
     {
         try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
+    }
+}
+
+public class SessionProjectionTests
+{
+    private static SessionProjectionService Projections(TestHarness harness)
+    {
+        var store = harness.Ctx.Get<SessionStore>(SessionStore.ServiceKey);
+        return SessionProjectionService.Mount(harness.Ctx, store);
+    }
+
+    private static async Task<Agent> RunAgent(TestHarness harness, string userText)
+    {
+        var agent = harness.CreateAgent();
+        agent.Followup(Message.CreateUserText(userText));
+        await agent.WhenIdleAsync();
+        return agent;
+    }
+
+    [Fact]
+    public async Task Stats_CountsTurnsAndTools()
+    {
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
+        var agent = await RunAgent(harness, "hello");
+        var projections = Projections(harness);
+
+        var stats = projections.Stats(agent.Session);
+        Assert.Equal(1, stats.Turns);
+        Assert.Equal(1, stats.Completed);
+        Assert.Equal(0, stats.Errored);
+        Assert.Equal(0, stats.Cancelled);
+        Assert.Empty(stats.Tools);
+        Assert.True(stats.Events > 0);
+
+        var turns = projections.Turns(agent.Session);
+        var first = Assert.Single(turns);
+        Assert.Equal(1, first.Turn);
+        Assert.Equal("completed", first.Reason);
+        Assert.NotNull(first.DurationMs);
+    }
+
+    [Fact]
+    public async Task Stats_InvalidatesCacheOnNewEvents()
+    {
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
+        var agent = await RunAgent(harness, "first");
+        var projections = Projections(harness);
+        Assert.Equal(1, projections.Stats(agent.Session).Turns);
+
+        agent.Followup(Message.CreateUserText("second"));
+        await agent.WhenIdleAsync();
+        Assert.Equal(2, projections.Stats(agent.Session).Turns);
+    }
+
+    [Fact]
+    public async Task ProjectAsync_ServesNamedFoldsAndRejectsUnknown()
+    {
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
+        var agent = await RunAgent(harness, "hello");
+        var projections = Projections(harness);
+
+        var (value, through) = await projections.ProjectAsync(agent.Session.Id, "stats");
+        Assert.Equal(agent.Session.Events.Count, through);
+        Assert.Equal(1, value.GetProperty("turns").GetInt32());
+
+        var missing = await Assert.ThrowsAsync<HarnessException>(
+            () => projections.ProjectAsync("session-missing", "stats"));
+        Assert.Equal("SESSION_NOT_FOUND", missing.Code);
+        var unknown = await Assert.ThrowsAsync<HarnessException>(
+            () => projections.ProjectAsync(agent.Session.Id, "nope"));
+        Assert.Equal("UNKNOWN_PROJECTION", unknown.Code);
+    }
+
+    [Fact]
+    public async Task ProjectAsync_FallsBackToPersistedSessions()
+    {
+        var harness = TestHarness.Create();
+        await using var child = harness.Ctx.Extend();
+        var persistence = new SessionQueryTests.MemoryPersistence();
+        SessionStore.Mount(child, persistence);
+        var header = new SessionHeader { Id = "session-projected", CreatedAt = 1_000, Cwd = Directory.GetCurrentDirectory() };
+        persistence.Store[header.Id] = (header, new List<SessionEvent>
+        {
+            new() { Type = SessionEventTypes.TurnStart, Seq = 0, Time = 1_000, Data = SessionJson.ToElement(new SessionPayloads.TurnStart(1)) },
+            new() { Type = SessionEventTypes.TurnEnd, Seq = 1, Time = 2_500, Data = SessionJson.ToElement(new SessionPayloads.TurnEnd(1, new TurnEndReason.Completed())) },
+        });
+        var projections = SessionProjectionService.Mount(child, child.Get<SessionStore>(SessionStore.ServiceKey));
+        await using var _ = harness;
+
+        var (value, through) = await projections.ProjectAsync(header.Id, "stats");
+        Assert.Equal(2, through);
+        Assert.Equal(1, value.GetProperty("turns").GetInt32());
+        Assert.Equal(1, value.GetProperty("completed").GetInt32());
+        Assert.Equal(1500, value.GetProperty("conversationMs").GetInt64());
+    }
+}
+
+public class SessionExportTests
+{
+    private static (SessionHeader Header, List<SessionEvent> Events) SampleLog() => (
+        new SessionHeader { Id = "session-export", CreatedAt = 1_000, Cwd = "/tmp/proj" },
+        new List<SessionEvent>
+        {
+            new() { Type = SessionEventTypes.TurnStart, Seq = 0, Time = 1_000, Data = SessionJson.ToElement(new SessionPayloads.TurnStart(1)) },
+            new() { Type = SessionEventTypes.UserMessage, Seq = 1, Time = 1_001, Data = SessionJson.ToElement(Message.CreateUserText("export this please")) },
+            new()
+            {
+                Type = SessionEventTypes.ToolCall, Seq = 2, Time = 1_002,
+                Data = SessionJson.ToElement(new SessionPayloads.ToolCall(1, 1, "call_1", "bash", """{"command":"echo hi"}""")),
+            },
+            new()
+            {
+                Type = SessionEventTypes.ToolResult, Seq = 3, Time = 1_003,
+                Data = SessionJson.ToElement(new SessionPayloads.ToolResult(1, 1, Message.CreateToolResult("call_1", [new TextBlock("hi")]), null)),
+            },
+            new() { Type = SessionEventTypes.TurnEnd, Seq = 4, Time = 2_000, Data = SessionJson.ToElement(new SessionPayloads.TurnEnd(1, new TurnEndReason.Completed())) },
+        });
+
+    [Fact]
+    public void BuildZip_ContainsLogAndTranscript()
+    {
+        var (header, events) = SampleLog();
+        using var archive = new ZipArchive(new MemoryStream(SessionExport.BuildZip(header, events)));
+
+        var names = archive.Entries.Select(e => e.FullName).OrderBy(n => n).ToList();
+        Assert.Equal(["session.jsonl", "transcript.md"], names);
+
+        using var logReader = new StreamReader(archive.GetEntry("session.jsonl")!.Open());
+        var lines = logReader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(events.Count + 1, lines.Length);
+        using var first = JsonDocument.Parse(lines[0]);
+        Assert.Equal("session-export", first.RootElement.GetProperty("id").GetString());
+        using var second = JsonDocument.Parse(lines[1]);
+        Assert.Equal("turn/start", second.RootElement.GetProperty("type").GetString());
+
+        using var mdReader = new StreamReader(archive.GetEntry("transcript.md")!.Open());
+        var transcript = mdReader.ReadToEnd();
+        Assert.Contains("export this please", transcript);
+        Assert.Contains("`bash`", transcript);
+        Assert.Contains("hi", transcript);
+        Assert.Contains("completed", transcript);
+    }
+}
+
+public class SessionSearchIndexTests : IDisposable
+{
+    private readonly string _db = Path.Combine(Path.GetTempPath(), "blazorly-fts-" + Guid.NewGuid().ToString("N")[..8] + ".db");
+
+    public void Dispose()
+    {
+        try { File.Delete(_db); } catch (IOException) { }
+    }
+
+    private static SessionEvent TextEvent(string type, int seq, string text) => new()
+    {
+        Type = type,
+        Seq = seq,
+        Time = 1_000 + seq,
+        Data = SessionJson.ToElement(Message.CreateUserText(text)),
+    };
+
+    private static List<SessionEvent> SampleLog() => new()
+    {
+        TextEvent(SessionEventTypes.UserMessage, 0, "how do I plant a garden"),
+        TextEvent(SessionEventTypes.AssistantMessage, 1, "start with good soil"),
+        new()
+        {
+            Type = SessionEventTypes.ToolCall,
+            Seq = 2,
+            Time = 1_002,
+            Data = SessionJson.ToElement(new SessionPayloads.ToolCall(1, 1, "call_1", "bash", "{}")),
+        },
+    };
+
+    [Fact]
+    public async Task SyncThenSearch_FindsPhrasesWithSeqAndTitle()
+    {
+        using var index = new SessionSearchIndex(_db);
+        var title = await index.SyncSessionAsync("session-fts", SampleLog());
+        Assert.Equal("how do I plant a garden", title);
+
+        var hits = await index.SearchAsync("garden", "session-fts");
+        Assert.Single(hits);
+        Assert.Equal(0, hits[0].Seq);
+        Assert.Equal(SessionEventTypes.UserMessage, hits[0].Type);
+
+        var tool = await index.SearchAsync("bash", "session-fts");
+        Assert.Single(tool);
+        Assert.Equal(2, tool[0].Seq);
+
+        Assert.Empty(await index.SearchAsync("nope-nothing", "session-fts"));
+        Assert.Empty(await index.SearchAsync("   ", "session-fts"));
+    }
+
+    [Fact]
+    public async Task Sync_IsIncrementalWithoutDuplicates()
+    {
+        using var index = new SessionSearchIndex(_db);
+        var log = SampleLog();
+        await index.SyncSessionAsync("session-fts", log.Take(2).ToList());
+        Assert.Empty(await index.SearchAsync("bash", "session-fts"));
+
+        await index.SyncSessionAsync("session-fts", log);
+        Assert.Single(await index.SearchAsync("bash", "session-fts"));
+        Assert.Single(await index.SearchAsync("garden", "session-fts"));
+
+        // Re-syncing the same prefix indexes nothing twice.
+        await index.SyncSessionAsync("session-fts", log);
+        Assert.Single(await index.SearchAsync("garden", "session-fts"));
+    }
+
+    [Fact]
+    public async Task Search_SurvivesQuotedPhrases()
+    {
+        using var index = new SessionSearchIndex(_db);
+        await index.SyncSessionAsync("session-fts", SampleLog());
+        var hits = await index.SearchAsync("plant \"a\" garden", "session-fts");
+        Assert.NotNull(hits);
+    }
+
+    [Fact]
+    public async Task SessionTitleEvent_UpdatesStoredTitle()
+    {
+        using var index = new SessionSearchIndex(_db);
+        var log = SampleLog();
+        await index.SyncSessionAsync("session-fts", log);
+        log.Add(new SessionEvent
+        {
+            Type = SessionEventTypes.SessionTitle,
+            Seq = 3,
+            Time = 1_003,
+            Data = SessionJson.ToElement(new SessionPayloads.SessionTitlePayload("Garden tips", [], "generated")),
+        });
+        var title = await index.SyncSessionAsync("session-fts", log);
+        Assert.Equal("Garden tips", title);
+    }
+
+    [Fact]
+    public async Task PruneSession_RemovesRows()
+    {
+        using var index = new SessionSearchIndex(_db);
+        await index.SyncSessionAsync("session-fts", SampleLog());
+        Assert.Single(await index.SearchAsync("garden", "session-fts"));
+        await index.PruneSessionAsync("session-fts");
+        Assert.Empty(await index.SearchAsync("garden", "session-fts"));
+    }
+
+    [Fact]
+    public async Task SessionSearch_UsesIndexWhenMounted()
+    {
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
+        var store = harness.Ctx.Get<SessionStore>(SessionStore.ServiceKey);
+        using var index = SessionSearchIndex.Mount(harness.Ctx, store, _db);
+        new SessionQueryPlugin().Apply(harness.Ctx);
+
+        var agent = harness.CreateAgent();
+        agent.Followup(Message.CreateUserText("index the garden needle"));
+        await agent.WhenIdleAsync();
+
+        var result = await harness.Tools.Execute(new ToolExecutionInput
+        {
+            Name = "session_search",
+            Arguments = JsonSerializer.SerializeToElement(new { query = "needle" }),
+            CallId = "call_test",
+            Signal = CancellationToken.None,
+            Agent = agent,
+        });
+        Assert.False(result.IsError);
+        var match = Assert.Single(result.Value!.Value.GetProperty("matches").EnumerateArray());
+        Assert.Equal(agent.Session.Id, match.GetProperty("sessionId").GetString());
+        Assert.Contains("needle", match.GetProperty("snippet").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 }

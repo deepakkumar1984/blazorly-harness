@@ -11,7 +11,7 @@ Configure an LLM provider to start working sessions: set `provider`, `model`, an
 | `src/Blazorly.Harness.Kernel` | Event bus, harness context, plugin host, scoped layers |
 | `src/Blazorly.Harness.Llm` | LLM routing: provider adapters (Anthropic, OpenAI-compatible), streaming, token estimation, model discovery |
 | `src/Blazorly.Harness.Core` | Agent loop, sessions, compaction, subagents, jobs, credentials, MCP client, schedules, telemetry, and other core services |
-| `src/Blazorly.Harness.Tools` | Built-in tools (bash, fs, web, LSP, terminals, code mode, …) and the Landlock sandbox |
+| `src/Blazorly.Harness.Tools` | Built-in tools (bash, fs, web, LSP, terminals, code mode, …) and the Landlock sandbox (confines bash and run_code writes to the session workspace) |
 | `src/Blazorly.Harness.Persistence` | Session persistence: JSONL and SQLite backends |
 | `src/Blazorly.Harness.Sdk` | Client SDK over the automation protocol |
 | `src/Blazorly.Harness.Web` | Blazor Server UI + REST/WebSocket API |
@@ -50,6 +50,8 @@ The same surface is available over HTTP for scripting:
 | `GET /api/session.list` · `POST /api/session.create` | List / create sessions |
 | `POST /api/session.prompt` · `/api/session.cancel` | Send a prompt / cancel a turn (`mode`: `queue`) |
 | `GET /api/session.history?id=…` · `POST /api/session.fork` | Event history / fork at a sequence |
+| `GET /api/session.projection?sessionId=…&name=…` | Cached log folds (`stats`, `turns`) — same numbers as the web stats dock |
+| `GET /api/session.export?id=…` | Session ZIP (`session.jsonl` + `transcript.md`) |
 | `POST /api/session.rename` · `/api/session.archive` · `/api/session.command` | Session management and slash commands |
 | `GET /api/events?sessionId=…` (WebSocket) | Live session event stream |
 | `GET /api/workspace.list` · `POST /api/workspace.add` · `/api/workspace.remove` | Workspace registry |
@@ -152,6 +154,8 @@ dotnet run --project src/Blazorly.Harness.Web
 | `enable*` flags | mostly `true` | Toggle plugins: terminals, LSP, web, skills, goals, plan mode, code mode, workflows, teams, MCP, schedule, hooks, auto-titles, spill, ask-user, session query, project instructions |
 | `telemetryEnabled` | `true` | Local-only usage aggregates; nothing leaves the machine |
 | `enableE2b`, `e2bApiKey`, `e2bTemplate`, `e2bBaseUrl` | off | Remote E2B sandbox execution (key resolves from settings, else the `E2B_API_KEY` env var) |
+| `webSearchBackend` | `duckduckgo` | `web_search` backend: `duckduckgo` (keyless), `tavily`, or `brave` (change applies after restart) |
+| `tavilyApiKey` / `braveApiKey` | — | Search API keys (or `TAVILY_API_KEY` / `BRAVE_API_KEY` env vars); without a key the backend falls back to DuckDuckGo |
 
 Changes made in the Settings page persist to `settings.json` and re-apply live (provider routes are rebuilt without a restart).
 

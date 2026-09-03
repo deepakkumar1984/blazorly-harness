@@ -146,6 +146,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         if (agent is { Status: Core.Agent.AgentStatus.Running })
             return "this chat is still running — stop it before deleting";
         await harness.Sessions.Delete(sessionId);
+        await harness.SearchIndex.PruneSessionAsync(sessionId);
         return null;
     }
 

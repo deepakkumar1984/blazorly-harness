@@ -180,6 +180,34 @@
                         }
                     </div>
                 </label>
+                @if (_settings.EnableWeb)
+                {
+                    <label>
+                        <span>Web search backend</span>
+                        <select @bind="_settings.WebSearchBackend">
+                            <option value="duckduckgo">DuckDuckGo (keyless)</option>
+                            <option value="tavily">Tavily (API key)</option>
+                            <option value="brave">Brave (API key)</option>
+                        </select>
+                    </label>
+                    @if (_settings.WebSearchBackend == "tavily")
+                    {
+                        <label>
+                            <span>Tavily API key</span>
+                            <input type="password" @bind="_settings.TavilyApiKey" @bind:event="oninput" placeholder="tvly-…" />
+                        </label>
+                        <div class="discover-row"><span class="provider-meta-hint">or env <code>@_settings.TavilyApiKeyEnv</code></span></div>
+                    }
+                    @if (_settings.WebSearchBackend == "brave")
+                    {
+                        <label>
+                            <span>Brave API key</span>
+                            <input type="password" @bind="_settings.BraveApiKey" @bind:event="oninput" placeholder="BSA…" />
+                        </label>
+                        <div class="discover-row"><span class="provider-meta-hint">or env <code>@_settings.BraveApiKeyEnv</code></span></div>
+                    }
+                    <p class="settings-note">Search backend changes apply after the app restarts.</p>
+                }
                 break;
 
             case "sandbox":

@@ -230,3 +230,77 @@ public class ToolScopingTests
         Assert.DoesNotContain(schemas, s => s.Name == "bash"); // restricted global tool absent from the prompt
     }
 }
+
+public class SourceSearchTests : IDisposable
+{
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "blazorly-grep-" + Guid.NewGuid().ToString("N")[..8]);
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
+    }
+
+    private void WriteTree()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "src"));
+        File.WriteAllText(Path.Combine(_root, "src", "a.cs"), "first needle here\n");
+        File.WriteAllText(Path.Combine(_root, "src", "b.razor"), "second needle here\n");
+        File.WriteAllText(Path.Combine(_root, "notes.txt"), "third needle here\n");
+        File.WriteAllBytes(Path.Combine(_root, "blob.bin"),
+            "needle in binary\0\0"u8.ToArray());
+        Directory.CreateDirectory(Path.Combine(_root, "node_modules", "dep"));
+        File.WriteAllText(Path.Combine(_root, "node_modules", "dep", "index.js"), "needle in deps\n");
+    }
+
+    private static ToolExecutionInput Input(string name, object args) => new()
+    {
+        Name = name,
+        Arguments = JsonSerializer.SerializeToElement(args),
+        CallId = "call_test",
+        Signal = CancellationToken.None,
+    };
+
+    private static List<string> Files(JsonElement value)
+        => value.GetProperty("matches").EnumerateArray()
+            .Select(m => m.GetProperty("file").GetString()!).ToList();
+
+    [Fact]
+    public async Task Grep_SkipsBinariesAndBuildDirs()
+    {
+        WriteTree();
+        await using var harness = TestHarness.Create();
+
+        var result = await harness.Tools.Execute(Input("grep", new { pattern = "needle", path = _root }));
+        Assert.False(result.IsError);
+        var files = Files(result.Value!.Value);
+        Assert.Equal(3, files.Count); // a.cs, b.razor, notes.txt — no blob.bin, no node_modules
+        Assert.DoesNotContain(files, f => f.EndsWith("blob.bin"));
+        Assert.DoesNotContain(files, f => f.Contains("node_modules"));
+    }
+
+    [Fact]
+    public async Task Grep_MultiIncludeFiltersByExtension()
+    {
+        WriteTree();
+        await using var harness = TestHarness.Create();
+
+        var result = await harness.Tools.Execute(Input("grep", new { pattern = "needle", path = _root, include = "*.cs,*.razor" }));
+        Assert.False(result.IsError);
+        var files = Files(result.Value!.Value);
+        Assert.Equal(2, files.Count);
+        Assert.Contains(files, f => f.EndsWith("a.cs"));
+        Assert.Contains(files, f => f.EndsWith("b.razor"));
+    }
+
+    [Fact]
+    public async Task Grep_ExplicitBinaryPath_SearchesNothing()
+    {
+        WriteTree();
+        await using var harness = TestHarness.Create();
+
+        var result = await harness.Tools.Execute(Input("grep",
+            new { pattern = "needle", path = Path.Combine(_root, "blob.bin") }));
+        Assert.False(result.IsError);
+        Assert.Empty(Files(result.Value!.Value));
+    }
+}

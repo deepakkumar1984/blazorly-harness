@@ -39,6 +39,18 @@ public sealed record PreStepDecision
     public static PreStepDecision Reject() => new() { Kind = RejectKind };
 }
 
+/// <summary>Post-step decision: continue runs the next step; stop ends the turn blocked.</summary>
+public sealed record PostStepDecision
+{
+    public const string ContinueKind = "continue";
+    public const string StopKind = "stop";
+
+    public required string Kind { get; init; }
+
+    public static PostStepDecision Continue() => new() { Kind = ContinueKind };
+    public static PostStepDecision Stop() => new() { Kind = StopKind };
+}
+
 public sealed record RequestErrorAction
 {
     public const string RetryKind = "retry";
@@ -51,7 +63,6 @@ public sealed record RequestErrorAction
 }
 
 public sealed record PreStepEvent(Agent Agent, int Turn, int Step, IReadOnlyList<Message> Messages, CancellationToken Ct);
-
 public sealed record RequestEvent(Agent Agent, int Turn, int Step, LlmCallConfig Config, CancellationToken Ct);
 
 public sealed record RequestErrorEvent(Agent Agent, int Turn, int Step, LlmFailure Failure, int Attempts, CancellationToken Ct);
@@ -61,6 +72,8 @@ public sealed record StatusEvent(Agent Agent, string Status);
 public sealed record InboxMessageEvent(Agent Agent, Message Message, int? Turn = null);
 
 public sealed record TurnStoppingEvent(Agent Agent, int Turn, CancellationToken Ct);
+
+public sealed record PostStepEvent(Agent Agent, int Turn, int Step, CancellationToken Ct);
 
 public sealed record SessionStartEvent(Agent Agent, string Source);
 

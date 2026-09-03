@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Blazorly.Harness.Core.Agent;
 using Blazorly.Harness.Core.Jobs;
+using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Core.Tools;
 using Blazorly.Harness.Llm;
 using Blazorly.Harness.Tools;
@@ -177,6 +178,79 @@ public class JobsAndCodeModeTests
         });
         Assert.True(result.IsError);
         Assert.Equal("RUN_CODE_FAILED", result.Error!.Info!.Code);
+    }
+
+    [Fact]
+    public async Task RunCode_ConfinedToWorkspace_WritesOutsideFail()
+    {
+        await using var harness = CreateHarness();
+        var workspace = Path.Combine(Path.GetTempPath(), "blazorly-code-ws-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(workspace);
+        var outside = Path.Combine(Path.GetTempPath(), "blazorly-code-out-" + Guid.NewGuid().ToString("N")[..8] + ".txt");
+        try
+        {
+            var agent = harness.CreateAgent(workspace);
+            agent.Session.Append(SessionEventTypes.SandboxMode,
+                new SessionPayloads.SandboxModePayload(SandboxPolicy.WorkspaceWrite));
+
+            var inside = await Run(harness, "run_code", new
+            {
+                code = "File.WriteAllText(\"inside.txt\", \"in\");\nreturn \"wrote inside\";",
+                description = "Write a file in the workspace",
+            }, agent);
+            Assert.False(inside.IsError);
+            Assert.True(File.Exists(Path.Combine(workspace, "inside.txt")));
+
+            var escaped = outside.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            var result = await Run(harness, "run_code", new
+            {
+                code = $"File.WriteAllText(\"{escaped}\", \"OUT\");\nreturn \"escaped\";",
+                description = "Try to write outside the workspace",
+            }, agent);
+            Assert.True(result.IsError);
+            Assert.Equal("RUN_CODE_FAILED", result.Error!.Info!.Code);
+            Assert.False(File.Exists(outside));
+        }
+        finally
+        {
+            try { Directory.Delete(workspace, recursive: true); } catch (IOException) { }
+            try { File.Delete(outside); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task RunCode_ReadOnly_AllowsReadsBlocksWrites()
+    {
+        await using var harness = CreateHarness();
+        var workspace = Path.Combine(Path.GetTempPath(), "blazorly-code-ro-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(workspace);
+        File.WriteAllText(Path.Combine(workspace, "data.txt"), "readable");
+        try
+        {
+            var agent = harness.CreateAgent(workspace);
+            agent.Session.Append(SessionEventTypes.SandboxMode,
+                new SessionPayloads.SandboxModePayload(SandboxPolicy.ReadOnly));
+
+            var read = await Run(harness, "run_code", new
+            {
+                code = "return File.ReadAllText(\"data.txt\");",
+                description = "Read a workspace file",
+            }, agent);
+            Assert.False(read.IsError);
+            Assert.Contains("readable", read.Value!.Value.GetProperty("result").GetString());
+
+            var write = await Run(harness, "run_code", new
+            {
+                code = "File.WriteAllText(\"blocked.txt\", \"x\");\nreturn \"wrote\";",
+                description = "Try to write in read-only mode",
+            }, agent);
+            Assert.True(write.IsError);
+            Assert.False(File.Exists(Path.Combine(workspace, "blocked.txt")));
+        }
+        finally
+        {
+            try { Directory.Delete(workspace, recursive: true); } catch (IOException) { }
+        }
     }
 
     /// <summary>Small probe tool: echoes its value through the guarded pipeline.</summary>

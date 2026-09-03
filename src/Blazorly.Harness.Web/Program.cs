@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Blazorly.Harness.Core.Sessions;
+using Blazorly.Harness.Kernel;
 using Blazorly.Harness.Llm;
 using Blazorly.Harness.Web.Components;
 using Blazorly.Harness.Web.Services;
@@ -90,6 +91,36 @@ app.MapGet("/api/session.history", async (string id, SessionFacade facade) =>
             data = e.Data,
         }),
     });
+});
+
+app.MapGet("/api/session.projection", async (string sessionId, string name, HarnessBootstrapper harness) =>
+{
+    if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(name))
+        return Results.BadRequest(new { error = "sessionId and name are required" });
+    try
+    {
+        var (value, throughEvents) = await harness.Projections.ProjectAsync(sessionId, name);
+        return Results.Json(new { sessionId, name, throughEvents, value });
+    }
+    catch (HarnessException ex) when (ex.Code is "SESSION_NOT_FOUND" or "UNKNOWN_PROJECTION")
+    {
+        return Results.NotFound(new { error = ex.Message });
+    }
+});
+
+app.MapGet("/api/session.export", async (string id, SessionFacade facade) =>
+{
+    if (string.IsNullOrWhiteSpace(id)) return Results.BadRequest(new { error = "id is required" });
+    try
+    {
+        var session = await facade.OpenSessionAsync(id);
+        var zip = SessionExport.BuildZip(session.Header, session.Events);
+        return Results.File(zip, "application/zip", $"{session.Id}.zip");
+    }
+    catch (HarnessException ex) when (ex.Code is "SESSION_NOT_FOUND" or "NO_PERSISTENCE")
+    {
+        return Results.NotFound(new { error = ex.Message });
+    }
 });
 
 app.MapPost("/api/session.fork", async (HttpContext http, SessionFacade facade) =>

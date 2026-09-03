@@ -4,6 +4,7 @@
     <Project Path="src/Blazorly.Harness.Core/Blazorly.Harness.Core.csproj" />
     <Project Path="src/Blazorly.Harness.Kernel/Blazorly.Harness.Kernel.csproj" />
     <Project Path="src/Blazorly.Harness.Llm/Blazorly.Harness.Llm.csproj" />
+    <Project Path="src/Blazorly.Harness.ScriptRunner/Blazorly.Harness.ScriptRunner.csproj" />
     <Project Path="src/Blazorly.Harness.Persistence/Blazorly.Harness.Persistence.csproj" />
     <Project Path="src/Blazorly.Harness.Sdk/Blazorly.Harness.Sdk.csproj" />
     <Project Path="src/Blazorly.Harness.Tools/Blazorly.Harness.Tools.csproj" />

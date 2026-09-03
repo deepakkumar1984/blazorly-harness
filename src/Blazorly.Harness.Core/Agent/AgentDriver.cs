@@ -81,6 +81,20 @@ public sealed class AgentDriver
                     session.Append(SessionEventTypes.StepEnd, new SessionPayloads.StepEnd(turn, step));
                 }
 
+                // Post-step hooks observe each settled step; a block ends the turn here.
+                // (After the try/finally on purpose: failed steps propagate to the catches below.)
+                var postStep = await _ctx.Events.WaterfallAsync<PostStepEvent, PostStepDecision, PostStepDecision>(
+                    "agent/post-step",
+                    new PostStepEvent(_agent, turn, step, ct),
+                    PostStepDecision.Continue(),
+                    static d => Task.FromResult(d),
+                    _agent, ct).ConfigureAwait(false);
+                if (postStep.Kind == PostStepDecision.StopKind)
+                {
+                    turnEnds = new TurnEndReason.Blocked();
+                    return _agent.Inbox.HasPending;
+                }
+
                 if (turnEnds is not null)
                 {
                     if (_agent.Inbox.NextStep.Count == 0)

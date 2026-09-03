@@ -43,9 +43,10 @@ public sealed class GlobTool : ToolDefinition<GlobArgs, GlobOutput>
 
     protected override Task<GlobOutput> ExecuteTyped(GlobArgs args, ToolRunContext exec)
     {
+        var cwd = exec.Agent?.Session.Header.Cwd ?? Directory.GetCurrentDirectory();
         var root = string.IsNullOrWhiteSpace(args.Path)
-            ? exec.Session.Header.Cwd ?? Directory.GetCurrentDirectory()
-            : Path.GetFullPath(args.Path, exec.Session.Header.Cwd ?? Directory.GetCurrentDirectory());
+            ? cwd
+            : Path.GetFullPath(args.Path, cwd);
         var matcher = new GlobMatcher(args.Pattern);
         var files = new List<string>();
         foreach (var file in EnumerateFiles(root))
@@ -121,6 +122,45 @@ public sealed class GlobTool : ToolDefinition<GlobArgs, GlobOutput>
     };
 }
 
+/// <summary>Shared file-scan hygiene for glob/grep: binary detection.</summary>
+public static class SourceScan
+{
+    private const int SniffBytes = 8192;
+
+    /// <summary>True when the file looks binary (a NUL byte in the first 8KB).</summary>
+    public static bool IsBinary(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var buffer = new byte[Math.Min(SniffBytes, stream.Length > int.MaxValue ? SniffBytes : (int)Math.Min(stream.Length, SniffBytes))];
+            if (buffer.Length == 0) return false;
+            var read = stream.Read(buffer, 0, buffer.Length);
+            for (var i = 0; i < read; i++)
+            {
+                if (buffer[i] == 0) return true;
+            }
+            return false;
+        }
+        catch
+        {
+            return false; // unreadable here means the read step will skip it with its own guard
+        }
+    }
+
+    /// <summary>Comma-separated glob filters; empty means match everything.</summary>
+    public static IReadOnlyList<GlobMatcher> Includes(string? include)
+    {
+        if (string.IsNullOrWhiteSpace(include)) return [];
+        return include.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(pattern => new GlobMatcher(pattern))
+            .ToList();
+    }
+
+    public static bool MatchesAny(IReadOnlyList<GlobMatcher> includes, string fileName)
+        => includes.Count == 0 || includes.Any(m => m.Matches(fileName));
+}
+
 /// <summary>Minimal glob matcher: **, *, ?, and {a,b} alternation.</summary>
 public sealed partial class GlobMatcher(string pattern)
 {
@@ -174,14 +214,15 @@ public sealed class GrepTool : ToolDefinition<GrepArgs, GrepOutput>
 
     public override string Description =>
         "Search file contents with a regular expression. Returns matching lines with line numbers, "
-        + "grouped by file, up to 250 matches. Use read on a matched file for surrounding context.";
+        + "grouped by file, up to 250 matches. Build output dirs (.git, node_modules, bin, obj, …) are "
+        + "skipped and binary files are never searched. Use read on a matched file for surrounding context.";
 
     public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(
         properties: new Dictionary<string, JsonSchema.Schema>
         {
             ["pattern"] = JsonSchema.String("Regular expression to search for (.NET syntax)."),
             ["path"] = JsonSchema.String("File or directory to search. Defaults to the session workspace."),
-            ["include"] = JsonSchema.String("One glob filter for which files to search (e.g. \"*.cs\")."),
+            ["include"] = JsonSchema.String("Comma-separated glob filters for which files to search (e.g. \"*.cs,*.razor\")."),
         },
         required: ["pattern"]);
 
@@ -210,11 +251,12 @@ public sealed class GrepTool : ToolDefinition<GrepArgs, GrepOutput>
 
     protected override Task<GrepOutput> ExecuteTyped(GrepArgs args, ToolRunContext exec)
     {
+        var cwd = exec.Agent?.Session.Header.Cwd ?? Directory.GetCurrentDirectory();
         var root = string.IsNullOrWhiteSpace(args.Path)
-            ? exec.Session.Header.Cwd ?? Directory.GetCurrentDirectory()
-            : Path.GetFullPath(args.Path, exec.Session.Header.Cwd ?? Directory.GetCurrentDirectory());
+            ? cwd
+            : Path.GetFullPath(args.Path, cwd);
         var regex = new Regex(args.Pattern, RegexOptions.Compiled);
-        var include = args.Include is { Length: > 0 } ? new GlobMatcher(args.Include) : null;
+        var includes = SourceScan.Includes(args.Include);
         var matches = new List<SearchResultLine>();
         var capped = false;
 
@@ -225,11 +267,12 @@ public sealed class GrepTool : ToolDefinition<GrepArgs, GrepOutput>
         }
         else
         {
-            files = GlobTool.EnumerateFiles(root).Where(f => include is null || include.Matches(Path.GetFileName(f)));
+            files = GlobTool.EnumerateFiles(root).Where(f => SourceScan.MatchesAny(includes, Path.GetFileName(f)));
         }
 
         foreach (var file in files)
         {
+            if (SourceScan.IsBinary(file)) continue;
             string[] lines;
             try { lines = File.ReadAllLines(file, Encoding.UTF8); }
             catch (UnauthorizedAccessException) { continue; }

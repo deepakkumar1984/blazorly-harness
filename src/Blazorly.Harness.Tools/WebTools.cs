@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Blazorly.Harness.Core.Tools;
 using Blazorly.Harness.Kernel;
@@ -149,6 +150,142 @@ public sealed class WebRuntime
     }
 }
 
+/// <summary>Tavily Search API backend (keyed). Fetch delegates to direct HTTP.</summary>
+public sealed class TavilySearchProvider : IWebProvider, IDisposable
+{
+    public const string DefaultEndpoint = "https://api.tavily.com";
+
+    private readonly string _apiKey;
+    private readonly Uri _endpoint;
+    private readonly HttpClient _client = CreateClient();
+    private readonly HttpWebProvider _fetch = new();
+
+    private static HttpClient CreateClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(HttpWebProvider.UserAgent);
+        return client;
+    }
+
+    public TavilySearchProvider(string apiKey, Uri? endpoint = null)
+    {
+        _apiKey = apiKey;
+        _endpoint = endpoint ?? new Uri(DefaultEndpoint);
+    }
+
+    public void Dispose()
+    {
+        _client.Dispose();
+        _fetch.Dispose();
+    }
+
+    public Task<WebFetchResult> FetchAsync(string url, CancellationToken ct) => _fetch.FetchAsync(url, ct);
+
+    public async Task<IReadOnlyList<WebSearchResult>> SearchAsync(string query, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(_endpoint, "/search"))
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { api_key = _apiKey, query, max_results = WebLimits.MaxSearchResults, include_answer = false }),
+                Encoding.UTF8, "application/json"),
+        };
+        using var response = await _client.SendAsync(request, ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) throw Classify(response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+        var results = new List<WebSearchResult>();
+        if (doc.RootElement.TryGetProperty("results", out var items) && items.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in items.EnumerateArray())
+            {
+                if (results.Count >= WebLimits.MaxSearchResults) break;
+                var title = item.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+                var url = item.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+                var snippet = item.TryGetProperty("content", out var c) ? c.GetString() ?? "" : "";
+                if (url.Length == 0) continue;
+                results.Add(new WebSearchResult(title, url, SnippetOf(snippet)));
+            }
+        }
+        if (results.Count == 0) throw new ToolException("WEB_SEARCH_EMPTY", "no results");
+        return results;
+    }
+
+    private static ToolException Classify(HttpStatusCode status) => (int)status switch
+    {
+        401 or 403 => new ToolException("WEB_SEARCH_AUTH", $"tavily rejected the API key ({(int)status})"),
+        429 => new ToolException("WEB_SEARCH_RATE_LIMIT", "tavily rate limit (429)"),
+        _ => new ToolException("WEB_SEARCH_FAILED", $"tavily search failed ({(int)status})"),
+    };
+
+    private static string SnippetOf(string content)
+        => content.Length > 500 ? content[..500] + "…" : content;
+}
+
+/// <summary>Brave Search API backend (keyed). Fetch delegates to direct HTTP.</summary>
+public sealed class BraveSearchProvider : IWebProvider, IDisposable
+{
+    public const string DefaultEndpoint = "https://api.search.brave.com";
+
+    private readonly string _apiKey;
+    private readonly Uri _endpoint;
+    private readonly HttpClient _client = CreateClient();
+    private readonly HttpWebProvider _fetch = new();
+
+    private static HttpClient CreateClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(HttpWebProvider.UserAgent);
+        return client;
+    }
+
+    public BraveSearchProvider(string apiKey, Uri? endpoint = null)
+    {
+        _apiKey = apiKey;
+        _endpoint = endpoint ?? new Uri(DefaultEndpoint);
+    }
+
+    public void Dispose()
+    {
+        _client.Dispose();
+        _fetch.Dispose();
+    }
+
+    public Task<WebFetchResult> FetchAsync(string url, CancellationToken ct) => _fetch.FetchAsync(url, ct);
+
+    public async Task<IReadOnlyList<WebSearchResult>> SearchAsync(string query, CancellationToken ct)
+    {
+        var url = new Uri(_endpoint, $"/res/v1/web/search?q={Uri.EscapeDataString(query)}&count={WebLimits.MaxSearchResults}");
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("X-Subscription-Token", _apiKey);
+        using var response = await _client.SendAsync(request, ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) throw Classify(response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+        var results = new List<WebSearchResult>();
+        if (doc.RootElement.TryGetProperty("web", out var web)
+            && web.TryGetProperty("results", out var items)
+            && items.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in items.EnumerateArray())
+            {
+                if (results.Count >= WebLimits.MaxSearchResults) break;
+                var title = item.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+                var link = item.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+                var snippet = item.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
+                if (link.Length == 0) continue;
+                results.Add(new WebSearchResult(title, link, snippet));
+            }
+        }
+        if (results.Count == 0) throw new ToolException("WEB_SEARCH_EMPTY", "no results");
+        return results;
+    }
+
+    private static ToolException Classify(HttpStatusCode status) => (int)status switch
+    {
+        401 or 403 => new ToolException("WEB_SEARCH_AUTH", $"brave rejected the API key ({(int)status})"),
+        429 => new ToolException("WEB_SEARCH_RATE_LIMIT", "brave rate limit (429)"),
+        _ => new ToolException("WEB_SEARCH_FAILED", $"brave search failed ({(int)status})"),
+    };
+}
+
 public sealed record WebSearchArgs(string Query);
 
 public sealed record WebSearchOutput(string Query, IReadOnlyList<WebSearchResult> Results);
@@ -293,7 +430,7 @@ public sealed class WebPlugin : HarnessPlugin
 
     public WebPlugin(IWebProvider provider) : this(provider, ownsProvider: false) { }
 
-    private WebPlugin(IWebProvider provider, bool ownsProvider)
+    public WebPlugin(IWebProvider provider, bool ownsProvider)
     {
         _provider = provider;
         _ownsProvider = ownsProvider;

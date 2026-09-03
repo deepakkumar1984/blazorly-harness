@@ -280,4 +280,51 @@ public class HooksTests
         Assert.Equal(0, result.Data.GetProperty("exitCode").GetInt32());
         Assert.Contains(events, e => e.Type == SessionEventTypes.TurnEnd);
     }
+
+    [Fact]
+    public async Task PostStepBlockingHook_EndsTurnBlockedAfterTheStep()
+    {
+        var path = await WriteHooksAsync(
+            """
+            [{"point":"post-step","matcher":null,"command":"printf '{\"decision\":\"block\",\"reason\":\"stop here\"}'"}]
+            """);
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
+        new HooksPlugin(path).Apply(harness.Ctx);
+        var agent = harness.CreateAgent(cwd: Path.GetDirectoryName(path));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        var events = agent.Session.Events;
+        Assert.Contains(events, e => e.Type == SessionEventTypes.StepStart); // the step ran first
+        Assert.Contains(events, e => e.Type == SessionEventTypes.StepEnd);
+        var turnEnd = Assert.Single(events, e => e.Type == SessionEventTypes.TurnEnd);
+        Assert.IsType<TurnEndReason.Blocked>(SessionEventRead.TurnEndReasonOf(turnEnd));
+
+        var invoked = Assert.Single(events, e => e.Type == SessionEventTypes.HookInvoked);
+        Assert.Equal("post-step", invoked.Data.GetProperty("point").GetString());
+        var result = Assert.Single(events, e => e.Type == SessionEventTypes.HookResult);
+        Assert.Equal("block", result.Data.GetProperty("decision").GetString());
+    }
+
+    [Fact]
+    public async Task PostStepAllowingHook_LetsTheTurnComplete()
+    {
+        var path = await WriteHooksAsync(
+            """
+            [{"point":"post-step","command":"true"}]
+            """);
+        await using var harness = TestHarness.Create(_ => Scripted.Text("done"));
+        new HooksPlugin(path).Apply(harness.Ctx);
+        var agent = harness.CreateAgent(cwd: Path.GetDirectoryName(path));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        var events = agent.Session.Events;
+        var turnEnd = Assert.Single(events, e => e.Type == SessionEventTypes.TurnEnd);
+        Assert.IsType<TurnEndReason.Completed>(SessionEventRead.TurnEndReasonOf(turnEnd));
+        var result = Assert.Single(events, e => e.Type == SessionEventTypes.HookResult);
+        Assert.Equal("allow", result.Data.GetProperty("decision").GetString());
+    }
 }

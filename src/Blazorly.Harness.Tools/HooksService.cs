@@ -199,9 +199,9 @@ public sealed class HooksService
 /// Runs shell hooks from ~/.blazorly/hooks.json at agent-loop boundaries. pre-step hooks gate
 /// each step through the agent/pre-step waterfall: a hook printing
 /// {"decision":"block","reason":"..."} rejects the step without running the model and the turn
-/// ends blocked. turn-end hooks run on agent/turn-stopping; a blocking decision there is
-/// recorded on the session but cannot stop an already-stopping turn. post-step hooks are
-/// parsed and validated but not run in v1 — there is no post-step event to hang them on yet.
+/// ends blocked. post-step hooks run on the agent/post-step waterfall after each settled step;
+/// a block ends the turn blocked (no further steps). turn-end hooks run on agent/turn-stopping;
+/// a blocking decision there is recorded on the session but cannot stop an already-stopping turn.
 /// </summary>
 public sealed class HooksPlugin(string? path = null) : HarnessPlugin
 {
@@ -241,6 +241,23 @@ public sealed class HooksPlugin(string? path = null) : HarnessPlugin
                     await InvokeAsync(payload.Agent, hook, messages, ct).ConfigureAwait(false);
                 }
             });
+        }
+
+        var postStep = Service.HooksAt(HookPoints.PostStep);
+        if (postStep.Count > 0)
+        {
+            ctx.OnWaterfall<PostStepEvent, PostStepDecision, PostStepDecision>("agent/post-step",
+                async (payload, value, next, ct) =>
+                {
+                    var messages = payload.Agent.Session.DeriveMessages();
+                    foreach (var hook in Matching(postStep, messages))
+                    {
+                        var run = await InvokeAsync(payload.Agent, hook, messages, ct).ConfigureAwait(false);
+                        if (run.Decision == HookRunDecision.Block)
+                            return PostStepDecision.Stop(); // short-circuit: next() is never called
+                    }
+                    return await next(value).ConfigureAwait(false);
+                });
         }
 
         return Task.CompletedTask;
