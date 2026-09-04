@@ -163,6 +163,14 @@ public class PatchTests : IDisposable
         Assert.False(settings.EnableWorkflows);
         Assert.True(settings.EnableWeb);
     }
+
+    [Fact]
+    public void Disable_AutoPlan_TurnsFlagOff_KeepsPlanMode()
+    {
+        var settings = Patched("""{"disable": ["auto-plan"]}""");
+        Assert.False(settings.EnableAutoPlan);
+        Assert.True(settings.EnablePlanMode);
+    }
 }
 
 [Collection("BlazorlyHome")]
@@ -186,6 +194,41 @@ public class BootCompositionTests : BootstrapperTestBase
             Assert.Equal(applied.Count, applied.Distinct().Count()); // no duplicates
             Assert.NotNull(boot.Loop);
             Assert.NotNull(boot.Sessions);
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Boot_AutoPlanLoadsAfterPlanMode_AndDisablesViaPatches()
+    {
+        // patches are applied alongside persisted settings — both files, like the app expects
+        File.WriteAllText(Path.Combine(Home, "settings.json"), """{"provider":"deepseek","model":"deepseek-v4-flash"}""");
+        File.WriteAllText(Path.Combine(Home, "patches.json"), """{"disable":["auto-plan"]}""");
+        var patched = new HarnessBootstrapper();
+        await patched.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.DoesNotContain("auto-plan", patched.AppliedPlugins);
+            Assert.False(patched.Settings.EnableAutoPlan);
+        }
+        finally
+        {
+            await patched.DisposeAsync();
+            File.Delete(Path.Combine(Home, "patches.json"));
+            File.Delete(Path.Combine(Home, "settings.json")); // the patched boot persisted its state
+        }
+
+        var boot = new HarnessBootstrapper();
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var applied = boot.AppliedPlugins.ToList();
+            Assert.Contains("plan-mode", applied);
+            Assert.Contains("auto-plan", applied);
+            Assert.True(applied.IndexOf("plan-mode") < applied.IndexOf("auto-plan"));
         }
         finally
         {

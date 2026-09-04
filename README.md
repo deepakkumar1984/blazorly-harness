@@ -218,7 +218,8 @@ dotnet run --project src/Blazorly.Harness.Web
 | `workspaceRoot` | current directory | Default workspace added on first boot |
 | `contextWindowTokens` | `65536` | Used by compaction and the token meter |
 | `compactionThreshold` / `compactionPrunerChars` | `0.72` / `4000` | When compaction kicks in and how it prunes |
-| `enable*` flags | mostly `true` | Toggle plugins: terminals, LSP, web, skills, goals, plan mode, code mode, workflows, teams, MCP, schedule, hooks, auto-titles, spill, ask-user, session query, project instructions |
+| `enable*` flags | mostly `true` | Toggle plugins: terminals, LSP, web, skills, goals, plan mode, auto plan mode, code mode, workflows, teams, MCP, schedule, hooks, auto-titles, spill, ask-user, session query, project instructions |
+| `autoPlanThreshold` | `55` | Complexity score (0–100) at which auto-plan engages a fresh turn's brief (settings file only) |
 | `telemetryEnabled` | `true` | Local-only usage aggregates; nothing leaves the machine |
 | `enableE2b`, `e2bApiKey`, `e2bTemplate`, `e2bBaseUrl` | off | Remote E2B sandbox execution (key resolves from settings, else the `E2B_API_KEY` env var) |
 | `webSearchBackend` | `duckduckgo` | `web_search` backend: `duckduckgo` (keyless), `tavily`, or `brave` (change applies after restart) |
@@ -243,6 +244,12 @@ Add stdio MCP servers to `~/.blazorly/mcp.json`; their tools appear as `mcp__<se
 ### Project instructions
 
 The agent picks up instruction files — `AGENTS.md`, `CLAUDE.md`, and their `.local.md` overlays — from the harness home, the workspace root, and any directory it touches with read/write/edit. Commit an `AGENTS.md` to a repo to steer behavior there.
+
+### Auto plan mode
+
+Plan mode (manual: `/plan`) restricts a session to read-only work until the model presents a plan via `exit_plan_mode` and you approve it in a modal. **Auto plan mode** extends this: at the start of each fresh user turn, a deterministic complexity scorer (length, sequencing words, scope verbs, multi-entity targets, `@file` references, numbered steps; questions are capped) rates the brief, and scores at or above `autoPlanThreshold` engage plan mode *before* the first model call. The header shows a `📋 plan · auto` chip, the mutation guard blocks writes, and the system prompt tells the model why planning was engaged.
+
+Guard rails: steers mid-turn never flip the mode; subagent and goal-driven turns are exempt; a brief that follows a plan you just approved runs without re-engaging (each approved plan covers its follow-up arc); `/plan` stays authoritative in both directions. Headless runs without an interactive reviewer fail closed — the model presents the plan as its final message instead of mutating. Disable with the Settings toggle, `{"disable":["auto-plan"]}` in `patches.json`, or `enableAutoPlan: false`.
 
 ### Plugins
 

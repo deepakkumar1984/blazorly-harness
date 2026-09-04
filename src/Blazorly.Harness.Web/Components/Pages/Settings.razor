@@ -507,6 +507,7 @@
         ("sessionquery", "Session-query tools"),
         ("goals", "Goals"),
         ("planmode", "Plan mode"),
+        ("autoplan", "Auto plan mode (complex briefs plan first)"),
         ("codemode", "run_code (C# scripting)"),
         ("terminals", "Persistent terminals"),
         ("workflows", "Workflows + ralph"),
@@ -528,6 +529,7 @@
         "sessionquery" => _settings.EnableSessionQuery,
         "goals" => _settings.EnableGoals,
         "planmode" => _settings.EnablePlanMode,
+        "autoplan" => _settings.EnableAutoPlan,
         "codemode" => _settings.EnableCodeMode,
         "terminals" => _settings.EnableTerminals,
         "workflows" => _settings.EnableWorkflows,
@@ -553,6 +555,7 @@
             case "sessionquery": _settings.EnableSessionQuery = on; break;
             case "goals": _settings.EnableGoals = on; break;
             case "planmode": _settings.EnablePlanMode = on; break;
+            case "autoplan": _settings.EnableAutoPlan = on; break;
             case "codemode": _settings.EnableCodeMode = on; break;
             case "terminals": _settings.EnableTerminals = on; break;
             case "workflows": _settings.EnableWorkflows = on; break;

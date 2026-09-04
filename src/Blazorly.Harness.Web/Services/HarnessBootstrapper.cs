@@ -45,6 +45,9 @@ public sealed class HarnessSettings
     public bool EnableSkills { get; set; } = true;
     public bool EnableGoals { get; set; } = true;
     public bool EnablePlanMode { get; set; } = true;
+    public bool EnableAutoPlan { get; set; } = true;
+    /// <summary>Complexity total (0–100) at which auto-plan engages a fresh turn's brief.</summary>
+    public int AutoPlanThreshold { get; set; } = Blazorly.Harness.Tools.AutoPlanPlugin.DefaultThreshold;
     public bool EnableAskUser { get; set; } = true;
     public bool EnableSessionQuery { get; set; } = true;
     public bool EnableProjectInstructions { get; set; } = true;
@@ -308,6 +311,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         if (Settings.EnableSessionQuery) plugins.Add(new SessionQueryPlugin());
         if (Settings.EnableGoals) plugins.Add(new GoalPlugin());
         if (Settings.EnablePlanMode) plugins.Add(new PlanModePlugin());
+        if (Settings.EnablePlanMode && Settings.EnableAutoPlan)
+            plugins.Add(new AutoPlanPlugin(Settings.AutoPlanThreshold));
         if (Settings.EnableCodeMode) plugins.Add(new CodeModePlugin());
         if (Settings.EnableTerminals) plugins.Add(new TerminalPlugin());
         if (Settings.EnableLsp) plugins.Add(new LspPlugin());

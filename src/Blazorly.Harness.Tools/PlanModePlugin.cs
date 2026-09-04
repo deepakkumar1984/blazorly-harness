@@ -9,7 +9,12 @@ using Blazorly.Harness.Llm;
 namespace Blazorly.Harness.Tools;
 
 /// <summary>Durable payload of a plan/mode event, camelCase via SessionJson.</summary>
-public sealed record PlanModePayload(bool Active);
+/// <remarks>Optional members keep older logs (active-only payloads) deserializable.</remarks>
+public sealed record PlanModePayload(
+    bool Active,
+    bool? Auto = null,
+    int? Score = null,
+    IReadOnlyList<string>? Reasons = null);
 
 /// <summary>ctx.planMode — the plan-mode flag folded from plan/mode events (latest wins).</summary>
 public sealed class PlanModeService
@@ -17,7 +22,10 @@ public sealed class PlanModeService
     public const string ServiceKey = "planMode";
 
     /// <summary>True when the latest plan/mode event marks plan mode active.</summary>
-    public bool IsActive(Session session)
+    public bool IsActive(Session session) => Latest(session) is { Active: true };
+
+    /// <summary>The latest plan/mode payload, or null when the session never set the mode.</summary>
+    public PlanModePayload? Latest(Session session)
     {
         var events = session.Events;
         for (var i = events.Count - 1; i >= 0; i--)
@@ -25,22 +33,22 @@ public sealed class PlanModeService
             if (events[i].Type != SessionEventTypes.PlanMode) continue;
             try
             {
-                return SessionJson.FromElement<PlanModePayload>(events[i].Data).Active;
+                return SessionJson.FromElement<PlanModePayload>(events[i].Data);
             }
             catch (Exception ex) when (ex is JsonException or InvalidOperationException or NotSupportedException)
             {
-                return false;
+                return null;
             }
         }
-        return false;
+        return null;
     }
 
     /// <summary>Appends the durable plan/mode event that sets the mode.</summary>
     public void SetActive(Session session, bool active) => Toggle(session, active);
 
     /// <summary>Orchestrator helper (e.g. a /plan command): flip plan mode without resolving the service.</summary>
-    public static void Toggle(Session session, bool active)
-        => session.Append(SessionEventTypes.PlanMode, new PlanModePayload(active));
+    public static void Toggle(Session session, bool active, bool? auto = null, int? score = null, IReadOnlyList<string>? reasons = null)
+        => session.Append(SessionEventTypes.PlanMode, new PlanModePayload(active, auto, score, reasons));
 }
 
 public sealed record ExitPlanModeArgs(string Plan);

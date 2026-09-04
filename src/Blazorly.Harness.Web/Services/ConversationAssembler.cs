@@ -50,6 +50,8 @@ public sealed class ConversationSnapshot
     public int LastSeq { get; init; }
     public string? Title { get; init; }
     public string? SandboxMode { get; init; }
+    /// <summary>Plan-mode state chip: null (off), "on" (manual), or "auto" (auto-engaged).</summary>
+    public string? PlanMode { get; init; }
     public Blazorly.Harness.Core.TokenMeter.ContextMeterReading? Context { get; init; }
 }
 
@@ -157,6 +159,7 @@ public sealed class ConversationFolder
             ? _meter.Measure(agent, (_usageIn, _usageOut, _usageCacheRead, _usageCacheWrite), _declaredWindow)
             : null;
 
+        var plan = new Blazorly.Harness.Tools.PlanModeService().Latest(_session);
         _last = new ConversationSnapshot
         {
             Nodes = [.. _nodes.OrderBy(ConversationAssemblerSort.Key)],
@@ -165,6 +168,7 @@ public sealed class ConversationFolder
             LastSeq = events.Count > 0 ? events[^1].Seq : -1,
             Title = _session.LatestTitle(),
             SandboxMode = _session.LatestSandboxMode(),
+            PlanMode = plan is { Active: true } ? (plan.Auto == true ? "auto" : "on") : null,
             Context = context,
         };
         return _last;

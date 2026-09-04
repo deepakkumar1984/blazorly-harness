@@ -26,6 +26,12 @@
             <button class="status-chip permission" title="Switch permission preset (/permission)" @onclick="TogglePermissionMenu">
                 🔒 @(EffectiveSandbox)
             </button>
+            @if (_snapshot?.PlanMode is { } planState)
+            {
+                <span class="status-chip" title="Plan mode is active — mutations are blocked until a plan is approved via exit_plan_mode (engaged @(_snapshot.PlanMode == "auto" ? "automatically for a complex brief" : "manually via /plan"))">
+                    📋 plan · @(planState == "auto" ? "auto" : "on")
+                </span>
+            }
             @if (_snapshot?.Context is { } context)
             {
                 <span class="status-chip context-meter" title="@MeterTooltip(context)">
