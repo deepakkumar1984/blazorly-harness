@@ -9,7 +9,7 @@
 @inject ConversationAssembler Assembler
 @implements IDisposable
 
-<div class="session-view">
+<div class="session-view @((_snapshot?.Todos.Count ?? 0) > 0 ? "with-todos" : "")">
     <header class="session-header">
         <div class="session-header-title">
             @if (_editingTitle)
@@ -42,6 +42,7 @@
                 <button class="@TabClass("chat")" @onclick='() => SwitchView("chat")'>Chat</button>
                 <button class="@TabClass("trajectory")" @onclick='() => SwitchView("trajectory")'>Trajectory</button>
             </div>
+            <button class="ghost @(_terminalOpen ? "stats-toggle on" : "")" title="Run commands in a persistent shell for this session" @onclick="ToggleTerminal">Terminal</button>
             <button class="ghost @(_statsOpen ? "stats-toggle on" : "")" title="Session statistics: turns, tokens, duration, tool usage" @onclick='() => _statsOpen = !_statsOpen'>Stats</button>
             <button class="ghost" @onclick="ForkHere" title="Fork this session at the last completed turn">Fork</button>
         </div>
@@ -288,15 +289,23 @@
 
         @if (_snapshot?.Todos.Count > 0)
         {
-            <div class="todo-panel">
-                @foreach (var todo in _snapshot.Todos)
-                {
-                    <div class="todo-item @todo.Status">
-                        <span class="todo-glyph">@TodoGlyph(todo.Status)</span>
-                        <span>@todo.Content</span>
-                    </div>
-                }
-            </div>
+            var todos = _snapshot.Todos;
+            var done = todos.Count(t => t.Status == TodoItem.Completed);
+            <aside class="todo-panel" aria-label="Task list">
+                <div class="todo-head">
+                    <span class="todo-head-title">Tasks</span>
+                    <span class="todo-count">@done/@todos.Count done</span>
+                </div>
+                <div class="todo-list">
+                    @foreach (var todo in todos)
+                    {
+                        <div class="todo-item @todo.Status">
+                            <span class="todo-glyph">@TodoGlyph(todo.Status)</span>
+                            <span class="todo-text">@todo.Content</span>
+                        </div>
+                    }
+                </div>
+            </aside>
         }
 
         @if (_agent is { Inbox.HasPending: true })
@@ -328,6 +337,29 @@
                 }
             </div>
         }
+    }
+
+    @if (_terminalOpen)
+    {
+        <section class="terminal-drawer" aria-label="Session terminal">
+            <div class="terminal-head">
+                <span class="terminal-title">&gt;_ shell · @WorkspaceLabel</span>
+                <span class="terminal-actions">
+                    <button class="link" title="Interrupt the running command (SIGINT)" @onclick="TerminalInterrupt">Ctrl+C</button>
+                    <button class="link" @onclick="TerminalClearView">clear</button>
+                    <button class="link danger" title="Kill the shell; Terminal reopens a fresh one" @onclick="TerminalKillShell">kill shell</button>
+                </span>
+            </div>
+            <pre class="terminal-output" @ref="_terminalOut">@(_terminalOutput.Length > 0 ? _terminalOutput : "(empty shell — type a command below)")</pre>
+            <div class="terminal-input-row">
+                <span class="terminal-prompt">$</span>
+                <input class="terminal-input" value="@_terminalInput"
+                       @oninput="OnTerminalInput"
+                       @onkeydown="OnTerminalKey"
+                       placeholder="type a command… (Enter runs, ↑ recalls)"
+                       spellcheck="false" />
+            </div>
+        </section>
     }
 
     <footer class="composer">
@@ -386,6 +418,17 @@
     private PendingInteraction? _pendingQuestion;
     private bool _rawTrajectory;
     private bool _statsOpen;
+
+    // ---- ui terminal state ----
+    private bool _terminalOpen;
+    private string? _terminalId;
+    private string _terminalOutput = "";
+    private string _terminalInput = "";
+    private bool _terminalDead;
+    private System.Timers.Timer? _terminalPoll;
+    private ElementReference _terminalOut;
+    private readonly List<string> _terminalHistory = [];
+    private int _terminalHistoryAt;
 
     [Inject] private MarkdownService Markdown { get; set; } = null!;
     [Inject] private IJSRuntime Js { get; set; } = null!;
@@ -459,6 +502,16 @@
         _pendingApproval = null;
         _pendingQuestion = null;
         _dirty = false;
+        // The drawer is per-session: stop polling the previous shell and reset the view
+        // (the shell itself stays alive in the service and is re-attached on reopen).
+        _terminalOpen = false;
+        _terminalPoll?.Stop();
+        _terminalId = null;
+        _terminalOutput = "";
+        _terminalInput = "";
+        _terminalDead = false;
+        _terminalHistory.Clear();
+        _terminalHistoryAt = 0;
 
         _subscription = Broker.Subscribe(frame =>
         {
@@ -623,6 +676,144 @@
     {
         Facade.Cancel(SessionId);
         _dirty = true;
+    }
+
+    // ---- ui terminal ----
+
+    private async Task ToggleTerminal()
+    {
+        if (_terminalOpen)
+        {
+            _terminalOpen = false;
+            _terminalPoll?.Stop();
+            return;
+        }
+        try
+        {
+            _terminalId = Facade.UiTerminalOpen(SessionId);
+            _terminalDead = false;
+            _terminalOutput = Facade.UiTerminalRead(SessionId, _terminalId);
+            _terminalOpen = true;
+            _terminalPoll ??= new System.Timers.Timer(400);
+            _terminalPoll.Elapsed += (_, _) => _ = InvokeAsync(TerminalPollAsync);
+            _terminalPoll.Start();
+            await ScrollTerminal();
+        }
+        catch (Exception ex)
+        {
+            _terminalOutput = $"cannot open a shell here: {ex.Message}";
+            _terminalOpen = true;
+        }
+    }
+
+    /// <summary>Picks up streamed output and notices a dead shell; the shell itself lives on.</summary>
+    private async Task TerminalPollAsync()
+    {
+        if (!_terminalOpen || _terminalId is null) return;
+        try
+        {
+            if (!Facade.UiTerminalRunning(SessionId, _terminalId))
+            {
+                if (!_terminalDead)
+                {
+                    _terminalDead = true;
+                    _terminalOutput += "\n[shell exited — kill shell or close to start a new one]";
+                    await InvokeAsync(StateHasChanged);
+                }
+                return;
+            }
+            var snapshot = Facade.UiTerminalRead(SessionId, _terminalId);
+            if (!ReferenceEquals(snapshot, _terminalOutput) && snapshot != _terminalOutput)
+            {
+                _terminalOutput = snapshot.Length > 64_000 ? "…\n" + snapshot[^64_000..] : snapshot;
+                await InvokeAsync(StateHasChanged);
+                await ScrollTerminal();
+            }
+        }
+        catch
+        {
+            // the shell vanished mid-poll; the next tick reports it
+        }
+    }
+
+    private void OnTerminalInput(Microsoft.AspNetCore.Components.ChangeEventArgs args)
+        => _terminalInput = args.Value?.ToString() ?? "";
+
+    private async Task OnTerminalKey(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+        {
+            var command = _terminalInput;
+            _terminalInput = "";
+            if (command.Trim().Length == 0) return;
+            _terminalHistory.Add(command);
+            if (_terminalHistory.Count > 50) _terminalHistory.RemoveAt(0);
+            _terminalHistoryAt = _terminalHistory.Count;
+            await TerminalRunAsync(command);
+        }
+        else if (args.Key == "ArrowUp")
+        {
+            if (_terminalHistoryAt > 0)
+            {
+                _terminalHistoryAt--;
+                _terminalInput = _terminalHistory[_terminalHistoryAt];
+            }
+        }
+        else if (args.Key == "ArrowDown")
+        {
+            _terminalHistoryAt = Math.Min(_terminalHistory.Count, _terminalHistoryAt + 1);
+            _terminalInput = _terminalHistoryAt < _terminalHistory.Count ? _terminalHistory[_terminalHistoryAt] : "";
+        }
+    }
+
+    private async Task TerminalRunAsync(string command)
+    {
+        if (_terminalId is null) return;
+        _terminalDead = false;
+        try
+        {
+            await Facade.UiTerminalSendAsync(SessionId, _terminalId, command);
+        }
+        catch (Exception ex)
+        {
+            _terminalOutput += $"\n[send failed: {ex.Message}]";
+        }
+        _terminalOutput = Facade.UiTerminalRead(SessionId, _terminalId);
+        if (_terminalOutput.Length > 64_000) _terminalOutput = "…\n" + _terminalOutput[^64_000..];
+        await InvokeAsync(StateHasChanged);
+        await ScrollTerminal();
+    }
+
+    private void TerminalInterrupt()
+    {
+        if (_terminalId is null) return;
+        try { Facade.UiTerminalSignal(SessionId, _terminalId, "SIGINT"); }
+        catch (Exception ex) { _terminalOutput += $"\n[signal failed: {ex.Message}]"; }
+    }
+
+    private void TerminalClearView() => _terminalOutput = "";
+
+    private async Task TerminalKillShell()
+    {
+        if (_terminalId is null) return;
+        var dead = _terminalId;
+        _terminalId = null;
+        _terminalDead = false;
+        _terminalOutput = "";
+        try { Facade.UiTerminalClose(SessionId, dead); }
+        catch { /* already gone */ }
+        _terminalId = Facade.UiTerminalOpen(SessionId);
+        _terminalOutput = Facade.UiTerminalRead(SessionId, _terminalId);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ScrollTerminal()
+    {
+        try { await Js.InvokeVoidAsync("blazorly.scrollBottom", _terminalOut, true); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        catch (TaskCanceledException) { }
+        catch (OperationCanceledException) { }
     }
 
     private void RemoveQueued(Llm.Message message)
@@ -833,6 +1024,7 @@
     {
         _coalesce?.Dispose();
         _subscription?.Dispose();
+        _terminalPoll?.Dispose();
         _slashRef?.Dispose();
     }
 }

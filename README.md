@@ -45,6 +45,10 @@ From the UI you can create/rename/fork/archive sessions, chat with the agent, wa
 
 **Runtime context** — every turn's context snapshot carries the current wall-clock time (minute precision, the `time` plugin) and, when a tmux server is running, a listing of its sessions/panes/commands (the `tmux` plugin — fail-soft, cached 30 s). Both are mount plugins, disable via `disabledPlugins: ["time", "tmux"]`.
 
+**Terminal** — the session header's Terminal button opens a drawer with a persistent shell in the session workspace (command history with ↑, Ctrl+C, clear, kill shell). The shell is scoped to the session's agent, so the model can also inspect it with `terminal_read`/`terminal_list`. Piped stdio, not a PTY: interactive TUIs (vim, top) are not supported. The shell survives drawer close/reopen and page reloads; it dies with the app process.
+
+Agents run server-side: closing the browser tab does not stop turns — reopening the session shows the live status and re-attaches the stream.
+
 ### REST / WebSocket API
 
 The same surface is available over HTTP for scripting:

@@ -91,7 +91,7 @@ body {
     z-index: 1000;
 }
 
-button { font: inherit; }
+button { font: inherit; cursor: pointer; }
 button:disabled { cursor: default; opacity: 0.5; }
 a { color: var(--accent); }
 
@@ -189,6 +189,7 @@ a { color: var(--accent); }
     text-decoration: none;
     white-space: nowrap;
     overflow: hidden;
+    cursor: pointer;
 }
 
 .session-item:hover { background: var(--bg-overlay); color: var(--text); }
@@ -248,8 +249,11 @@ button.icon:disabled { opacity: 0.35; }
 
 .session-row { display: flex; align-items: center; }
 .session-row .session-item { flex: 1; min-width: 0; }
-.session-row .archive, .session-row .delete { display: none; }
-.session-row:hover .archive, .session-row:hover .delete { display: block; }
+/* Row actions stay visible (subdued) so archive/delete are discoverable, full on hover. */
+.session-row .archive, .session-row .delete { opacity: 0.5; }
+.session-row:hover .archive, .session-row:hover .delete,
+.session-row .archive:focus-visible, .session-row .delete:focus-visible { opacity: 1; }
+.session-row .archive { font-size: 13.5px; }
 .session-row.archived .session-title { text-decoration: line-through; opacity: 0.6; }
 .workspace-empty { padding: 2px 10px 6px 28px; color: var(--text-faint); font-size: 11.5px; }
 .archived-toggle { cursor: pointer; }
@@ -833,23 +837,59 @@ button.link:hover { text-decoration: underline; }
 
 .question .option:hover { border-color: var(--accent); background: var(--accent-soft); }
 
-/* ---- todo panel ---- */
+/* ---- todo panel: a floating card pinned top-right; the transcript makes room ---- */
 .todo-panel {
-    max-width: 860px;
-    margin: 0 auto;
-    width: calc(100% - 48px);
-    border-top: 1px solid var(--border);
-    padding: 8px 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 16px;
+    position: absolute;
+    top: 112px; /* below the session header */
+    right: 20px;
+    width: 308px;
+    max-width: calc(100vw - 40px);
+    max-height: min(52vh, 480px);
+    overflow-y: auto;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-2);
+    padding: 10px 12px;
+    z-index: 20;
 }
-
-.todo-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-dim); }
+.todo-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 0 2px 6px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 6px;
+}
+.todo-head-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+}
+.todo-count { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+.todo-list { display: flex; flex-direction: column; gap: 6px; }
+.todo-item { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; color: var(--text-dim); line-height: 1.4; }
+.todo-text { overflow-wrap: anywhere; }
 .todo-item.completed { text-decoration: line-through; color: var(--text-faint); }
 .todo-item.in_progress { color: var(--text); }
-.todo-glyph { color: var(--accent); font-size: 13px; }
+.todo-glyph { color: var(--accent); font-size: 13px; flex: none; }
 .todo-item.completed .todo-glyph { color: var(--success); }
+
+/* Wide screens: the chat column yields the card's width and sits left of it. */
+@media (min-width: 1101px) {
+    .session-view.with-todos .transcript { padding-right: 336px; }
+}
+/* Narrow screens: the card becomes a normal full-width block above the composer. */
+@media (max-width: 1100px) {
+    .todo-panel {
+        position: static;
+        width: calc(100% - 48px);
+        max-height: none;
+        margin: 0 auto 8px;
+        box-shadow: var(--shadow-1);
+    }
+}
 
 /* ---- queue dock ---- */
 .queue-dock {
@@ -970,6 +1010,60 @@ button.link:hover { text-decoration: underline; }
     color: var(--text-dim);
 }
 .composer textarea { padding-left: 14px; padding-top: 14px; }
+
+/* ---- ui terminal drawer ---- */
+.terminal-drawer {
+    max-width: 860px;
+    width: 100%;
+    margin: 0 auto 10px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.terminal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-overlay);
+}
+.terminal-title { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.terminal-actions { display: flex; gap: 4px; }
+.terminal-output {
+    margin: 0;
+    padding: 10px 12px;
+    min-height: 120px;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.terminal-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+}
+.terminal-prompt { font-family: var(--mono); color: var(--success); flex: none; }
+.terminal-input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12.5px;
+}
+.terminal-input::placeholder { color: var(--text-faint); }
 
 /* ---- composer ---- */
 .composer {

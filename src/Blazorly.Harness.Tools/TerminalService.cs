@@ -19,7 +19,7 @@ public sealed record TerminalSessionInfo(string SessionId, string? Name, int Pid
 public sealed class TerminalService : IDisposable
 {
     public const string ServiceKey = "terminals";
-    internal const string SentinelPrefix = "__BZT_DONE_";
+    public const string SentinelPrefix = "__BZT_DONE_";
 
     private readonly object _gate = new();
     private readonly Dictionary<string, TerminalSession> _sessions = new(StringComparer.Ordinal);

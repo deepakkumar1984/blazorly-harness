@@ -72,7 +72,7 @@
                                     <span class="session-title">@item.Title</span>
                                 </a>
                                 <button class="icon archive" title="@(item.Archived ? "Unarchive" : "Archive")" @onclick="() => ToggleArchive(item.Id, item.Archived)">
-                                    @(item.Archived ? "⇪" : "⌄")
+                                    @(item.Archived ? "↩" : "🗄")
                                 </button>
                                 <button class="icon danger delete" title="Delete chat" @onclick="() => AskDelete(item)">🗑</button>
                             </div>
@@ -99,7 +99,7 @@
                                         <span class="session-dot"></span>
                                         <span class="session-title">@item.Title</span>
                                     </a>
-                                    <button class="icon archive" title="Unarchive" @onclick="() => ToggleArchive(item.Id, true)">⇪</button>
+                                    <button class="icon archive" title="Unarchive" @onclick="() => ToggleArchive(item.Id, true)">↩</button>
                                     <button class="icon danger delete" title="Delete chat" @onclick="() => AskDelete(item)">🗑</button>
                                 </div>
                             }

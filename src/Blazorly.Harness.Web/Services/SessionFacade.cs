@@ -127,6 +127,62 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         harness.Agents.Get(sessionId)?.Cancel(AgentCancelCause.User());
     }
 
+    // ---- ui terminal (a persistent shell the user drives; scoped to the session's
+    // agent so the model can also inspect it with terminal_read/terminal_list) ----
+
+    private const string UiTerminalName = "ui";
+
+    public Tools.TerminalService? Terminals
+        => harness.Context.TryGet<Tools.TerminalService>(Tools.TerminalService.ServiceKey);
+
+    private Agent TerminalAgent(string sessionId)
+        => harness.Agents.Get(sessionId) ?? throw new InvalidOperationException("unknown session");
+
+    /// <summary>The session's ui shell id, or null when none was opened yet.</summary>
+    public string? UiTerminalId(string sessionId)
+        => Terminals?.List(TerminalAgent(sessionId)).FirstOrDefault(t => t.Name == UiTerminalName)?.SessionId;
+
+    /// <summary>Opens (or revives) the session's ui shell; returns the terminal id.</summary>
+    public string UiTerminalOpen(string sessionId)
+    {
+        var service = Terminals ?? throw new InvalidOperationException("terminals are not enabled in settings");
+        var agent = TerminalAgent(sessionId);
+        var existing = service.List(agent).FirstOrDefault(t => t.Name == UiTerminalName)?.SessionId;
+        if (existing is not null)
+        {
+            if (service.Info(agent, existing).Running) return existing;
+            service.Close(agent, existing); // dead shell: replace it
+        }
+        return service.Open(agent, UiTerminalName, GetSession(sessionId).Header.Cwd);
+    }
+
+    /// <summary>Runs one command line; returns the output it produced (sentinel-waited).</summary>
+    public async Task<string> UiTerminalSendAsync(string sessionId, string terminalId, string text)
+        => await Terminals!.SendAsync(TerminalAgent(sessionId), terminalId, text, waitMs: 400);
+
+    /// <summary>Full buffer snapshot (stdout+stderr since the shell opened), with the
+    /// command-completion sentinel lines stripped — the UI displays this raw.</summary>
+    public string UiTerminalRead(string sessionId, string terminalId)
+        => FilterSentinels(Terminals!.Read(TerminalAgent(sessionId), terminalId));
+
+    internal static string FilterSentinels(string buffer)
+    {
+        if (!buffer.Contains(Tools.TerminalService.SentinelPrefix, StringComparison.Ordinal)) return buffer;
+        var kept = buffer.Split('\n')
+            .Where(line => !line.Contains(Tools.TerminalService.SentinelPrefix, StringComparison.Ordinal));
+        return string.Join('\n', kept);
+    }
+
+    public bool UiTerminalRunning(string sessionId, string terminalId)
+        => Terminals!.Info(TerminalAgent(sessionId), terminalId).Running;
+
+    public void UiTerminalSignal(string sessionId, string terminalId, string signal)
+        => Terminals!.Signal(TerminalAgent(sessionId), terminalId, signal);
+
+    /// <summary>Kills the shell (the drawer itself just closes and can reopen a fresh one).</summary>
+    public void UiTerminalClose(string sessionId, string terminalId)
+        => Terminals!.Close(TerminalAgent(sessionId), terminalId);
+
     public Core.Sessions.Session Fork(string sessionId, int? atSeq)
         => harness.Sessions.Fork(sessionId, atSeq);
 

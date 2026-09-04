@@ -107,6 +107,9 @@ public sealed class WorkspaceRegistry
 
     public Workspace? ForRoot(string root)
     {
+        // Sessions may carry no cwd (foreign logs, hand-crafted seeds) — that is "no
+        // workspace", not a crash: the sidebar groups them under "unfiled".
+        if (string.IsNullOrWhiteSpace(root)) return null;
         var full = Path.GetFullPath(root);
         lock (_gate) return _store.Workspaces.FirstOrDefault(w => string.Equals(Path.GetFullPath(w.Root), full, StringComparison.Ordinal));
     }
