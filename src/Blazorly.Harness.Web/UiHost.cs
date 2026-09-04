@@ -37,6 +37,15 @@ public static class UiHost
             builder.WebHost.UseUrls($"http://localhost:{uiArgs.Port}");
         }
 
+        // The packaged product talks to humans on stdout, not through ASP.NET's info
+        // chatter (DataProtection keys, hosting lifetime). Dev runs keep full logs.
+        // Hosting errors are handled locally (see the bind-failure catch below).
+        if (Assembly.GetEntryAssembly()?.GetName().Name != "Blazorly.Harness.Web")
+        {
+            builder.Logging.SetMinimumLevel(LogLevel.Warning);
+            builder.Logging.AddFilter("Microsoft.Extensions.Hosting", LogLevel.Critical);
+        }
+
         builder.Services.AddRazorComponents()
         .AddInteractiveServerComponents();
     builder.Services.AddHttpClient();
@@ -375,7 +384,19 @@ public static class UiHost
             });
         }
 
-        app.Run();
+        try
+        {
+            app.Run();
+        }
+        catch (IOException ex) when (ex.InnerException is Microsoft.AspNetCore.Connections.AddressInUseException)
+        {
+            // a busy port is a user-facing condition, not a crash: say what to do, exit cleanly
+            Console.Error.WriteLine(
+                $"blazorly: port {uiArgs.Port} is already in use — another blazorly, or another app?\n" +
+                $"  stop it (macOS/Linux: lsof -ti :{uiArgs.Port} | xargs kill; Windows: netstat -ano | findstr :{uiArgs.Port})\n" +
+                $"  or start elsewhere: blazorly --port {uiArgs.Port + 1}");
+            return 1;
+        }
         return 0;
     }
 
