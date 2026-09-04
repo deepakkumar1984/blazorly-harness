@@ -39,6 +39,31 @@ dotnet run --project src/Blazorly.Harness.Web
 
 With the default `http` launch profile this serves **http://localhost:5080** (the `https` profile uses `https://localhost:7295`). The harness composition boots before the server accepts requests; persisted sessions reattach automatically on startup.
 
+## Install a release (Windows / macOS / Linux)
+
+No SDK, no build — self-contained binaries from [GitHub Releases](https://github.com/deepakkumar1984/blazorly-harness/releases):
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.sh | sh
+
+# Windows
+powershell -c "irm https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.ps1 | iex"
+```
+
+Both install the latest release for your platform (linux-x64/arm64, osx-x64/arm64, win-x64/arm64), verify the published checksum, install to `~/.blazorly/app/current` (Windows: `%LOCALAPPDATA%\blazorly\app\current`), and put `blazorly` on your PATH. Re-running the command upgrades in place. Set `BLAZORLY_INSTALL_BASE` to a local `dist/` folder to test unpublished builds; `BLAZORLY_SKIP_VERIFY=1` skips the checksum gate.
+
+The installed `blazorly` is the whole product:
+
+```text
+blazorly                # the UI at http://localhost:5080 (--port N, --no-open)
+blazorly run "job"      # headless task          blazorly sessions   # list sessions
+blazorly eval ...       # task benchmarks        blazorly serve-acp  # ACP for editors
+blazorly --version      # build stamp
+```
+
+Notes: data always lives in `~/.blazorly` regardless of binary location; on macOS/Windows there is no Landlock sandbox, so bash/run_code fail closed until you switch a session's permission preset to `danger-full-access` (`/permission`). To cut a release: `git tag v0.1.0 && git push --tags` — the release workflow builds all six platforms and publishes the GitHub Release the installers read.
+
 From the UI you can create/rename/fork/archive sessions, chat with the agent, watch tool calls stream in, manage workspaces, edit credentials, and configure providers on the **Settings** page — which is just a friendly editor for `settings.json` (see below).
 
 **@file references** — type `@` in the composer to autocomplete files under the session workspace (keyboard: arrows/Tab/Enter). Referenced files are attached to the outgoing message: text bodies travel as content blocks (256 KB cap per file, binary and oversized files degrade to notices), and images (`png`/`jpg`/`gif`/`webp`, ≤ 8 MB) go through the attachment store so vision models see them directly. Directories and misses produce an explicit note instead of silent failure.

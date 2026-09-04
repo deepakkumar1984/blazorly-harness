@@ -1,0 +1,46 @@
+name: release
+
+# Tag a version (v0.1.0) to build all platforms and publish a GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build all platforms
+        run: |
+          VERSION="${GITHUB_REF_NAME:-untagged}"
+          VERSION="${VERSION#v}"
+          ./installer/make-dist.sh
+        env:
+          BLAZORLY_VERSION: "${{ github.ref_name }}"
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TITLE="blazorly ${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$TITLE" \
+            --generate-notes \
+            dist/blazorly-*.tar.gz dist/blazorly-*.zip dist/SHA256SUMS \
+            installer/install.sh installer/install.ps1
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Upload artifacts (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blazorly-dist
+          path: |
+            dist/blazorly-*.tar.gz
+            dist/blazorly-*.zip
+            dist/SHA256SUMS

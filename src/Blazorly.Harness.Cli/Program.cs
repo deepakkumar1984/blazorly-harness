@@ -1,21 +1,34 @@
 using Blazorly.Harness.Cli;
+using Blazorly.Harness.Web;
 
 // blazorly — the product launcher (dsh apps/cli parity).
-//   blazorly run "job"       one headless task over the invoking directory
-//   blazorly sessions        list persisted sessions
+//   blazorly                   the UI (same as `serve`)
+//   blazorly serve             the UI, explicitly (--port N, --no-open)
+//   blazorly run "job"         one headless task over the invoking directory
+//   blazorly sessions          list persisted sessions
 //
 // Exit codes for `run`: 0 completed/max-tokens · 2 turn error/blocked · 3 aborted · 1 failure.
 
-return args.Length == 0 ? Help() : args[0] switch
+return args.Length == 0 ? await ServeAsync([]) : args[0] switch
 {
+    "serve" => await ServeAsync(args[1..]),
     "run" => await RunAsync(args[1..]),
     "sessions" => await SessionsAsync(args[1..]),
     "eval" => await EvalAsync(args[1..]),
     "serve-stdio" => await ServeStdioAsync(args[1..]),
     "serve-acp" => await ServeAcpAsync(args[1..]),
+    "--version" or "-v" or "version" => Version(),
     "--help" or "-h" or "help" => Help(),
     var unknown => Unknown(unknown),
 };
+
+static async Task<int> ServeAsync(string[] rest) => await UiHost.RunAsync(rest);
+
+static int Version()
+{
+    Console.WriteLine(Blazorly.Harness.Web.UiVersion.Text);
+    return 0;
+}
 
 static int Help()
 {
@@ -23,6 +36,11 @@ static int Help()
         blazorly — agentic coding harness (blazorly-harness CLI)
 
         Commands:
+          (no command)     Start the local UI (alias: `serve`). Flags:
+                             --port <n>           bind this port (default 5080)
+                             --no-open            do not open a browser tab
+                           The UI is also how settings, sessions, and workspaces are managed.
+
           run "job"        Run one headless task. The invoking directory becomes the
                            session workspace on first use. Streams the assistant text.
                            Flags:
@@ -66,6 +84,7 @@ static int Help()
         equivalents like XAI_API_KEY / GEMINI_API_KEY).
 
         Exit codes (run): 0 completed · 2 error · 3 aborted · 1 harness failure.
+        `blazorly --version` prints the build stamp.
         """);
     return 0;
 }

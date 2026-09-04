@@ -6,7 +6,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Blazorly.Harness.Core\Blazorly.Harness.Core.csproj" />
-    <ProjectReference Include="..\Blazorly.Harness.ScriptRunner\Blazorly.Harness.ScriptRunner.csproj" />
+    <!-- Publish=false: distribution builds place the ScriptRunner apphost beside the
+         host themselves (installer/make-dist.sh); publishing an Exe reference conflicts. -->
+    <ProjectReference Include="..\Blazorly.Harness.ScriptRunner\Blazorly.Harness.ScriptRunner.csproj" Publish="false" />
   </ItemGroup>
 
   <PropertyGroup>

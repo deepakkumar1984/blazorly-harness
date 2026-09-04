@@ -414,15 +414,7 @@ public static class EvalRunner
 
     private static CliSpawn SpawnCli(EvalTask task, string workspace, string? resume)
     {
-        var start = new ProcessStartInfo("dotnet")
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-            WorkingDirectory = workspace,
-        };
-        start.ArgumentList.Add(typeof(EvalRunner).Assembly.Location);
+        var start = CliRelaunch.StartInfo(workspace);
         start.ArgumentList.Add("run");
         start.ArgumentList.Add(resume is null ? task.Prompt : task.Interrupt?.ResumePrompt ?? "Continue.");
         start.ArgumentList.Add("--workspace");

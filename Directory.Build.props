@@ -1,0 +1,6 @@
+<Project>
+  <!-- One version stamp for every assembly; release builds override with /p:Version=vX.Y.Z. -->
+  <PropertyGroup>
+    <Version Condition="'$(Version)' == ''">0.1.0</Version>
+  </PropertyGroup>
+</Project>

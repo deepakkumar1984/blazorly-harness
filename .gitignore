@@ -33,6 +33,7 @@ msbuild.binlog
 # Publish output
 [Pp]ublish/
 publish/
+dist/
 *.publish.xml
 *.pubxml.user
 

@@ -6,10 +6,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>Blazorly.Harness.Cli</RootNamespace>
+    <!-- Distribution builds (installer/make-dist.sh) rename the apphost+dll to `blazorly`;
+         a scoped opt-in because /p:AssemblyName would hit every project in the graph. -->
+    <AssemblyName Condition="'$(BlazorlyPackaging)' == 'true'">blazorly</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Blazorly.Harness.Web\Blazorly.Harness.Web.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Blazorly.Harness.Tests" />
   </ItemGroup>
 
 </Project>
