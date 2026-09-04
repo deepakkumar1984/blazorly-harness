@@ -301,4 +301,4 @@ their `Enable*` flags (`web` → `enableWeb`).
 
 ## License
 
-TBD — all rights reserved by the authors.
+This project is licensed under the [MIT License](LICENSE).

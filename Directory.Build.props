@@ -2,5 +2,11 @@
   <!-- One version stamp for every assembly; release builds override with /p:Version=vX.Y.Z. -->
   <PropertyGroup>
     <Version Condition="'$(Version)' == ''">0.1.0</Version>
+    <Authors>Deepak Battini</Authors>
+    <Copyright>Copyright (c) 2026 Deepak Battini</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/deepakkumar1984/blazorly-harness</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/deepakkumar1984/blazorly-harness</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 </Project>
