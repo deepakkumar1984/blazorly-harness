@@ -125,6 +125,27 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
             ?? JsonSerializer.SerializeToElement(new { isError = true, error = result.Error?.Message ?? "tool failed" }, SessionJson.Options);
     }
 
+    /// <summary>
+    /// The active console capture for the current async flow. Console.Out/Error are
+    /// process-global, so the swapped writer routes each write through this: writes from
+    /// the script's flow (the AsyncLocal flows across its awaits) are captured, writes
+    /// from unrelated concurrent code (other sessions, tests) fall through to the real
+    /// console instead of leaking into the capture.
+    /// </summary>
+    private static readonly AsyncLocal<StringWriter?> ConsoleCapture = new();
+
+    private sealed class ScopedConsoleWriter(TextWriter fallback) : TextWriter
+    {
+        private TextWriter Target => ConsoleCapture.Value ?? fallback;
+
+        public override System.Text.Encoding Encoding => Target.Encoding;
+        public override void Write(char value) => Target.Write(value);
+        public override void Write(string? value) => Target.Write(value);
+        public override void Write(char[] buffer, int index, int count) => Target.Write(buffer, index, count);
+        public override void Write(ReadOnlySpan<char> buffer) => Target.Write(buffer);
+        public override void WriteLine(string? value) => Target.WriteLine(value);
+    }
+
     /// <summary>danger-full-access: today's in-process execution, unchanged.</summary>
     private async Task<RunCodeOutput> ExecuteInProcessAsync(RunCodeArgs args, ToolRunContext exec)
     {
@@ -138,12 +159,12 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
             throw new ToolException("RUN_CODE_FAILED", ex.Diagnostics.FirstOrDefault()?.GetMessage() ?? ex.Message);
         }
 
-        // Single-user harness: capturing the global console around the run is acceptable.
         var originalOut = Console.Out;
         var originalError = Console.Error;
         var console = new StringWriter();
-        Console.SetOut(console);
-        Console.SetError(console);
+        Console.SetOut(new ScopedConsoleWriter(originalOut));
+        Console.SetError(new ScopedConsoleWriter(originalError));
+        ConsoleCapture.Value = console;
         try
         {
             ScriptState<object?> state;
@@ -167,6 +188,7 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
         }
         finally
         {
+            ConsoleCapture.Value = null;
             Console.SetOut(originalOut);
             Console.SetError(originalError);
         }
