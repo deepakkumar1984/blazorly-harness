@@ -33,10 +33,16 @@ for rid in $RIDS; do
   dotnet publish "$ROOT/src/Blazorly.Harness.ScriptRunner" -c Release -r "$rid" --self-contained true \
     "/p:Version=$VERSION" -o "$stage"
 
-  # UI assets: an Exe-to-Exe reference does not flow Web's wwwroot into the launcher's
-  # publish — stage it explicitly. Static files are served plainly in this layout
-  # (see UiHost), so no static-web-assets manifest is needed.
-  cp -r "$ROOT/src/Blazorly.Harness.Web/wwwroot" "$stage/wwwroot"
+  # UI assets: an Exe-to-Exe reference does not flow Web's static web assets into the
+  # launcher's publish. The Web project's own publish emits wwwroot INCLUDING the
+  # SDK-injected _framework/ (blazor.web.js) that the interactive circuit needs —
+  # without it the UI renders but every click is dead. Static files are served plainly
+  # in this layout (see UiHost), so no static-web-assets manifest is needed.
+  dotnet publish "$ROOT/src/Blazorly.Harness.Web" -c Release -r "$rid" --self-contained true \
+    /p:ErrorOnDuplicatePublishOutputFiles=false "/p:Version=$VERSION" -o "$stage/.webassets" > /dev/null
+  rm -rf "$stage/wwwroot"
+  mv "$stage/.webassets/wwwroot" "$stage/wwwroot"
+  rm -rf "$stage/.webassets"
 
   echo "$VERSION" > "$stage/VERSION"
 
