@@ -28,8 +28,9 @@ jobs:
           TITLE="blazorly ${GITHUB_REF_NAME#v}"
           gh release create "$GITHUB_REF_NAME" \
             --title "$TITLE" \
+            --latest \
             --generate-notes \
-            dist/blazorly-*.tar.gz dist/blazorly-*.zip dist/SHA256SUMS \
+            dist/blazorly-*.tar.gz dist/blazorly-*.zip dist/blazorly-*.sha256 dist/SHA256SUMS \
             installer/install.sh installer/install.ps1
         env:
           GH_TOKEN: ${{ github.token }}

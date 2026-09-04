@@ -17,6 +17,7 @@ return args.Length == 0 ? await ServeAsync([]) : args[0] switch
     "eval" => await EvalAsync(args[1..]),
     "serve-stdio" => await ServeStdioAsync(args[1..]),
     "serve-acp" => await ServeAcpAsync(args[1..]),
+    "update" => await Blazorly.Harness.Cli.SelfUpdate.RunAsync(args[1..]),
     "--version" or "-v" or "version" => Version(),
     "--help" or "-h" or "help" => Help(),
     var unknown => Unknown(unknown),
@@ -64,8 +65,11 @@ static int Help()
                               --provider <name>    route override for all tasks
                               --model <id>         model override for all tasks
                               --timeout <seconds>  per-task timeout override
-          serve-stdio      Serve the JSON-RPC automation protocol on stdin/stdout
-                           (initialize, session/new, session/prompt, session/cancel,
+          update          Self-update from GitHub Releases (checksum-verified, swaps
+                           ~/.blazorly/app/current in place). Env:
+                             BLAZORLY_INSTALL_BASE  install from a local dist/ folder
+                             BLAZORLY_REPO          github repo (owner/name)
+          serve-stdio      Serve the JSON-RPC automation protocol on stdin/stdout                           (initialize, session/new, session/prompt, session/cancel,
                            shutdown; session.event + session.status notifications).
                            Flag:
                              --workspace <path>   default session workspace
