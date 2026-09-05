@@ -119,6 +119,17 @@ public class ProviderCatalogTests
     }
 
     [Fact]
+    public void RequiresApiKey_OnlyCloudRoutes()
+    {
+        // Cloud providers fail fast with a clear message when no key is configured…
+        foreach (var id in new[] { "openai", "anthropic", "deepseek", "zai", "zai-coding", "minimax" })
+            Assert.True(ProviderCatalog.RequiresApiKey(id), id);
+        // …local servers and open gateways stream keyless; custom route names are unknown to the catalog.
+        foreach (var id in new[] { "ollama", "lmstudio", "omlx", "unsloth", "openai-compatible", "my-gateway" })
+            Assert.False(ProviderCatalog.RequiresApiKey(id), id);
+    }
+
+    [Fact]
     public void Catalog_LocalRoutersPointAtLocalDefaults()
     {
         Assert.Equal("http://localhost:11434/v1", ProviderCatalog.Info("ollama")!.DefaultBaseUrl);

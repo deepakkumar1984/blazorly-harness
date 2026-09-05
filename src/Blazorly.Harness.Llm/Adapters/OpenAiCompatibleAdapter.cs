@@ -23,17 +23,21 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     private readonly string _provider;
     private readonly string _baseUrl;
     private readonly string _apiKey;
+    private readonly bool _requireApiKey;
     private readonly IReadOnlyList<LlmModelInfo> _models;
     private readonly string _userAgent;
     private readonly Func<string, (byte[] Data, string MimeType)?>? _attachmentResolver;
 
     /// <param name="attachmentResolver">Resolves attachment ids into bytes for image input (inline base64).</param>
-    public OpenAiCompatibleAdapter(string provider, string baseUrl, string apiKey, IReadOnlyList<LlmModelInfo> models, HttpClient http, string? userAgent = null, Func<string, (byte[] Data, string MimeType)?>? attachmentResolver = null)
+    /// <param name="requireApiKey">Keyless routes (local servers, open gateways) stream without an
+    /// Authorization header and let the server reject them if it actually wants auth.</param>
+    public OpenAiCompatibleAdapter(string provider, string baseUrl, string apiKey, IReadOnlyList<LlmModelInfo> models, HttpClient http, string? userAgent = null, Func<string, (byte[] Data, string MimeType)?>? attachmentResolver = null, bool requireApiKey = true)
     {
         _attachmentResolver = attachmentResolver;
         _provider = provider;
         _baseUrl = baseUrl.TrimEnd('/');
         _apiKey = apiKey;
+        _requireApiKey = requireApiKey;
         _models = models;
         _http = http;
         _userAgent = userAgent ?? "blazorly-harness";
@@ -45,7 +49,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
 
     public override async IAsyncEnumerable<StreamChunk> Stream(GenerateOptions options, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_apiKey))
+        if (string.IsNullOrWhiteSpace(_apiKey) && _requireApiKey)
             throw new LlmException(LlmErrorCodes.MissingCredential, $"api key for provider '{_provider}' is not configured");
 
         var body = JsonSerializer.Serialize(BuildWireBody(options), WireOptions);
@@ -53,7 +57,8 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+        if (!string.IsNullOrWhiteSpace(_apiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
 

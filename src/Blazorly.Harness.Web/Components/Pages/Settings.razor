@@ -26,8 +26,9 @@
         @switch (_tab)
         {
             case "provider":
-                <p class="settings-note">Provider, model and API key for new sessions. Keys are kept per provider — switch back
-                    and forth without retyping. Saved to <code>~/.blazorly/settings.json</code>.</p>
+                <p class="settings-note">Provider, model and API key for new sessions. Keys are kept per provider —
+                    configure several and every one of them stays selectable from the session topbar.
+                    Saved to <code>~/.blazorly/settings.json</code>.</p>
 
                 <label>
                     <span>Provider</span>
@@ -88,11 +89,12 @@
                         <button type="button" class="chip" @onclick='() => _settings.BaseUrl = def'>reset to @def</button>
                     </div>
                 }
-                @if (_providerInfo is { Local: false } or { ApiKeyEnv: not null })
+                @if (_providerInfo is not null)
                 {
                     <label>
-                        <span>API key</span>
-                        <input type="password" @bind="_settings.ApiKey" @bind:event="oninput" @onblur="ApiKeyBlurred" placeholder="sk-…" />
+                        <span>API key @(KeyOptional ? "(optional)" : "")</span>
+                        <input type="password" @bind="_settings.ApiKey" @bind:event="oninput" @onblur="ApiKeyBlurred"
+                               placeholder="@(KeyOptional ? "sk-… — only if your server requires auth" : "sk-…")" />
                     </label>
                 }
                 <div class="discover-row">
@@ -315,6 +317,9 @@
     /// <summary>Providers that require a key before their API will list models
     /// (cloud routes, plus local servers gated by a key such as Unsloth Studio).</summary>
     private bool NeedsKey => (_providerInfo is { Local: false } or { ApiKeyEnv: not null }) && _settings.Provider != "openai-compatible";
+
+    /// <summary>Keyless streaming is allowed (local servers, custom gateways); set a key only when the server enforces auth.</summary>
+    private bool KeyOptional => !ProviderCatalog.RequiresApiKey(_settings.Provider);
 
     protected override void OnInitialized()
     {

@@ -30,23 +30,54 @@
                 </button>
                 @if (_modelMenu)
                 {
-                    <div class="popover anchored">
+                    <div class="popover anchored model-menu">
+                        <input class="popover-search" type="text" placeholder="Search models or providers…"
+                               value="@_modelSearch" @oninput="OnModelSearch"
+                               @onkeydown="OnSearchKey" @ref="_modelSearchInput"
+                               title="Filter by model, provider, or id — Esc closes" />
                         @{
                             var currentModel = Facade.Harness.RuntimeModels(_agent?.Options.Provider ?? "")
                                 .FirstOrDefault(m => m.Id == _agent?.Options.Model);
                         }
-                        @foreach (var provider in Facade.Harness.Llm.ListProviders())
+                        @{
+                            // Current provider pinned first, everything else alphabetical; groups with
+                            // no match for the search are hidden entirely.
+                            var query = _modelSearch.Trim();
+                            var current = _agent?.Options.Provider ?? "";
+                            var groups = Facade.Harness.Llm.ListProviders()
+                                .OrderByDescending(p => p == current)
+                                .ThenBy(p => p, StringComparer.Ordinal)
+                                .Select(p => (Provider: p, Models: Facade.Harness.Llm.ListModels(p)
+                                    .Where(m => query.Length == 0
+                                        || m.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                                        || m.Id.Contains(query, StringComparison.OrdinalIgnoreCase)
+                                        || p.Contains(query, StringComparison.OrdinalIgnoreCase))
+                                    .ToList()))
+                                .Where(g => g.Models.Count > 0 || g.Provider == current)
+                                .ToList();
+                        }
+                        @foreach (var group in groups)
                         {
-                            <div class="popover-group">@provider</div>
-                            @foreach (var model in Facade.Harness.Llm.ListModels(provider))
+                            <div class="popover-group">@(group.Provider == current ? $"{group.Provider} · current" : group.Provider)
+                                <span class="group-count">@group.Models.Count</span>
+                            </div>
+                            @if (group.Models.Count == 0)
                             {
-                                <button class="popover-item @(_agent?.Options.Provider == provider && _agent?.Options.Model == model.Id ? "selected" : "")"
-                                        @onclick="() => SelectModel(provider, model.Id)">
+                                <div class="popover-empty">no models yet — load them on the Settings page</div>
+                            }
+                            @foreach (var model in group.Models)
+                            {
+                                <button class="popover-item @(_agent?.Options.Provider == group.Provider && _agent?.Options.Model == model.Id ? "selected" : "")"
+                                        @onclick="() => SelectModel(group.Provider, model.Id)">
                                     @model.Name
                                 </button>
                             }
                         }
-                        @if (currentModel?.ReasoningEfforts is { Length: > 0 } efforts)
+                        @if (groups.Count == 0)
+                        {
+                            <div class="popover-empty">nothing matches “@_modelSearch”</div>
+                        }
+                        @if (query.Length == 0 && currentModel?.ReasoningEfforts is { Length: > 0 } efforts)
                         {
                             <div class="popover-group">reasoning effort</div>
                             <button class="popover-item @(_agent?.Options.ReasoningEffort is null ? "selected" : "")" @onclick='() => SelectEffort(null)'>
@@ -380,7 +411,8 @@
 
     @if (_terminalOpen)
     {
-        <section class="terminal-drawer" aria-label="Session terminal">
+        <div class="terminal-resize" title="Drag to resize the terminal" @ref="_terminalResizeHandle"></div>
+        <section class="terminal-drawer" aria-label="Session terminal" @ref="_terminalDrawer">
             <div class="terminal-head">
                 <span class="terminal-title">&gt;_ shell · @WorkspaceLabel</span>
                 <span class="terminal-actions">
@@ -443,6 +475,9 @@
     private bool _modelMenu;
     private bool _permissionMenu;
     private bool _ctxMenu;
+    private string _modelSearch = "";
+    private bool _focusModelSearch;
+    private ElementReference _modelSearchInput;
     private ElementReference _composerTa;
     private ElementReference _slashMenu;
     private ElementReference _mentionMenu;
@@ -467,6 +502,9 @@
     private bool _terminalDead;
     private System.Timers.Timer? _terminalPoll;
     private ElementReference _terminalOut;
+    private ElementReference _terminalResizeHandle;
+    private ElementReference _terminalDrawer;
+    private bool _terminalResizeAttached;
     private readonly List<string> _terminalHistory = [];
     private int _terminalHistoryAt;
 
@@ -603,6 +641,28 @@
             catch (JSDisconnectedException) { }
             catch (ObjectDisposedException) { }
         }
+        if (_focusModelSearch)
+        {
+            _focusModelSearch = false;
+            try { await _modelSearchInput.FocusAsync(); }
+            catch (ObjectDisposedException) { }
+            catch (JSDisconnectedException) { }
+            try { await Js.InvokeVoidAsync("blazorly.clampMenu"); } // focus scroll can shift layout
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+        }
+        if (_terminalOpen && !_terminalResizeAttached)
+        {
+            _terminalResizeAttached = true;
+            try
+            {
+                await Js.InvokeVoidAsync("blazorly.attachTerminalResize", _terminalResizeHandle, _terminalDrawer,
+                    140 /* min px */, 640 /* max px */);
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+        }
+        if (!_terminalOpen) _terminalResizeAttached = false;
     }
 
     private volatile bool _pendingChanged;
@@ -840,7 +900,15 @@
         catch (Exception ex) { _terminalOutput += $"\n[signal failed: {ex.Message}]"; }
     }
 
-    private void TerminalClearView() => _terminalOutput = "";
+    private void TerminalClearView()
+    {
+        if (_terminalId is not null)
+        {
+            try { Facade.UiTerminalClear(SessionId, _terminalId); }
+            catch { /* shell vanished; clearing the view is still right */ }
+        }
+        _terminalOutput = "";
+    }
 
     private async Task TerminalKillShell()
     {
@@ -937,6 +1005,22 @@
         _modelMenu = !_modelMenu;
         _permissionMenu = false;
         _ctxMenu = false;
+        _modelSearch = "";
+        _focusModelSearch = _modelMenu;
+    }
+
+    private void OnModelSearch(ChangeEventArgs e)
+    {
+        _modelSearch = e.Value?.ToString() ?? "";
+    }
+
+    private void OnSearchKey(KeyboardEventArgs e)
+    {
+        if (e.Key is "Escape")
+        {
+            if (_modelSearch.Length > 0) _modelSearch = "";
+            else CloseMenus();
+        }
     }
 
     private void TogglePermissionMenu()

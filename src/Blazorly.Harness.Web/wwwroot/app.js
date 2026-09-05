@@ -17,6 +17,28 @@ window.blazorly = {
             if (overflow > 0) el.style.transform = "translateX(" + (-overflow) + "px)";
         });
     },
+    // Drag handle that resizes the terminal drawer between min and max pixels.
+    attachTerminalResize: function (handle, drawer, min, max) {
+        if (!handle || !drawer || handle.dataset.bound) return;
+        handle.dataset.bound = "1";
+        let dragging = false, startY = 0, startH = 0;
+        handle.addEventListener("pointerdown", e => {
+            dragging = true;
+            startY = e.clientY;
+            startH = drawer.getBoundingClientRect().height;
+            handle.setPointerCapture(e.pointerId);
+            document.body.style.cursor = "row-resize";
+            e.preventDefault();
+        });
+        handle.addEventListener("pointermove", e => {
+            if (!dragging) return;
+            const h = Math.min(max, Math.max(min, startH + (e.clientY - startY)));
+            drawer.style.height = h + "px";
+        });
+        const stop = () => { dragging = false; document.body.style.cursor = ""; };
+        handle.addEventListener("pointerup", stop);
+        handle.addEventListener("pointercancel", stop);
+    },
     getTheme: function () {
         return localStorage.getItem("blazorly.theme") || "dark";
     },

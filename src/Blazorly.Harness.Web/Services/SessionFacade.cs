@@ -165,6 +165,10 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     public string UiTerminalRead(string sessionId, string terminalId)
         => FilterSentinels(Terminals!.Read(TerminalAgent(sessionId), terminalId));
 
+    /// <summary>Clears the server-side buffer too, so the 400ms poll doesn't refill the view.</summary>
+    public void UiTerminalClear(string sessionId, string terminalId)
+        => Terminals!.Clear(TerminalAgent(sessionId), terminalId);
+
     internal static string FilterSentinels(string buffer)
     {
         if (!buffer.Contains(Tools.TerminalService.SentinelPrefix, StringComparison.Ordinal)) return buffer;

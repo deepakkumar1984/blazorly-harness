@@ -218,7 +218,7 @@ Set `provider`, `model`, and optionally `apiKey`/`baseUrl` in `settings.json` (o
 }
 ```
 
-Built-in providers: `deepseek` (the default), `openai`, `anthropic`, `openai-compatible` (any OpenAI-compatible endpoint), plus local routes (`ollama`, …) and other hosted providers. Extra custom OpenAI-compatible routes can be added under `customProviders` in settings or from the Settings page (with live model discovery via `POST /api/llm.discover`).
+Built-in providers: `deepseek` (the default), `openai`, `anthropic`, `openai-compatible` (any OpenAI-compatible endpoint), plus local routes (`ollama`, `lmstudio`, `omlx`, `unsloth`, …) and other hosted providers. Extra custom OpenAI-compatible routes can be added under `customProviders` in settings or from the Settings page (with live model discovery via `POST /api/llm.discover`). Local servers and custom gateways run keyless — set a key on the Settings page only if your server enforces auth; cloud providers require one.
 
 API keys resolve per request, in this order — and one provider's key is never sent to another provider's route:
 

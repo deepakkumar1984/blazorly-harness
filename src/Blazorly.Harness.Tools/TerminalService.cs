@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -21,6 +22,13 @@ public sealed class TerminalService : IDisposable
     public const string ServiceKey = "terminals";
     public const string SentinelPrefix = "__BZT_DONE_";
 
+    private const int SigInt = 2;
+    private const int SigTerm = 15;
+    private const int SigKill = 9;
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int kill(int pid, int sig);
+
     private readonly object _gate = new();
     private readonly Dictionary<string, TerminalSession> _sessions = new(StringComparer.Ordinal);
     private int _nextId;
@@ -30,9 +38,13 @@ public sealed class TerminalService : IDisposable
         string id;
         lock (_gate) id = $"term_{Interlocked.Increment(ref _nextId)}";
         var workingDirectory = cwd ?? owner.Session.Header.Cwd ?? Directory.GetCurrentDirectory();
+        // setsid puts the shell in its own session/process group so a kill can address
+        // exactly the shell's group (kill(-pid)) — never the harness process itself and
+        // never an unrelated pid picked up by a racy /proc tree walk.
+        var setsid = FindSetsid();
         var startInfo = new ProcessStartInfo
         {
-            FileName = "/bin/bash",
+            FileName = setsid ?? "/bin/bash",
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -40,18 +52,28 @@ public sealed class TerminalService : IDisposable
             CreateNoWindow = true,
             WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Directory.GetCurrentDirectory(),
         };
+        if (setsid is not null) startInfo.ArgumentList.Add("/bin/bash");
         startInfo.ArgumentList.Add("--noprofile");
         startInfo.ArgumentList.Add("--norc");
-        startInfo.ArgumentList.Add("-i");
         startInfo.Environment["PS1"] = "$ ";
         var process = Process.Start(startInfo)
             ?? throw new ToolException("TERMINAL_START", "failed to spawn /bin/bash");
 
-        var session = new TerminalSession(id, owner.Id, name, process);
+        var session = new TerminalSession(id, owner.Id, name, process, groupIsolated: setsid is not null);
         _ = Task.Run(() => PumpAsync(process.StandardOutput, session));
         _ = Task.Run(() => PumpAsync(process.StandardError, session));
         lock (_gate) _sessions[id] = session;
         return id;
+    }
+
+    private static string? FindSetsid()
+    {
+        if (!OperatingSystem.IsLinux()) return null;
+        foreach (var candidate in new[] { "/usr/bin/setsid", "/bin/setsid" })
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     public IReadOnlyList<TerminalSessionInfo> List(Agent owner)
@@ -119,11 +141,22 @@ public sealed class TerminalService : IDisposable
         Write(session, text);
     }
 
+    /// <summary>Empties the buffer so Read (and any UI polling it) starts from blank.</summary>
+    public void Clear(Agent caller, string id)
+    {
+        var session = Resolve(caller, id);
+        lock (session.Gate)
+        {
+            session.Buffer.Clear();
+            session.Mark = 0;
+        }
+    }
+
     /// <summary>
-    /// Best-effort signal delivery: .NET has no POSIX signals. SIGKILL kills the process tree;
-    /// SIGINT writes ETX (\x03) to stdin (a tty line discipline would raise SIGINT — a piped
-    /// shell may treat the byte literally); SIGTERM maps to Process.Kill, which on unix
-    /// actually delivers SIGKILL.
+    /// Best-effort signal delivery. SIGINT interrupts the shell's direct children
+    /// (what Ctrl+C would do in a real terminal); SIGTERM and SIGKILL take down the
+    /// shell and — when it runs in its own process group — everything it spawned,
+    /// without ever touching the harness process.
     /// </summary>
     public void Signal(Agent caller, string id, string signal)
     {
@@ -131,20 +164,13 @@ public sealed class TerminalService : IDisposable
         switch (signal)
         {
             case "SIGKILL":
-                Kill(session.Process);
+                KillTree(session);
                 break;
             case "SIGINT":
-                Write(session, "\x03");
+                InterruptChildren(session);
                 break;
             case "SIGTERM":
-                try
-                {
-                    if (!session.Process.HasExited) session.Process.Kill();
-                }
-                catch
-                {
-                    // already gone
-                }
+                KillTree(session);
                 break;
             default:
                 throw new ToolException("INVALID_SIGNAL", $"unknown signal '{signal}' (expected SIGINT, SIGTERM, or SIGKILL)");
@@ -155,7 +181,7 @@ public sealed class TerminalService : IDisposable
     {
         var session = Resolve(caller, id);
         lock (_gate) _sessions.Remove(id);
-        Kill(session.Process);
+        KillTree(session);
         session.Process.Dispose();
     }
 
@@ -169,7 +195,7 @@ public sealed class TerminalService : IDisposable
         }
         foreach (var session in sessions)
         {
-            Kill(session.Process);
+            KillTree(session);
             session.Process.Dispose();
         }
     }
@@ -241,11 +267,25 @@ public sealed class TerminalService : IDisposable
         return string.Join('\n', kept).Trim();
     }
 
-    private static void Kill(Process process)
+    /// <summary>
+    /// Kills the shell and what it spawned. Group-isolated shells (setsid) are taken down
+    /// with one kill(-pgid) — exact and race-free. Otherwise only the shell itself is
+    /// killed: Process.Kill(entireProcessTree) snapshots /proc and can catch unrelated
+    /// processes via pid reuse, so it is never used here.
+    /// </summary>
+    private static void KillTree(TerminalSession session)
     {
         try
         {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            if (session.Process.HasExited) return;
+            if (session.GroupIsolated && OperatingSystem.IsLinux())
+            {
+                kill(-session.Process.Id, SigKill); // the shell's whole group, nothing else
+            }
+            else
+            {
+                session.Process.Kill();
+            }
         }
         catch
         {
@@ -253,12 +293,73 @@ public sealed class TerminalService : IDisposable
         }
     }
 
-    internal sealed class TerminalSession(string id, string ownerAgentId, string? name, Process process)
+    /// <summary>What Ctrl+C would do: interrupt the commands the shell is currently
+    /// running (its direct children). SIGINT first; children that ignore it (the ignore
+    /// disposition is inherited when the harness itself was started as a background job —
+    /// POSIX forbids the shell from resetting it) get SIGTERM shortly after.</summary>
+    private static void InterruptChildren(TerminalSession session)
+    {
+        var children = DirectChildren(session.Process.Id);
+        foreach (var child in children) kill(child, SigInt);
+        if (children.Count == 0) return;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(200).ConfigureAwait(false);
+            foreach (var child in children)
+            {
+                try
+                {
+                    if (Directory.Exists($"/proc/{child}")) kill(child, SigTerm);
+                }
+                catch { /* raced with exit */ }
+            }
+        });
+    }
+
+    /// <summary>Direct children of a pid from /proc (Linux); empty elsewhere.</summary>
+    private static IReadOnlyList<int> DirectChildren(int parentPid)
+    {
+        if (!OperatingSystem.IsLinux()) return [];
+        try
+        {
+            var children = new List<int>();
+            foreach (var dir in Directory.EnumerateDirectories("/proc"))
+            {
+                var name = Path.GetFileName(dir.AsSpan());
+                if (name.Length == 0 || !char.IsAsciiDigit(name[0])) continue;
+                var statPid = int.Parse(name);
+                if (statPid == parentPid) continue;
+                try
+                {
+                    // field 4 of /proc/<pid>/stat is the parent pid; comm (field 2) may
+                    // contain spaces, so parse after the closing paren.
+                    var text = File.ReadAllText(Path.Combine(dir, "stat"));
+                    var close = text.LastIndexOf(')');
+                    if (close < 0) continue;
+                    var fields = text[(close + 2)..].Split(' ');
+                    if (fields.Length >= 2 && int.Parse(fields[1]) == parentPid)
+                        children.Add(statPid);
+                }
+                catch
+                {
+                    // the process exited between the enumeration and the read
+                }
+            }
+            return children;
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    internal sealed class TerminalSession(string id, string ownerAgentId, string? name, Process process, bool groupIsolated)
     {
         public string Id { get; } = id;
         public string OwnerAgentId { get; } = ownerAgentId;
         public string? Name { get; } = name;
         public Process Process { get; } = process;
+        public bool GroupIsolated { get; } = groupIsolated;
         internal readonly StringBuilder Buffer = new();
         internal readonly object Gate = new();
         internal int Mark;

@@ -523,6 +523,28 @@ button.icon:disabled { opacity: 0.35; }
 .popover-item:hover { background: var(--bg-overlay); }
 .popover-item.selected { color: var(--accent); background: var(--accent-soft); }
 
+/* ---- searchable model menu ---- */
+.popover-search {
+    display: block;
+    width: calc(100% - 12px);
+    margin: 6px;
+    padding: 7px 10px;
+    font-size: 12.5px;
+    color: var(--text);
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    outline: none;
+}
+.popover-search:focus { border-color: var(--accent); }
+.popover-search::placeholder { color: var(--text-faint); }
+.popover-group .group-count {
+    float: right;
+    color: var(--text-faint);
+    letter-spacing: 0;
+}
+.popover-empty { padding: 8px 10px 6px; font-size: 12px; color: var(--text-faint); }
+
 /* ---- stats dock ---- */
 .stats-toggle.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .stats-dock {
@@ -1055,6 +1077,31 @@ button.link:hover { text-decoration: underline; }
 .composer textarea { padding-left: 14px; padding-top: 14px; }
 
 /* ---- ui terminal drawer ---- */
+/* Drag handle: resize the terminal as a section below the chat, never over it. */
+.terminal-resize {
+    flex: none;
+    height: 7px;
+    max-width: 860px;
+    width: calc(100% - 40px);
+    margin: 4px auto 0;
+    cursor: row-resize;
+    border-radius: 4px;
+    background: transparent;
+    position: relative;
+}
+.terminal-resize::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 2px;
+    transform: translateX(-50%);
+    width: 44px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--border-strong);
+}
+.terminal-resize:hover::after { background: var(--accent); }
+
 .terminal-drawer {
     max-width: 860px;
     width: 100%;
@@ -1065,6 +1112,10 @@ button.link:hover { text-decoration: underline; }
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    flex: none;
+    height: 240px;          /* default split; drag the handle above to change */
+    min-height: 140px;
+    max-height: 70vh;
 }
 .terminal-head {
     display: flex;
@@ -1073,14 +1124,15 @@ button.link:hover { text-decoration: underline; }
     padding: 5px 10px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-overlay);
+    flex: none;
 }
 .terminal-title { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
 .terminal-actions { display: flex; gap: 4px; }
 .terminal-output {
     margin: 0;
     padding: 10px 12px;
-    min-height: 120px;
-    max-height: 300px;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     font-family: var(--mono);
     font-size: 12px;
@@ -1095,6 +1147,7 @@ button.link:hover { text-decoration: underline; }
     gap: 8px;
     padding: 8px 12px;
     border-top: 1px solid var(--border);
+    flex: none;
 }
 .terminal-prompt { font-family: var(--mono); color: var(--success); flex: none; }
 .terminal-input {

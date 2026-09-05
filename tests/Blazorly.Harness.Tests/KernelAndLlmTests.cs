@@ -202,6 +202,44 @@ public class OpenAiAdapterWireTests
     }
 
     [Fact]
+    public async Task KeylessRoute_StreamsWithoutAuthorizationHeader()
+    {
+        // Local servers (ollama/lmstudio/omlx) and open gateways run without keys; the
+        // server enforces auth itself if it wants any.
+        var http = new StaticHttpHandler("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n");
+        var adapter = new OpenAiCompatibleAdapter("omlx", "http://localhost:8000/v1", "", [], new HttpClient(http),
+            requireApiKey: false);
+        var chunks = new List<StreamChunk>();
+        await foreach (var chunk in adapter.Stream(Options())) chunks.Add(chunk);
+        Assert.Contains(chunks, c => c is TextDeltaChunk t && t.Text == "hi");
+        Assert.Null(http.LastRequest?.Headers.Authorization);
+    }
+
+    [Fact]
+    public async Task KeyedRoute_StillSendsBearer()
+    {
+        var http = new StaticHttpHandler("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n");
+        var adapter = new OpenAiCompatibleAdapter("omlx", "http://localhost:8000/v1", "sk-local", [], new HttpClient(http),
+            requireApiKey: false);
+        await foreach (var _ in adapter.Stream(Options())) { }
+        Assert.Equal("Bearer", http.LastRequest?.Headers.Authorization?.Scheme);
+        Assert.Equal("sk-local", http.LastRequest?.Headers.Authorization?.Parameter);
+    }
+
+    [Fact]
+    public async Task MissingKey_OnKeyRequiringRoute_FailsFast()
+    {
+        var adapter = new OpenAiCompatibleAdapter("openai", "https://api.openai.com/v1", "", [], new HttpClient());
+        var ex = await Assert.ThrowsAsync<LlmException>(() =>
+        {
+            var e = adapter.Stream(Options()).GetAsyncEnumerator();
+            return e.MoveNextAsync().AsTask();
+        });
+        Assert.Equal(LlmErrorCodes.MissingCredential, ex.Code);
+        Assert.Contains("api key for provider 'openai'", ex.Message);
+    }
+
+    [Fact]
     public async Task ParsesSseStreamIntoChunks()
     {
         var sse = string.Join("\n",
@@ -238,8 +276,11 @@ public class OpenAiAdapterWireTests
 
     private sealed class StaticHttpHandler(string body) : HttpClientHandler
     {
+        public HttpRequestMessage? LastRequest { get; private set; }
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            LastRequest = request;
             var content = new StringContent(body, System.Text.Encoding.UTF8, "text/event-stream");
             var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(body));
             var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) };

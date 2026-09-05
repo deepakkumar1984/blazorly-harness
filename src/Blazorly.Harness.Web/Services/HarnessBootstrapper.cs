@@ -97,31 +97,34 @@ public sealed class HarnessSettings
 
     /// <summary>Resolved per request, never persisted; never sends one provider's key to another provider's route.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public string? EffectiveApiKey
+    public string? EffectiveApiKey => ApiKeyFor(Provider);
+
+    /// <summary>Key resolution for any provider route (active or background). The typed
+    /// field only applies to the active provider; stashes, the catalog env hint and the
+    /// documented deepseek/openai legacy fallback are per-route, so one provider's key
+    /// is never sent to another provider's route.</summary>
+    public string? ApiKeyFor(string provider)
     {
-        get
+        if (provider == Provider && !string.IsNullOrWhiteSpace(ApiKey)) return ApiKey;
+        if (ProviderKeys.TryGetValue(provider, out var stashed) && !string.IsNullOrWhiteSpace(stashed)) return stashed;
+        var catalogEnv = ProviderCatalog.Info(provider)?.ApiKeyEnv;
+        if (!string.IsNullOrWhiteSpace(catalogEnv))
         {
-            if (!string.IsNullOrWhiteSpace(ApiKey)) return ApiKey;
-            if (ProviderKeys.TryGetValue(Provider, out var stashed) && !string.IsNullOrWhiteSpace(stashed)) return stashed;
-            var catalogEnv = ProviderCatalog.Info(Provider)?.ApiKeyEnv;
-            if (!string.IsNullOrWhiteSpace(catalogEnv))
-            {
-                var fromCatalog = Environment.GetEnvironmentVariable(catalogEnv);
-                if (!string.IsNullOrWhiteSpace(fromCatalog)) return fromCatalog;
-            }
-            var providerSpecific = Environment.GetEnvironmentVariable(
-                $"{Provider.ToUpperInvariant().Replace('-', '_')}_API_KEY"); // DEEPSEEK/OPENAI/ANTHROPIC_API_KEY
-            if (!string.IsNullOrWhiteSpace(providerSpecific)) return providerSpecific;
-            // Documented legacy fallback for the OpenAI-compatible routes; custom/anthropic routes
-            // must not inherit an unrelated provider's key.
-            if (Provider is "deepseek" or "openai" or "openai-compatible")
-            {
-                var deepseek = Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
-                if (!string.IsNullOrWhiteSpace(deepseek)) return deepseek;
-                return Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-            }
-            return null;
+            var fromCatalog = Environment.GetEnvironmentVariable(catalogEnv);
+            if (!string.IsNullOrWhiteSpace(fromCatalog)) return fromCatalog;
         }
+        var providerSpecific = Environment.GetEnvironmentVariable(
+            $"{provider.ToUpperInvariant().Replace('-', '_')}_API_KEY"); // DEEPSEEK/OPENAI/ANTHROPIC_API_KEY
+        if (!string.IsNullOrWhiteSpace(providerSpecific)) return providerSpecific;
+        // Documented legacy fallback for the OpenAI-compatible routes; custom/anthropic routes
+        // must not inherit an unrelated provider's key.
+        if (provider is "deepseek" or "openai" or "openai-compatible")
+        {
+            var deepseek = Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
+            if (!string.IsNullOrWhiteSpace(deepseek)) return deepseek;
+            return Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        }
+        return null;
     }
 }
 
@@ -404,7 +407,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     private LlmAdapter BuildRoute(string provider, string baseUrl, string? apiKey, IReadOnlyList<LlmModelInfo> models)
         => provider == "anthropic"
             ? new AnthropicAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver())
-            : new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver());
+            : new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
+                attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider));
 
     /// <summary>Selects the web_search backend from settings; a keyed backend without a key
     /// falls back to keyless DuckDuckGo (noted on stderr) so web_search keeps working.</summary>
@@ -609,14 +613,43 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         _routeEffects[adapter.Provider] = Llm.RegisterAdapter(adapter);
     }
 
+    /// <summary>Providers with a live route: the active selection, every local server
+    /// (keyless), every cloud provider a key resolves for, and all custom gateways —
+    /// so models from every configured provider stay switchable from the session topbar.</summary>
+    public static IReadOnlyList<string> DesiredRouteProviders(HarnessSettings settings)
+    {
+        var ids = new List<string>();
+        void Add(string? id)
+        {
+            if (!string.IsNullOrWhiteSpace(id) && !ids.Contains(id)) ids.Add(id);
+        }
+        Add(settings.Provider);
+        foreach (var info in ProviderCatalog.All)
+        {
+            if (info.Category == "local") Add(info.Id);
+            else if (info.Category == "cloud" && !string.IsNullOrWhiteSpace(settings.ApiKeyFor(info.Id))) Add(info.Id);
+        }
+        foreach (var custom in settings.CustomProviders) Add(custom.Name);
+        return ids;
+    }
+
     public void ApplyProviderSelection()
     {
         var desired = new HashSet<string>(StringComparer.Ordinal);
         if (!string.IsNullOrWhiteSpace(Settings.Provider))
         {
-            RegisterRoute(BuildRoute(Settings.Provider, Settings.BaseUrl, Settings.EffectiveApiKey,
+            RegisterRoute(BuildRoute(Settings.Provider, Settings.BaseUrl, Settings.ApiKeyFor(Settings.Provider),
                 RuntimeModels(Settings.Provider)));
             desired.Add(Settings.Provider);
+        }
+        // Background routes for every other configured provider: local servers with
+        // their catalog base URLs, cloud providers with a resolved key. Custom gateways
+        // keep their own key/base-URL handling below.
+        foreach (var id in DesiredRouteProviders(Settings))
+        {
+            if (desired.Contains(id) || ProviderCatalog.Info(id) is not { } info) continue;
+            RegisterRoute(BuildRoute(id, info.DefaultBaseUrl, Settings.ApiKeyFor(id), RuntimeModels(id)));
+            desired.Add(id);
         }
         foreach (var custom in Settings.CustomProviders)
         {
@@ -771,6 +804,10 @@ public static class ProviderCatalog
     public static readonly IReadOnlyList<string> Providers = [.. All.Select(p => p.Id)];
 
     public static ProviderInfo? Info(string provider) => All.FirstOrDefault(p => p.Id == provider);
+
+    /// <summary>Only cloud routes demand a key up front; local servers and open gateways
+    /// stream keyless and let the server reject them if it actually wants auth.</summary>
+    public static bool RequiresApiKey(string provider) => Info(provider)?.Category == "cloud";
 
     public static IReadOnlyList<string> Categories => ["cloud", "local", "generic"];
 
