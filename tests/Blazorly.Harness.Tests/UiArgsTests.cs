@@ -23,6 +23,20 @@ public class UiArgsTests
     public void PortParsing(string[] raw, int expected) => Assert.Equal(expected, UiArgs.Parse(raw).Port);
 
     [Fact]
+    public void PortExplicit_OnlyWhenAValidPortWasPassed()
+    {
+        // An explicit --port must beat ASPNETCORE_URLS (dotnet run injects it from
+        // launchSettings); an absent or invalid flag keeps ambient env precedence.
+        Assert.True(UiArgs.Parse(["--port", "7000"]).PortExplicit);
+        Assert.True(UiArgs.Parse(["--port=8080"]).PortExplicit);
+        Assert.True(UiArgs.Parse(["-p", "9090"]).PortExplicit);
+        Assert.False(UiArgs.Parse([]).PortExplicit);
+        Assert.False(UiArgs.Parse(["--no-open"]).PortExplicit);
+        Assert.False(UiArgs.Parse(["--port", "not-a-number"]).PortExplicit);
+        Assert.False(UiArgs.Parse(["--port", "70000"]).PortExplicit);
+    }
+
+    [Fact]
     public void Flags_Version_And_NoOpen()
     {
         Assert.True(UiArgs.Parse(["--version"]).WantsVersion);

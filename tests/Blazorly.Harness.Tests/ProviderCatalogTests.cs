@@ -67,12 +67,11 @@ public class ProviderCatalogTests
     {
         var expected = new[]
         {
-            // US
+            // Cloud
             "openai", "anthropic", "xai", "google", "mistral", "perplexity", "together", "groq",
             "fireworks", "openrouter", "cerebras", "cohere",
-            // China
-            "deepseek", "qwen", "moonshot", "zhipu", "minimax", "doubao", "ernie", "hunyuan", "stepfun", "yi",
-            // Local / hosted-open
+            "deepseek", "qwen", "moonshot", "zai", "zai-coding", "minimax", "doubao", "ernie", "hunyuan", "stepfun",
+            // Local
             "ollama", "lmstudio", "omlx", "unsloth",
         };
         foreach (var id in expected)
@@ -80,6 +79,35 @@ public class ProviderCatalogTests
             Assert.Contains(id, ProviderCatalog.Providers);
             Assert.NotEmpty(ProviderCatalog.Info(id)!.Name);
         }
+        // 01.AI retired the public Yi API (Sept 2026); the route must not come back silently.
+        Assert.DoesNotContain("yi", ProviderCatalog.Providers);
+    }
+
+    [Fact]
+    public void Catalog_GroupsCloudVersusLocal_WithoutRegionSplit()
+    {
+        Assert.Equal(["cloud", "local", "generic"], ProviderCatalog.Categories);
+        Assert.All(ProviderCatalog.All, p =>
+            Assert.Contains(p.Category, ProviderCatalog.Categories));
+        // Country groupings are gone; every hosted route is one cloud bucket.
+        Assert.DoesNotContain(ProviderCatalog.All, p => p.Category is "us" or "china");
+    }
+
+    [Fact]
+    public void Catalog_ZaiSplitsStandardApiAndCodingPlan()
+    {
+        // Two routes, both documented hosts on api.z.ai, distinct keys — a coding-plan key
+        // against the standard endpoint does not consume plan quota.
+        var api = ProviderCatalog.Info("zai")!;
+        var coding = ProviderCatalog.Info("zai-coding")!;
+        Assert.Equal("https://api.z.ai/api/paas/v4", api.DefaultBaseUrl);
+        Assert.Equal("https://api.z.ai/api/coding/paas/v4", coding.DefaultBaseUrl);
+        Assert.Equal("ZAI_API_KEY", api.ApiKeyEnv);
+        Assert.Equal("ZAI_CODING_API_KEY", coding.ApiKeyEnv);
+        Assert.False(api.Local);
+        Assert.False(coding.Local);
+        Assert.NotEmpty(ProviderCatalog.For("zai", ""));
+        Assert.NotEmpty(ProviderCatalog.For("zai-coding", ""));
     }
 
     [Fact]
@@ -96,8 +124,62 @@ public class ProviderCatalogTests
         Assert.Equal("http://localhost:11434/v1", ProviderCatalog.Info("ollama")!.DefaultBaseUrl);
         Assert.Equal("http://localhost:1234/v1", ProviderCatalog.Info("lmstudio")!.DefaultBaseUrl);
         Assert.Equal("http://localhost:8000/v1", ProviderCatalog.Info("omlx")!.DefaultBaseUrl);
+        // Unsloth Studio serves OpenAI-compatible inference from the local app (port 8888),
+        // gated by an sk-unsloth key generated in its UI.
+        Assert.Equal("http://localhost:8888/v1", ProviderCatalog.Info("unsloth")!.DefaultBaseUrl);
+        Assert.True(ProviderCatalog.Info("unsloth")!.Local);
+        Assert.Equal("UNSLOTH_API_KEY", ProviderCatalog.Info("unsloth")!.ApiKeyEnv);
         Assert.True(ProviderCatalog.Info("ollama")!.Local);
         Assert.Null(ProviderCatalog.Info("ollama")!.ApiKeyEnv);
+    }
+
+    [Fact]
+    public void MigrateLegacySettings_ZhipuBecomesZai()
+    {
+        var settings = new HarnessSettings
+        {
+            Provider = "zhipu",
+            BaseUrl = "https://open.bigmodel.ai/api/paas/v4",
+        };
+        settings.ProviderKeys["zhipu"] = "sk-zhipu";
+        settings.DiscoveredModels["zhipu"] = ["glm-4.6"];
+
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+
+        Assert.Equal("zai", settings.Provider);
+        Assert.Equal("https://api.z.ai/api/paas/v4", settings.BaseUrl);
+        Assert.Equal("sk-zhipu", settings.ProviderKeys["zai"]);
+        Assert.Equal(["glm-4.6"], settings.DiscoveredModels["zai"]);
+        Assert.False(settings.ProviderKeys.ContainsKey("zhipu"));
+    }
+
+    [Fact]
+    public void MigrateLegacySettings_KeepsCustomZhipuBaseUrl()
+    {
+        // A user pinned to the China host (open.bigmodel.cn) keeps their URL; only the
+        // retired never-resolved default is rewritten.
+        var settings = new HarnessSettings
+        {
+            Provider = "zhipu",
+            BaseUrl = "https://open.bigmodel.cn/api/paas/v4",
+        };
+
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+
+        Assert.Equal("zai", settings.Provider);
+        Assert.Equal("https://open.bigmodel.cn/api/paas/v4", settings.BaseUrl);
+    }
+
+    [Fact]
+    public void MigrateLegacySettings_LeavesOtherProvidersAlone()
+    {
+        var settings = new HarnessSettings { Provider = "deepseek", BaseUrl = "https://api.deepseek.com" };
+        settings.ProviderKeys["deepseek"] = "sk-ds";
+
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+
+        Assert.Equal("deepseek", settings.Provider);
+        Assert.Equal("sk-ds", settings.ProviderKeys["deepseek"]);
     }
 
     [Fact]

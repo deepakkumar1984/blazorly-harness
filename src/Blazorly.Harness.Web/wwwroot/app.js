@@ -7,6 +7,16 @@ window.blazorly = {
             element.scrollTop = element.scrollHeight;
         }
     },
+    // Shift any open chip dropdown left so it stays inside the viewport.
+    clampMenu: function () {
+        const margin = 12;
+        const vw = document.documentElement.clientWidth;
+        document.querySelectorAll(".popover.anchored").forEach(el => {
+            el.style.transform = "";
+            const overflow = el.getBoundingClientRect().right - (vw - margin);
+            if (overflow > 0) el.style.transform = "translateX(" + (-overflow) + "px)";
+        });
+    },
     getTheme: function () {
         return localStorage.getItem("blazorly.theme") || "dark";
     },

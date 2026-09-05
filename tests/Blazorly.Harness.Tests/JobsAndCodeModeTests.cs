@@ -153,6 +153,44 @@ public class JobsAndCodeModeTests
         Assert.Equal(42, result.Value.Value.GetProperty("result").GetInt32());
     }
 
+    // Pins the AsyncLocal console-capture scoping (v0.1.2 leak): while the script is
+    // mid-capture on the in-process path, a writer in an unrelated async flow must fall
+    // through to the real console, not into the capture — even though Console.Out is
+    // process-global. Mirrors the real failure mode: benchmark lines from a parallel
+    // test collection landing in this run_code's console field.
+    [Fact]
+    public async Task RunCode_ConsoleCapture_ExcludesUnrelatedConcurrentWriters()
+    {
+        await using var harness = CreateHarness();
+        var agent = harness.CreateAgent();
+        var inScript = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var noiseDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Tools.Register(new GateTool(inScript, noiseDone));
+        // Task.Run copies this (test) flow's ExecutionContext, which carries no capture.
+        var noisy = Task.Run(() =>
+        {
+            inScript.Task.WaitAsync(TimeSpan.FromSeconds(15)).GetAwaiter().GetResult();
+            Console.WriteLine("[noise] unrelated writer");
+            noiseDone.SetResult();
+        });
+        try
+        {
+            var result = await Run(harness, "run_code", new
+            {
+                code = "Console.WriteLine(\"from script\");\nawait Tools.CallAsync(\"gate\", new { });\nreturn 1;",
+                description = "Hold the capture open while an unrelated writer prints",
+            }, agent);
+            Assert.False(result.IsError);
+            Assert.NotNull(result.Value);
+            Assert.Equal("from script\n", result.Value.Value.GetProperty("console").GetString());
+        }
+        finally
+        {
+            inScript.TrySetResult();
+            await noisy;
+        }
+    }
+
     [Fact]
     public async Task RunCode_RuntimeFailure_BecomesRunCodeFailedError()
     {
@@ -271,6 +309,35 @@ public class JobsAndCodeModeTests
         public override JsonSchema.Schema Output { get; } = JsonSchema.String();
 
         protected override Task<string> ExecuteTyped(Args args, ToolRunContext exec) => Task.FromResult($"echo:{args.Value}");
+
+        protected override IReadOnlyList<ContentBlock> RenderTyped(Args args, string value) => [new TextBlock(value)];
+
+        protected override bool IsConcurrencySafeTyped(Args args) => true;
+    }
+
+    /// <summary>
+    /// Blocks the script mid-capture until the test's unrelated writer has printed, so the
+    /// noise write is guaranteed to happen while run_code's console capture is active.
+    /// </summary>
+    private sealed class GateTool(
+        TaskCompletionSource inScript,
+        TaskCompletionSource noiseDone) : ToolDefinition<GateTool.Args, string>
+    {
+        public sealed record Args;
+
+        public override string Name => "gate";
+        public override string Description => "test gate for run_code capture scoping";
+
+        public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object();
+
+        public override JsonSchema.Schema Output { get; } = JsonSchema.String();
+
+        protected override async Task<string> ExecuteTyped(Args args, ToolRunContext exec)
+        {
+            inScript.SetResult();
+            await noiseDone.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            return "gate-open";
+        }
 
         protected override IReadOnlyList<ContentBlock> RenderTyped(Args args, string value) => [new TextBlock(value)];
 

@@ -10,6 +10,10 @@
 @implements IDisposable
 
 <div class="session-view @((_snapshot?.Todos.Count ?? 0) > 0 ? "with-todos" : "")">
+    @if (_modelMenu || _permissionMenu || _ctxMenu)
+    {
+        <div class="menu-backdrop" @onclick="CloseMenus"></div>
+    }
     <header class="session-header">
         <div class="session-header-title">
             @if (_editingTitle)
@@ -20,12 +24,56 @@
             {
                 <button class="session-title" title="Rename (/title)" @onclick="StartEditTitle">@(_snapshot?.Title is { Length: > 0 } t ? t : SessionFacade.DeriveTitle(_session))</button>
             }
-            <button class="model-chip" title="Switch model for this session" @onclick="ToggleModelMenu">
-                @(_agent?.Options.Provider)/@(_agent?.Options.Model) ▾
-            </button>
-            <button class="status-chip permission" title="Switch permission preset (/permission)" @onclick="TogglePermissionMenu">
-                🔒 @(EffectiveSandbox)
-            </button>
+            <div class="chip-anchor">
+                <button class="model-chip" title="Switch model for this session" @onclick="ToggleModelMenu">
+                    @(_agent?.Options.Provider)/@(_agent?.Options.Model) ▾
+                </button>
+                @if (_modelMenu)
+                {
+                    <div class="popover anchored">
+                        @{
+                            var currentModel = Facade.Harness.RuntimeModels(_agent?.Options.Provider ?? "")
+                                .FirstOrDefault(m => m.Id == _agent?.Options.Model);
+                        }
+                        @foreach (var provider in Facade.Harness.Llm.ListProviders())
+                        {
+                            <div class="popover-group">@provider</div>
+                            @foreach (var model in Facade.Harness.Llm.ListModels(provider))
+                            {
+                                <button class="popover-item @(_agent?.Options.Provider == provider && _agent?.Options.Model == model.Id ? "selected" : "")"
+                                        @onclick="() => SelectModel(provider, model.Id)">
+                                    @model.Name
+                                </button>
+                            }
+                        }
+                        @if (currentModel?.ReasoningEfforts is { Length: > 0 } efforts)
+                        {
+                            <div class="popover-group">reasoning effort</div>
+                            <button class="popover-item @(_agent?.Options.ReasoningEffort is null ? "selected" : "")" @onclick='() => SelectEffort(null)'>
+                                model default@(currentModel.DefaultEffort is { } def ? $" ({def})" : "")
+                            </button>
+                            @foreach (var effort in efforts)
+                            {
+                                <button class="popover-item @(_agent?.Options.ReasoningEffort == effort ? "selected" : "")" @onclick='() => SelectEffort(effort)'>@effort</button>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+            <div class="chip-anchor">
+                <button class="status-chip permission" title="Switch permission preset (/permission)" @onclick="TogglePermissionMenu">
+                    🔒 @(EffectiveSandbox)
+                </button>
+                @if (_permissionMenu)
+                {
+                    <div class="popover anchored">
+                        <div class="popover-group">permission preset</div>
+                        <button class="popover-item @(EffectiveSandbox == "read-only" ? "selected" : "")" @onclick='() => SelectPermission("read-only")'>read-only — deny all mutations</button>
+                        <button class="popover-item @(EffectiveSandbox == "workspace-write" ? "selected" : "")" @onclick='() => SelectPermission("workspace-write")'>workspace-write — writes confined to the session folder</button>
+                        <button class="popover-item @(EffectiveSandbox == "danger-full-access" ? "selected" : "")" @onclick='() => SelectPermission("danger-full-access")'>danger-full-access — no confinement</button>
+                    </div>
+                }
+            </div>
             @if (_snapshot?.PlanMode is { } planState)
             {
                 <span class="status-chip" title="Plan mode is active — mutations are blocked until a plan is approved via exit_plan_mode (engaged @(_snapshot.PlanMode == "auto" ? "automatically for a complex brief" : "manually via /plan"))">
@@ -34,10 +82,36 @@
             }
             @if (_snapshot?.Context is { } context)
             {
-                <span class="status-chip context-meter" title="@MeterTooltip(context)">
-                    <span class="meter"><span class="meter-fill" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></span>
-                    ctx @context.OccupancyPercent%
-                </span>
+                <div class="chip-anchor">
+                    <button class="status-chip context-meter" title="Context usage — click for the full reading" @onclick="ToggleContextMenu">
+                        <span class="meter"><span class="meter-fill @MeterTone(context.OccupancyPercent)" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></span>
+                        ctx @context.OccupancyPercent%
+                    </button>
+                    @if (_ctxMenu)
+                    {
+                        <div class="popover anchored ctx-card">
+                            <div class="popover-group">context window</div>
+                            <div class="ctx-meter-lg"><span class="meter-fill @MeterTone(context.OccupancyPercent)" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></div>
+                            <div class="ctx-row ctx-head">
+                                <span class="k">used</span>
+                                <span class="v">@Fmt(context.PressureTokens) tokens · @context.OccupancyPercent% of @(context.ContextWindowTokens is { } window ? Fmt(window) : "unknown window")</span>
+                            </div>
+                            <div class="ctx-section">
+                                <div class="ctx-row"><span class="k">system</span><span class="v">@Fmt(context.SystemTokens)</span></div>
+                                <div class="ctx-row"><span class="k">tools</span><span class="v">@Fmt(context.ToolsTokens)</span></div>
+                                <div class="ctx-row"><span class="k">messages</span><span class="v">@Fmt(context.MessageTokens)</span></div>
+                                <div class="ctx-row"><span class="k">provider usage</span><span class="v">@(context.ProviderPressureTokens is { } pressure ? $"{Fmt(pressure)} tokens" : "not reported yet")</span></div>
+                            </div>
+                            <div class="ctx-section">
+                                <div class="popover-group">session totals</div>
+                                <div class="ctx-row"><span class="k">input</span><span class="v">@Fmt(context.TotalInputTokens)</span></div>
+                                <div class="ctx-row"><span class="k">output</span><span class="v">@Fmt(context.TotalOutputTokens)</span></div>
+                                <div class="ctx-row"><span class="k">cache read</span><span class="v">@Fmt(context.TotalCacheReadTokens)</span></div>
+                                <div class="ctx-row"><span class="k">cache write</span><span class="v">@Fmt(context.TotalCacheWriteTokens)</span></div>
+                            </div>
+                        </div>
+                    }
+                </div>
             }
             <span class="status-chip @(_snapshot?.Status == "running" ? "running" : "idle")">
                 @(_snapshot?.Status == "running" ? "● running" : "○ idle")
@@ -73,47 +147,6 @@
                     }
                 </div>
             }
-        </div>
-    }
-
-    @if (_modelMenu)
-    {
-        <div class="popover">
-            @{
-                var currentModel = Facade.Harness.RuntimeModels(_agent?.Options.Provider ?? "")
-                    .FirstOrDefault(m => m.Id == _agent?.Options.Model);
-            }
-            @foreach (var provider in Facade.Harness.Llm.ListProviders())
-            {
-                <div class="popover-group">@provider</div>
-                @foreach (var model in Facade.Harness.Llm.ListModels(provider))
-                {
-                    <button class="popover-item @(_agent?.Options.Provider == provider && _agent?.Options.Model == model.Id ? "selected" : "")"
-                            @onclick="() => SelectModel(provider, model.Id)">
-                        @model.Name
-                    </button>
-                }
-            }
-            @if (currentModel?.ReasoningEfforts is { Length: > 0 } efforts)
-            {
-                <div class="popover-group">reasoning effort</div>
-                <button class="popover-item @(_agent?.Options.ReasoningEffort is null ? "selected" : "")" @onclick='() => SelectEffort(null)'>
-                    model default@(currentModel.DefaultEffort is { } def ? $" ({def})" : "")
-                </button>
-                @foreach (var effort in efforts)
-                {
-                    <button class="popover-item @(_agent?.Options.ReasoningEffort == effort ? "selected" : "")" @onclick='() => SelectEffort(effort)'>@effort</button>
-                }
-            }
-        </div>
-    }
-    @if (_permissionMenu)
-    {
-        <div class="popover">
-            <div class="popover-group">permission preset</div>
-            <button class="popover-item @(EffectiveSandbox == "read-only" ? "selected" : "")" @onclick='() => SelectPermission("read-only")'>read-only — deny all mutations</button>
-            <button class="popover-item @(EffectiveSandbox == "workspace-write" ? "selected" : "")" @onclick='() => SelectPermission("workspace-write")'>workspace-write — writes confined to the session folder</button>
-            <button class="popover-item @(EffectiveSandbox == "danger-full-access" ? "selected" : "")" @onclick='() => SelectPermission("danger-full-access")'>danger-full-access — no confinement</button>
         </div>
     }
 
@@ -409,6 +442,7 @@
     private string _view = "chat";
     private bool _modelMenu;
     private bool _permissionMenu;
+    private bool _ctxMenu;
     private ElementReference _composerTa;
     private ElementReference _slashMenu;
     private ElementReference _mentionMenu;
@@ -501,6 +535,7 @@
         _draft = "";
         _modelMenu = false;
         _permissionMenu = false;
+        _ctxMenu = false;
         _editingTitle = false;
         _editingQueue = null;
         _statsOpen = false;
@@ -559,6 +594,14 @@
         {
             _pendingScroll = false;
             await ScrollToBottom(force: true);
+        }
+        if (_modelMenu || _permissionMenu || _ctxMenu)
+        {
+            // keep an open dropdown inside the viewport (chips near the right edge on
+            // narrow screens would otherwise push the menu off-screen)
+            try { await Js.InvokeVoidAsync("blazorly.clampMenu"); }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
         }
     }
 
@@ -893,12 +936,28 @@
     {
         _modelMenu = !_modelMenu;
         _permissionMenu = false;
+        _ctxMenu = false;
     }
 
     private void TogglePermissionMenu()
     {
         _permissionMenu = !_permissionMenu;
         _modelMenu = false;
+        _ctxMenu = false;
+    }
+
+    private void ToggleContextMenu()
+    {
+        _ctxMenu = !_ctxMenu;
+        _modelMenu = false;
+        _permissionMenu = false;
+    }
+
+    private void CloseMenus()
+    {
+        _modelMenu = false;
+        _permissionMenu = false;
+        _ctxMenu = false;
     }
 
     private Task SelectModel(string provider, string model)
@@ -997,15 +1056,16 @@
         return (lines, toolLines);
     }
 
-    private static string MeterTooltip(Blazorly.Harness.Core.TokenMeter.ContextMeterReading context)
+    /// <summary>Thousands-separated token count for the context card rows.</summary>
+    private static string Fmt(long tokens) => tokens.ToString("N0");
+
+    /// <summary>Meter tone by occupancy: warn from the compaction threshold (72%), danger near-full.</summary>
+    private static string MeterTone(int occupancyPercent) => occupancyPercent switch
     {
-        var provider = context.ProviderPressureTokens is { } p ? $"{p} tokens (provider-anchored)" : "no provider usage yet";
-        return $"context ~{context.OccupancyPercent}% of {context.ContextWindowTokens:N0}"
-            + $" — system {context.SystemTokens} · tools {context.ToolsTokens} · messages {context.MessageTokens} tokens"
-            + $"; last request {provider}"
-            + $"; totals in {context.TotalInputTokens} / out {context.TotalOutputTokens}"
-            + $" / cache-read {context.TotalCacheReadTokens} / cache-write {context.TotalCacheWriteTokens}";
-    }
+        >= 90 => "hot",
+        >= 72 => "warm",
+        _ => "",
+    };
 
     private static string DescribeReason(TurnEndReason? reason) => reason switch
     {

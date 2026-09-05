@@ -451,8 +451,6 @@ button.icon:disabled { opacity: 0.35; }
 /* ---- popovers ---- */
 .popover {
     position: absolute;
-    right: 18px;
-    top: 56px;
     z-index: 40;
     min-width: 300px;
     max-width: 400px;
@@ -464,6 +462,51 @@ button.icon:disabled { opacity: 0.35; }
     padding: 6px;
     box-shadow: var(--shadow-2);
 }
+
+/* Dropdowns open directly below the chip that triggered them, not in a page corner.
+   blazorly.clampMenu() shifts them left if a chip near the right edge would push
+   the menu off-screen. */
+.chip-anchor { position: relative; display: inline-flex; }
+.popover.anchored {
+    left: 0;
+    top: calc(100% + 6px);
+    max-width: min(400px, calc(100vw - 32px));
+}
+
+/* Phones: size the menu to its content instead of the 300px desktop floor;
+   blazorly.clampMenu() keeps long menus inside the narrow viewport. */
+@media (max-width: 640px) {
+    .popover.anchored { min-width: 0; width: max-content; }
+}
+
+/* Transparent full-page layer behind an open menu: any click outside dismisses it. */
+.menu-backdrop { position: fixed; inset: 0; z-index: 30; }
+
+/* ---- context reading card ---- */
+.ctx-card { min-width: 296px; max-width: 340px; padding: 4px 0 8px; }
+.ctx-meter-lg {
+    height: 8px;
+    background: var(--bg-overlay);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 8px 12px 6px;
+}
+.ctx-meter-lg .meter-fill { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.meter-fill.warm { background: var(--warn); }
+.meter-fill.hot { background: var(--danger); }
+.ctx-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    padding: 3px 12px;
+    font-size: 12px;
+}
+.ctx-row .k { color: var(--text-dim); }
+.ctx-row .v { font-family: var(--mono); color: var(--text); }
+.ctx-row.ctx-head .v { font-weight: 600; }
+.ctx-section { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 2px; }
+
 .popover-group { padding: 6px 10px 3px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint); }
 .popover-item {
     display: block;

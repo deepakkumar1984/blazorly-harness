@@ -2,7 +2,7 @@
 
 An agentic coding harness: a complete agent runtime (agent loop, tool pipeline, sandboxing, session persistence) with four front-ends — a Blazor web UI, a headless CLI, and JSON-RPC / ACP stdio servers for editors and automation.
 
-Configure an LLM provider to start working sessions: set `provider`, `model`, and an API key in `settings.json` (or pick them in the web Settings page, which discovers models live from each provider's API). The provider dropdown groups routes into US companies, Chinese companies, local & self-hosted, and other — plus any custom OpenAI-compatible routes you add.
+Configure an LLM provider to start working sessions: set `provider`, `model`, and an API key in `settings.json` (or pick them in the web Settings page, which discovers models live from each provider's API). The provider dropdown groups routes into cloud providers, local & self-hosted, and other — plus any custom OpenAI-compatible routes you add. Z.ai ships two routes — `zai` (pay-as-you-go API) and `zai-coding` (GLM Coding Plan subscription, separate endpoint and key).
 
 ## Solution layout
 

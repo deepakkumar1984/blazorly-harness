@@ -88,7 +88,7 @@
                         <button type="button" class="chip" @onclick='() => _settings.BaseUrl = def'>reset to @def</button>
                     </div>
                 }
-                @if (_providerInfo is { Local: false })
+                @if (_providerInfo is { Local: false } or { ApiKeyEnv: not null })
                 {
                     <label>
                         <span>API key</span>
@@ -312,8 +312,9 @@
     private string _customError = "";
     private ProviderInfo? _providerInfo => ProviderCatalog.Info(_settings.Provider);
 
-    /// <summary>Cloud providers that require a key before their API will list models.</summary>
-    private bool NeedsKey => _providerInfo is { Local: false } && _settings.Provider != "openai-compatible";
+    /// <summary>Providers that require a key before their API will list models
+    /// (cloud routes, plus local servers gated by a key such as Unsloth Studio).</summary>
+    private bool NeedsKey => (_providerInfo is { Local: false } or { ApiKeyEnv: not null }) && _settings.Provider != "openai-compatible";
 
     protected override void OnInitialized()
     {
@@ -359,8 +360,7 @@
 
     private static string CategoryLabel(string category) => category switch
     {
-        "us" => "US companies",
-        "china" => "Chinese companies",
+        "cloud" => "Cloud providers",
         "local" => "Local & self-hosted",
         _ => "Other",
     };

@@ -679,12 +679,30 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         {
             Settings = System.Text.Json.JsonSerializer.Deserialize<HarnessSettings>(File.ReadAllText(path),
                 new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }) ?? new HarnessSettings();
+            MigrateLegacySettings(Settings);
             ApplyPatches(Settings, _home);
         }
         catch
         {
             Settings = new HarnessSettings();
         }
+    }
+
+    /// <summary>Renames retired provider ids so saved settings keep working across catalog changes.</summary>
+    public static void MigrateLegacySettings(HarnessSettings settings)
+    {
+        // "zhipu" → "zai": same API under the Z.ai brand, now on the documented api.z.ai host
+        // (the old default open.bigmodel.ai never resolved; open.bigmodel.cn is the China host).
+        if (settings.Provider == "zhipu")
+        {
+            settings.Provider = "zai";
+            if (settings.BaseUrl.TrimEnd('/') == "https://open.bigmodel.ai/api/paas/v4")
+                settings.BaseUrl = ProviderCatalog.Info("zai")!.DefaultBaseUrl;
+        }
+        if (settings.ProviderKeys.Remove("zhipu", out var zhipuKey) && !settings.ProviderKeys.ContainsKey("zai"))
+            settings.ProviderKeys["zai"] = zhipuKey;
+        if (settings.DiscoveredModels.Remove("zhipu", out var zhipuModels) && !settings.DiscoveredModels.ContainsKey("zai"))
+            settings.DiscoveredModels["zai"] = zhipuModels;
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -696,7 +714,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 }
 
 /// <summary>A built-in provider route: display metadata plus defaults for the Settings UI.</summary>
-/// <param name="Category">demo | us | china | local | generic — drives the grouped picker.</param>
+/// <param name="Category">cloud | local | generic — drives the grouped picker.</param>
 public sealed record ProviderInfo(
     string Id,
     string Name,
@@ -716,35 +734,37 @@ public static class ProviderCatalog
 
     public static readonly IReadOnlyList<ProviderInfo> All =
     [
-        // US-hosted
-        new("openai", "OpenAI", "us", "https://api.openai.com/v1", "OPENAI_API_KEY"),
-        new("anthropic", "Anthropic", "us", "https://api.anthropic.com", "ANTHROPIC_API_KEY"),
-        new("xai", "xAI (Grok)", "us", "https://api.x.ai/v1", "XAI_API_KEY"),
-        new("google", "Google (Gemini)", "us", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
-        new("mistral", "Mistral AI", "us", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
-        new("perplexity", "Perplexity", "us", "https://api.perplexity.ai", "PERPLEXITY_API_KEY"),
-        new("together", "Together AI", "us", "https://api.together.xyz/v1", "TOGETHER_API_KEY"),
-        new("groq", "Groq", "us", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
-        new("fireworks", "Fireworks AI", "us", "https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY"),
-        new("openrouter", "OpenRouter (aggregator)", "us", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
-        new("cerebras", "Cerebras", "us", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
-        new("cohere", "Cohere", "us", "https://api.cohere.ai/compatibility/v1", "COHERE_API_KEY"),
-        // China-hosted
-        new("deepseek", "DeepSeek", "china", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
-        new("qwen", "Alibaba Qwen (DashScope)", "china", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
-        new("moonshot", "Moonshot AI (Kimi)", "china", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
-        new("zhipu", "Zhipu AI (GLM)", "china", "https://open.bigmodel.ai/api/paas/v4", "ZHIPU_API_KEY"),
-        new("minimax", "MiniMax", "china", "https://api.minimaxi.chat/v1", "MINIMAX_API_KEY"),
-        new("doubao", "ByteDance Doubao (Ark)", "china", "https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY"),
-        new("ernie", "Baidu ERNIE (Qianfan)", "china", "https://qianfan.baidubce.com/v2", "QIANFAN_API_KEY"),
-        new("hunyuan", "Tencent Hunyuan", "china", "https://api.hunyuan.cloud.tencent.com/v1", "HUNYUAN_API_KEY"),
-        new("stepfun", "StepFun", "china", "https://api.stepfun.com/v1", "STEPFUN_API_KEY"),
-        new("yi", "01.AI (Yi)", "china", "https://api.lingyiwanwu.com/v1", "YI_API_KEY"),
+        // Cloud (hosted APIs)
+        new("openai", "OpenAI", "cloud", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+        new("anthropic", "Anthropic", "cloud", "https://api.anthropic.com", "ANTHROPIC_API_KEY"),
+        new("xai", "xAI (Grok)", "cloud", "https://api.x.ai/v1", "XAI_API_KEY"),
+        new("google", "Google (Gemini)", "cloud", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+        new("mistral", "Mistral AI", "cloud", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
+        new("perplexity", "Perplexity", "cloud", "https://api.perplexity.ai", "PERPLEXITY_API_KEY"),
+        new("together", "Together AI", "cloud", "https://api.together.ai/v1", "TOGETHER_API_KEY"),
+        new("groq", "Groq", "cloud", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+        new("fireworks", "Fireworks AI", "cloud", "https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY"),
+        new("openrouter", "OpenRouter (aggregator)", "cloud", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+        new("cerebras", "Cerebras", "cloud", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
+        new("cohere", "Cohere", "cloud", "https://api.cohere.ai/compatibility/v1", "COHERE_API_KEY"),
+        new("deepseek", "DeepSeek", "cloud", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
+        new("qwen", "Alibaba Qwen (DashScope)", "cloud", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
+        new("moonshot", "Moonshot AI (Kimi)", "cloud", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
+        // Z.ai ships two routes with separate keys/quotas: pay-as-you-go API and the GLM Coding Plan
+        // subscription (dedicated endpoint; a coding-plan key against /api/paas/v4 does not burn plan quota).
+        new("zai", "Z.ai API (GLM)", "cloud", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY"),
+        new("zai-coding", "Z.ai Coding Plan (GLM)", "cloud", "https://api.z.ai/api/coding/paas/v4", "ZAI_CODING_API_KEY"),
+        new("minimax", "MiniMax", "cloud", "https://api.minimax.io/v1", "MINIMAX_API_KEY"),
+        new("doubao", "ByteDance Doubao (Ark)", "cloud", "https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY"),
+        new("ernie", "Baidu ERNIE (Qianfan)", "cloud", "https://qianfan.baidubce.com/v2", "QIANFAN_API_KEY"),
+        new("hunyuan", "Tencent Hunyuan", "cloud", "https://api.hunyuan.cloud.tencent.com/v1", "HUNYUAN_API_KEY"),
+        new("stepfun", "StepFun", "cloud", "https://api.stepfun.com/v1", "STEPFUN_API_KEY"),
         // Local / self-hosted
         new("ollama", "Ollama (local)", "local", "http://localhost:11434/v1"),
         new("lmstudio", "LM Studio (local)", "local", "http://localhost:1234/v1"),
         new("omlx", "oMLX (local, MLX)", "local", "http://localhost:8000/v1"),
-        new("unsloth", "Unsloth", "local", "https://api.unsloth.ai/v1", "UNSLOTH_API_KEY"),
+        // Unsloth Studio serves an OpenAI-compatible API from the local app; auth uses a key from its UI.
+        new("unsloth", "Unsloth Studio (local)", "local", "http://localhost:8888/v1", "UNSLOTH_API_KEY"),
         new("openai-compatible", "Custom OpenAI-compatible", "generic", "https://gateway.example.com/v1"),
     ];
 
@@ -752,7 +772,7 @@ public static class ProviderCatalog
 
     public static ProviderInfo? Info(string provider) => All.FirstOrDefault(p => p.Id == provider);
 
-    public static IReadOnlyList<string> Categories => ["us", "china", "local", "generic"];
+    public static IReadOnlyList<string> Categories => ["cloud", "local", "generic"];
 
     public static IReadOnlyList<LlmModelInfo> For(string provider, string baseUrl) => provider switch
     {
@@ -867,28 +887,27 @@ public static class ProviderCatalog
         ],
         "moonshot" =>
         [
-            new LlmModelInfo(provider, "kimi-k2-0905-preview", "Kimi K2 (0905)", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768,
+            new LlmModelInfo(provider, "kimi-k3", "Kimi K3", ContextWindowTokens: 1_048_576,
+                SupportsReasoning: true, ReasoningEfforts: ["low", "high", "max"], DefaultEffort: "max"),
+            new LlmModelInfo(provider, "kimi-k2.7-code", "Kimi K2.7 Code", ContextWindowTokens: 262_144,
                 SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
-            new LlmModelInfo(provider, "kimi-k2-instruct", "Kimi K2 Instruct", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
-            new LlmModelInfo(provider, "moonshot-v1-128k", "Moonshot V1 128K", ContextWindowTokens: 131_072, MaxOutputTokens: 8_192),
-            new LlmModelInfo(provider, "moonshot-v1-8k", "Moonshot V1 8K", ContextWindowTokens: 8_192, MaxOutputTokens: 8_192),
+            new LlmModelInfo(provider, "kimi-k2.6", "Kimi K2.6", ContextWindowTokens: 262_144),
         ],
-        "zhipu" =>
+        "zai" or "zai-coding" =>
         [
-            new LlmModelInfo(provider, "glm-4.6", "GLM-4.6", ContextWindowTokens: 204_800, MaxOutputTokens: 32_768,
-                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
-            new LlmModelInfo(provider, "glm-4.5", "GLM-4.5", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768,
-                SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
-            new LlmModelInfo(provider, "glm-4.5-air", "GLM-4.5 Air", ContextWindowTokens: 131_072, MaxOutputTokens: 16_384),
-            new LlmModelInfo(provider, "glm-4-flash", "GLM-4 Flash (free tier)", ContextWindowTokens: 131_072, MaxOutputTokens: 4_096),
+            new LlmModelInfo(provider, "glm-5.3", "GLM-5.3", ContextWindowTokens: 1_048_576, MaxOutputTokens: 131_072,
+                SupportsReasoning: true, ReasoningEfforts: ["low", "high", "max"], DefaultEffort: "max"),
+            new LlmModelInfo(provider, "glm-5.3-flash", "GLM-5.3 Flash", ContextWindowTokens: 1_048_576, MaxOutputTokens: 131_072,
+                SupportsReasoning: true, ReasoningEfforts: ["low", "high", "max"], DefaultEffort: "max"),
+            new LlmModelInfo(provider, "glm-5.1", "GLM-5.1", ContextWindowTokens: 204_800, MaxOutputTokens: 131_072,
+                SupportsReasoning: true, ReasoningEfforts: ["low", "high", "max"], DefaultEffort: "high"),
         ],
         "minimax" =>
         [
-            new LlmModelInfo(provider, "MiniMax-M2", "MiniMax M2", ContextWindowTokens: 204_800, MaxOutputTokens: 32_768,
+            new LlmModelInfo(provider, "MiniMax-M3", "MiniMax M3", ContextWindowTokens: 1_048_576,
                 SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
-            new LlmModelInfo(provider, "MiniMax-M1", "MiniMax M1", ContextWindowTokens: 1_000_000, MaxOutputTokens: 32_768,
+            new LlmModelInfo(provider, "MiniMax-M2.7", "MiniMax M2.7", ContextWindowTokens: 204_800,
                 SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "medium"),
-            new LlmModelInfo(provider, "abab6.5s-chat", "abab6.5s", ContextWindowTokens: 245_760, MaxOutputTokens: 8_192),
         ],
         "doubao" =>
         [
@@ -921,11 +940,6 @@ public static class ProviderCatalog
                 SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts),
             new LlmModelInfo(provider, "step-2-mini", "Step 2 Mini", ContextWindowTokens: 8_192, MaxOutputTokens: 4_096),
             new LlmModelInfo(provider, "step-1v-8k", "Step 1V 8K", ContextWindowTokens: 8_192, MaxOutputTokens: 4_096),
-        ],
-        "yi" =>
-        [
-            new LlmModelInfo(provider, "yi-lightning", "Yi Lightning", ContextWindowTokens: 32_768, MaxOutputTokens: 16_384),
-            new LlmModelInfo(provider, "yi-large", "Yi Large", ContextWindowTokens: 32_768, MaxOutputTokens: 16_384),
         ],
         "ollama" =>
         [

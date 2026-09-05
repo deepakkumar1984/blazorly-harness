@@ -15,7 +15,8 @@ namespace Blazorly.Harness.Web;
 
 /// <summary>The UI host, callable from the product launcher (`blazorly serve`) and the
 /// standalone web project alike. Binds http://localhost:5080 unless ASPNETCORE_URLS
-/// or --port say otherwise; --no-open suppresses the welcome browser tab.</summary>
+/// says otherwise; an explicit --port always overrides both. --no-open suppresses the
+/// welcome browser tab.</summary>
 public static class UiHost
 {
     public static async Task<int> RunAsync(string[] args)
@@ -30,9 +31,12 @@ public static class UiHost
         var builder = WebApplication.CreateBuilder(args);
 
         // Published binaries have no launchSettings.json: bind :5080 explicitly unless
-        // the environment (ASPNETCORE_URLS / --urls) already chose something.
-        if (Environment.GetEnvironmentVariable("ASPNETCORE_URLS") is not { Length: > 0 }
-            && args.All(a => !a.StartsWith("--urls", StringComparison.Ordinal)))
+        // the environment (ASPNETCORE_URLS / --urls) already chose something. An explicit
+        // --port/-p always wins — `dotnet run` injects ASPNETCORE_URLS from launchSettings,
+        // which would otherwise silently bury the flag.
+        if (uiArgs.PortExplicit
+            || (Environment.GetEnvironmentVariable("ASPNETCORE_URLS") is not { Length: > 0 }
+                && args.All(a => !a.StartsWith("--urls", StringComparison.Ordinal))))
         {
             builder.WebHost.UseUrls($"http://localhost:{uiArgs.Port}");
         }
