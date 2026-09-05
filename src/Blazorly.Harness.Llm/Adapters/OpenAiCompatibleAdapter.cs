@@ -7,9 +7,10 @@ using System.Text.Json.Serialization;
 namespace Blazorly.Harness.Llm.Adapters;
 
 /// <summary>
-/// Streams from any OpenAI-compatible chat-completions endpoint (DeepSeek, OpenAI, vLLM, …)
-/// via server-sent events. Harness tool-result blocks map to role:'tool' wire messages;
-/// reasoning maps to DeepSeek's reasoning_content field.
+/// Streams from OpenAI-compatible chat-completions endpoints (DeepSeek, Groq, vLLM, Ollama, …)
+/// via server-sent events. xAI and OpenAI use <see cref="ResponsesApiAdapter"/> instead — Chat
+/// Completions is legacy on those hosts. Harness tool-result blocks map to role:'tool' wire
+/// messages; reasoning maps to DeepSeek's reasoning_content field.
 /// </summary>
 public sealed class OpenAiCompatibleAdapter : LlmAdapter
 {
@@ -347,7 +348,11 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
             }
             if (line is null)
             {
-                if (data.Length > 0) yield return data.ToString();
+                if (data.Length > 0)
+                {
+                    var trailing = data.ToString();
+                    if (trailing != "[DONE]") yield return trailing;
+                }
                 yield break;
             }
             if (line.Length == 0)

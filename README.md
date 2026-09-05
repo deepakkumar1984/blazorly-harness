@@ -9,7 +9,7 @@ Configure an LLM provider to start working sessions: set `provider`, `model`, an
 | Project | What it is |
 |---|---|
 | `src/Blazorly.Harness.Kernel` | Event bus, harness context, plugin host, scoped layers |
-| `src/Blazorly.Harness.Llm` | LLM routing: provider adapters (Anthropic, OpenAI-compatible), streaming, token estimation, model discovery |
+| `src/Blazorly.Harness.Llm` | LLM routing: provider adapters (Anthropic, OpenAI/xAI Responses API, OpenAI-compatible chat completions), streaming, token estimation, model discovery |
 | `src/Blazorly.Harness.Core` | Agent loop, sessions, compaction, subagents, jobs, credentials, MCP client, schedules, telemetry, and other core services |
 | `src/Blazorly.Harness.Tools` | Built-in tools (bash, fs, web, LSP, terminals, code mode, …) and the Landlock sandbox (confines bash and run_code writes to the session workspace) |
 | `src/Blazorly.Harness.Persistence` | Session persistence: JSONL and SQLite backends |

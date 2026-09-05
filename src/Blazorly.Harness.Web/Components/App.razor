@@ -7,17 +7,18 @@
     <title>Blazorly Harness</title>
     <base href="/" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
     <script>
         // Apply the persisted theme before first paint to avoid a flash.
         document.documentElement.dataset.theme = localStorage.getItem("blazorly.theme") || "dark";
     </script>
+    <ImportMap />
     <HeadOutlet @rendermode="InteractiveServer" />
 </head>
 
 <body>
     <Routes @rendermode="InteractiveServer" />
-    <script src="app.js"></script>
+    <script src="@Assets["app.js"]"></script>
     <script src="_framework/blazor.web.js"></script>
 </body>
 

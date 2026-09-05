@@ -69,9 +69,27 @@ public class ReasoningEffortTests
     [Fact]
     public void GenericRoute_NoEffort_SendsNothing()
     {
-        var body = Body(Options("openai", null));
+        var body = Body(Options("openai-compatible", null));
         Assert.False(body.TryGetProperty("thinking", out _));
         Assert.False(body.TryGetProperty("reasoning_effort", out _));
+    }
+
+    [Fact]
+    public void ResponsesApi_WrapsEffortInReasoningObject()
+    {
+        var adapter = new ResponsesApiAdapter("xai", "https://api.x.ai/v1", "k", [], new HttpClient());
+        var body = JsonSerializer.SerializeToElement(adapter.BuildWireBody(Options("xai", "high")));
+        Assert.Equal("high", body.GetProperty("reasoning").GetProperty("effort").GetString());
+        Assert.False(body.TryGetProperty("reasoning_effort", out _));
+        Assert.False(body.TryGetProperty("thinking", out _));
+    }
+
+    [Fact]
+    public void ResponsesApi_OffMapsToLow()
+    {
+        var adapter = new ResponsesApiAdapter("xai", "https://api.x.ai/v1", "k", [], new HttpClient());
+        var body = JsonSerializer.SerializeToElement(adapter.BuildWireBody(Options("xai", "off")));
+        Assert.Equal("low", body.GetProperty("reasoning").GetProperty("effort").GetString());
     }
 
     [Fact]

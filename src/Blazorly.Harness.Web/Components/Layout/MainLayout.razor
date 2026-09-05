@@ -294,6 +294,7 @@
             }
             catch (JSDisconnectedException) { }
             catch (ObjectDisposedException) { }
+            catch (JSException) { }
         }
         if (_awaitFolderFocus && _showAddWorkspace)
         {
@@ -317,6 +318,7 @@
             await Js.InvokeAsync<string>("blazorly.setTheme", _theme);
         }
         catch (JSDisconnectedException) { }
+        catch (JSException) { }
     }
 
     public sealed record WorkspaceGroup(Workspace Workspace, List<SessionItem> Sessions, bool RootEmpty = false);

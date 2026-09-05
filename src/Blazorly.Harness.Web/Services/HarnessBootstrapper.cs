@@ -407,8 +407,11 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     private LlmAdapter BuildRoute(string provider, string baseUrl, string? apiKey, IReadOnlyList<LlmModelInfo> models)
         => provider == "anthropic"
             ? new AnthropicAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver())
-            : new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
-                attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider));
+            : ProviderCatalog.UsesResponsesApi(provider)
+                ? new ResponsesApiAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
+                    attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider))
+                : new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
+                    attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider));
 
     /// <summary>Selects the web_search backend from settings; a keyed backend without a key
     /// falls back to keyless DuckDuckGo (noted on stderr) so web_search keeps working.</summary>
@@ -808,6 +811,13 @@ public static class ProviderCatalog
     /// <summary>Only cloud routes demand a key up front; local servers and open gateways
     /// stream keyless and let the server reject them if it actually wants auth.</summary>
     public static bool RequiresApiKey(string provider) => Info(provider)?.Category == "cloud";
+
+    /// <summary>
+    /// xAI and OpenAI serve the Responses API as the current inference surface; Chat Completions
+    /// is legacy there. Other OpenAI-compatible hosts (Groq, Ollama, DeepSeek, custom gateways)
+    /// still speak /chat/completions.
+    /// </summary>
+    public static bool UsesResponsesApi(string provider) => provider is "xai" or "openai";
 
     public static IReadOnlyList<string> Categories => ["cloud", "local", "generic"];
 

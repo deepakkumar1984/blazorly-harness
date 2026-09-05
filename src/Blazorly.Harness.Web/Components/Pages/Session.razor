@@ -618,15 +618,10 @@
         if (firstRender)
         {
             _slashRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
-            try
-            {
-                await Js.InvokeVoidAsync("blazorly.slash.attach", _composerTa, _slashMenu,
-                    SlashCommands.Select(c => new { name = c.Name, args = c.Args, description = c.Description }),
-                    _slashRef);
-                await Js.InvokeVoidAsync("blazorly.mention.attach", _composerTa, _mentionMenu, SessionId);
-            }
-            catch (JSDisconnectedException) { }
-            catch (ObjectDisposedException) { }
+            await TryJs("blazorly.slash.attach", _composerTa, _slashMenu,
+                SlashCommands.Select(c => new { name = c.Name, args = c.Args, description = c.Description }),
+                _slashRef);
+            await TryJs("blazorly.mention.attach", _composerTa, _mentionMenu, SessionId);
         }
         if (_pendingScroll)
         {
@@ -637,9 +632,7 @@
         {
             // keep an open dropdown inside the viewport (chips near the right edge on
             // narrow screens would otherwise push the menu off-screen)
-            try { await Js.InvokeVoidAsync("blazorly.clampMenu"); }
-            catch (JSDisconnectedException) { }
-            catch (ObjectDisposedException) { }
+            await TryJs("blazorly.clampMenu");
         }
         if (_focusModelSearch)
         {
@@ -647,22 +640,34 @@
             try { await _modelSearchInput.FocusAsync(); }
             catch (ObjectDisposedException) { }
             catch (JSDisconnectedException) { }
-            try { await Js.InvokeVoidAsync("blazorly.clampMenu"); } // focus scroll can shift layout
-            catch (JSDisconnectedException) { }
-            catch (ObjectDisposedException) { }
+            await TryJs("blazorly.clampMenu"); // focus scroll can shift layout
         }
         if (_terminalOpen && !_terminalResizeAttached)
         {
             _terminalResizeAttached = true;
-            try
-            {
-                await Js.InvokeVoidAsync("blazorly.attachTerminalResize", _terminalResizeHandle, _terminalDrawer,
-                    140 /* min px */, 640 /* max px */);
-            }
-            catch (JSDisconnectedException) { }
-            catch (ObjectDisposedException) { }
+            await TryJs("blazorly.attachTerminalResize", _terminalResizeHandle, _terminalDrawer,
+                140 /* min px */, 640 /* max px */);
         }
         if (!_terminalOpen) _terminalResizeAttached = false;
+    }
+
+    /// <summary>
+    /// JS interop must never tear down the circuit. Hot reload applies Razor without
+    /// reloading wwwroot/app.js, so identifiers can be missing until a full refresh.
+    /// </summary>
+    private async Task<bool> TryJs(string identifier, params object?[] args)
+    {
+        try
+        {
+            await Js.InvokeVoidAsync(identifier, args);
+            return true;
+        }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        catch (JSException) { }
+        catch (TaskCanceledException) { }
+        catch (OperationCanceledException) { }
+        return false;
     }
 
     private volatile bool _pendingChanged;
@@ -679,17 +684,8 @@
         }
     }
 
-    private async Task ScrollToBottom(bool force = false)
-    {
-        try
-        {
-            await Js.InvokeVoidAsync("blazorly.scrollBottom", _transcript, force);
-        }
-        catch (JSDisconnectedException) { }
-        catch (ObjectDisposedException) { }
-        catch (TaskCanceledException) { }
-        catch (OperationCanceledException) { }
-    }
+    private Task ScrollToBottom(bool force = false)
+        => TryJs("blazorly.scrollBottom", _transcript, force);
 
     private Task DraftChanged()
     {
@@ -720,6 +716,7 @@
             }
             catch (JSDisconnectedException) { }
             catch (ObjectDisposedException) { }
+            catch (JSException) { }
             await SendQueue();
         }
     }
@@ -926,11 +923,7 @@
 
     private async Task ScrollTerminal()
     {
-        try { await Js.InvokeVoidAsync("blazorly.scrollBottom", _terminalOut, true); }
-        catch (JSDisconnectedException) { }
-        catch (ObjectDisposedException) { }
-        catch (TaskCanceledException) { }
-        catch (OperationCanceledException) { }
+        await TryJs("blazorly.scrollBottom", _terminalOut, true);
     }
 
     private void RemoveQueued(Llm.Message message)
@@ -1084,6 +1077,7 @@
             await Js.InvokeVoidAsync("navigator.clipboard.writeText", text);
         }
         catch (JSDisconnectedException) { }
+        catch (JSException) { }
     }
 
     private void Answer(string id, string answer)

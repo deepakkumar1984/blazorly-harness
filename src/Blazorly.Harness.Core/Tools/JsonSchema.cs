@@ -33,7 +33,10 @@ public static class JsonSchema
             var map = new Dictionary<string, object?>();
             if (Type is not null) map["type"] = Type;
             if (Description is not null) map["description"] = Description;
-            if (Properties is not null) map["properties"] = Properties.ToDictionary(p => p.Key, p => (object?)p.Value.ToJson());
+            if (Properties is not null)
+                map["properties"] = Properties.ToDictionary(p => p.Key, p => (object?)p.Value.ToJson());
+            else if (Type == "object" && OneOf is null)
+                map["properties"] = new Dictionary<string, object?>();
             if (Required is not null) map["required"] = Required;
             if (AdditionalProperties is not null) map["additionalProperties"] = AdditionalProperties;
             if (Items is not null) map["items"] = Items.ToJson();
@@ -50,7 +53,7 @@ public static class JsonSchema
     }
 
     public static Schema Object(Dictionary<string, Schema>? properties = null, List<string>? required = null, bool additionalProperties = false, string? description = null)
-        => new() { Type = "object", Properties = properties, Required = required, AdditionalProperties = additionalProperties, Description = description };
+        => new() { Type = "object", Properties = properties ?? [], Required = required, AdditionalProperties = additionalProperties, Description = description };
 
     public static Schema String(string? description = null, List<JsonElement>? values = null)
         => new() { Type = "string", Description = description, Enum = values };
