@@ -39,6 +39,9 @@ window.blazorly = {
         handle.addEventListener("pointerup", stop);
         handle.addEventListener("pointercancel", stop);
     },
+    viewportWidth: function () {
+        return window.innerWidth || document.documentElement.clientWidth || 0;
+    },
     getTheme: function () {
         return localStorage.getItem("blazorly.theme") || "dark";
     },

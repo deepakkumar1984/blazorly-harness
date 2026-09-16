@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Blazorly.Harness.Core.Agent;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Core.Tools;
@@ -59,7 +60,37 @@ public sealed class ConversationSnapshot
 /// Folds the durable event stream into transcript nodes: user messages, streaming
 /// assistant steps (chunks folded live), tool call cards, and turn-end notices.
 /// </summary>
-public sealed record CompactionSummaryPayload(string Summary, IReadOnlyList<int> ShadowedSeqs);
+
+/// <summary>
+/// The <c>compaction/summary</c> wire shape written by CompactionService. Every member is optional
+/// and every accessor is null-tolerant: this payload is read back from logs written by older builds
+/// (which used <c>shadowedSeqs</c>), and a fold that throws blanks the whole session view instead of
+/// degrading one chip.
+/// </summary>
+public sealed record CompactionSummaryPayload(
+    string? CompactionId = null,
+    string? Summary = null,
+    CompactionShadowedRange? ShadowedRange = null,
+    IReadOnlyList<int>? ShadowSeqs = null,
+    long ShadowedTokenCount = 0,
+    string? Provider = null,
+    string? Model = null)
+{
+    /// <summary>The pre-rename spelling, still present in older session logs.</summary>
+    [JsonPropertyName("shadowedSeqs")]
+    public IReadOnlyList<int>? LegacyShadowedSeqs { get; init; }
+
+    /// <summary>Shadowed seqs under either spelling; never null.</summary>
+    public IReadOnlyList<int> Shadowed => ShadowSeqs ?? LegacyShadowedSeqs ?? [];
+
+    /// <summary>Chip label: message count when known, otherwise the token estimate.</summary>
+    public string CountLabel => Shadowed.Count > 0
+        ? $"{Shadowed.Count} messages"
+        : $"{ShadowedTokenCount} tokens";
+}
+
+/// <summary>Inclusive surface range the summary replaced.</summary>
+public sealed record CompactionShadowedRange(int Start = 0, int End = 0);
 
 public sealed class ConversationAssembler(ToolRuntime tools, Blazorly.Harness.Core.TokenMeter.TokenMeterService? meter = null)
 {
@@ -97,6 +128,10 @@ public sealed class ConversationFolder
     private readonly List<(int Turn, int Step)> _liveKeys = [];
 
     private int _processed;
+
+    /// <summary>Events that could not be folded; each one is rendered as a visible error chip.</summary>
+    public int FoldFailures { get; private set; }
+
     private IReadOnlyList<TodoItem> _todos = [];
     private long _usageIn, _usageOut, _usageCacheRead, _usageCacheWrite;
     private long? _declaredWindow;
@@ -117,7 +152,27 @@ public sealed class ConversationFolder
         var fresh = false;
         while (_processed < events.Count)
         {
-            ProcessEvent(events[_processed], agent);
+            var e = events[_processed];
+            try
+            {
+                ProcessEvent(e, agent);
+            }
+            catch (Exception exception)
+            {
+                // One unreadable event must not blank the session: degrade it to a visible chip and
+                // keep folding. The page re-renders on a timer, so a throw here would repeat forever.
+                FoldFailures++;
+                _nodes.Add(new ConversationNode
+                {
+                    Key = $"fold-error-{e.Seq}",
+                    Kind = "command",
+                    CommandName = "ui",
+                    CommandArgs = e.Type,
+                    CommandText = $"[ui] this {e.Type} event could not be rendered "
+                        + $"({exception.GetType().Name}: {exception.Message})",
+                    CommandOk = false,
+                });
+            }
             _processed++;
             fresh = true;
         }
@@ -340,8 +395,9 @@ public sealed class ConversationFolder
                     Key = $"cp-{e.Seq}",
                     Kind = "command",
                     CommandName = "compaction",
-                    CommandArgs = $"{summary.ShadowedSeqs.Count} messages",
-                    CommandText = "Context compacted: earlier conversation was summarized to keep working within the window.",
+                    CommandArgs = summary.CountLabel,
+                    CommandText = $"Context compacted: {summary.CountLabel} were summarized to stay within the window"
+                        + (summary.ShadowedTokenCount > 0 ? $" (~{summary.ShadowedTokenCount} tokens)." : "."),
                     CommandOk = true,
                 });
                 break;

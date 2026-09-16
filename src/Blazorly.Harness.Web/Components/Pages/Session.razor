@@ -10,153 +10,169 @@
 @inject ConversationAssembler Assembler
 @implements IDisposable
 
-<div class="session-view @((_snapshot?.Todos.Count ?? 0) > 0 ? "with-todos" : "")">
+<div class="session-view @(ShowTodos ? "with-todos" : "") @(_terminalOpen ? "with-terminal" : "")">
     @if (_modelMenu || _permissionMenu || _ctxMenu)
     {
         <div class="menu-backdrop" @onclick="CloseMenus"></div>
     }
     <header class="session-header">
-        <div class="session-header-title">
-            @if (_editingTitle)
-            {
-                <input class="title-edit" value="@_titleDraft" @oninput="OnTitleInput" @onkeydown="OnTitleKey" @onblur="SaveTitle" />
-            }
-            else
-            {
-                <button class="session-title" title="Rename (/title)" @onclick="StartEditTitle">@(_snapshot?.Title is { Length: > 0 } t ? t : SessionFacade.DeriveTitle(_session))</button>
-            }
-            <div class="chip-anchor">
-                <button class="model-chip" title="Switch model for this session" @onclick="ToggleModelMenu">
-                    @(_agent?.Options.Provider)/@(_agent?.Options.Model) ▾
-                </button>
-                @if (_modelMenu)
+        <div class="session-header-row primary">
+            <div class="session-identity">
+                @if (_editingTitle)
                 {
-                    <div class="popover anchored model-menu">
-                        <input class="popover-search" type="text" placeholder="Search models or providers…"
-                               value="@_modelSearch" @oninput="OnModelSearch"
-                               @onkeydown="OnSearchKey" @ref="_modelSearchInput"
-                               title="Filter by model, provider, or id — Esc closes" />
-                        @{
-                            var currentModel = Facade.Harness.RuntimeModels(_agent?.Options.Provider ?? "")
-                                .FirstOrDefault(m => m.Id == _agent?.Options.Model);
-                        }
-                        @{
-                            // Current provider pinned first, everything else alphabetical; groups with
-                            // no match for the search are hidden entirely.
-                            var query = _modelSearch.Trim();
-                            var current = _agent?.Options.Provider ?? "";
-                            var groups = Facade.Harness.Llm.ListProviders()
-                                .OrderByDescending(p => p == current)
-                                .ThenBy(p => p, StringComparer.Ordinal)
-                                .Select(p => (Provider: p, Models: Facade.Harness.Llm.ListModels(p)
-                                    .Where(m => query.Length == 0
-                                        || m.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
-                                        || m.Id.Contains(query, StringComparison.OrdinalIgnoreCase)
-                                        || p.Contains(query, StringComparison.OrdinalIgnoreCase))
-                                    .ToList()))
-                                .Where(g => g.Models.Count > 0 || g.Provider == current)
-                                .ToList();
-                        }
-                        @foreach (var group in groups)
-                        {
-                            <div class="popover-group">@(group.Provider == current ? $"{group.Provider} · current" : group.Provider)
-                                <span class="group-count">@group.Models.Count</span>
-                            </div>
-                            @if (group.Models.Count == 0)
-                            {
-                                <div class="popover-empty">no models yet — load them on the Settings page</div>
-                            }
-                            @foreach (var model in group.Models)
-                            {
-                                <button class="popover-item @(_agent?.Options.Provider == group.Provider && _agent?.Options.Model == model.Id ? "selected" : "")"
-                                        @onclick="() => SelectModel(group.Provider, model.Id)">
-                                    @model.Name
-                                </button>
-                            }
-                        }
-                        @if (groups.Count == 0)
-                        {
-                            <div class="popover-empty">nothing matches “@_modelSearch”</div>
-                        }
-                        @if (query.Length == 0 && currentModel?.ReasoningEfforts is { Length: > 0 } efforts)
-                        {
-                            <div class="popover-group">reasoning effort</div>
-                            <button class="popover-item @(_agent?.Options.ReasoningEffort is null ? "selected" : "")" @onclick='() => SelectEffort(null)'>
-                                model default@(currentModel.DefaultEffort is { } def ? $" ({def})" : "")
-                            </button>
-                            @foreach (var effort in efforts)
-                            {
-                                <button class="popover-item @(_agent?.Options.ReasoningEffort == effort ? "selected" : "")" @onclick='() => SelectEffort(effort)'>@effort</button>
-                            }
-                        }
-                    </div>
+                    <input class="title-edit" value="@_titleDraft" @oninput="OnTitleInput" @onkeydown="OnTitleKey" @onblur="SaveTitle" />
                 }
-            </div>
-            <div class="chip-anchor">
-                <button class="status-chip permission" title="@SandboxTitle" @onclick="TogglePermissionMenu">
-                    🔒 @(EffectiveSandbox)@(SandboxDegraded ? " ⚠" : "")
-                </button>
-                @if (_permissionMenu)
+                else
                 {
-                    <div class="popover anchored">
-                        <div class="popover-group">permission preset</div>
-                        <button class="popover-item @(EffectiveSandbox == "read-only" ? "selected" : "")" @onclick='() => SelectPermission("read-only")'>read-only — deny all mutations</button>
-                        <button class="popover-item @(EffectiveSandbox == "workspace-write" ? "selected" : "")" @onclick='() => SelectPermission("workspace-write")'>workspace-write — writes confined to the session folder</button>
-                        <button class="popover-item @(EffectiveSandbox == "danger-full-access" ? "selected" : "")" @onclick='() => SelectPermission("danger-full-access")'>danger-full-access — no confinement</button>
-                    </div>
+                    <button class="session-title" title="Rename (/title)" @onclick="StartEditTitle">@(_snapshot?.Title is { Length: > 0 } t ? t : SessionFacade.DeriveTitle(_session))</button>
                 }
-            </div>
-            @if (_snapshot?.PlanMode is { } planState)
-            {
-                <span class="status-chip" title="Plan mode is active — mutations are blocked until a plan is approved via exit_plan_mode (engaged @(_snapshot.PlanMode == "auto" ? "automatically for a complex brief" : "manually via /plan"))">
-                    📋 plan · @(planState == "auto" ? "auto" : "on")
+                <span class="status-chip @(_snapshot?.Status == "running" ? "running" : "idle")" title="Session status">
+                    @(_snapshot?.Status == "running" ? "● running" : "○ idle")
                 </span>
-            }
-            @if (_snapshot?.Context is { } context)
-            {
-                <div class="chip-anchor">
-                    <button class="status-chip context-meter" title="Context usage — click for the full reading" @onclick="ToggleContextMenu">
-                        <span class="meter"><span class="meter-fill @MeterTone(context.OccupancyPercent)" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></span>
-                        ctx @context.OccupancyPercent%
-                    </button>
-                    @if (_ctxMenu)
+            </div>
+            <div class="session-header-actions">
+                <div class="view-tabs" role="tablist" aria-label="Session view">
+                    <button class="@TabClass("chat")" role="tab" aria-selected="@(_view == "chat")" @onclick='() => SwitchView("chat")'>Chat</button>
+                    <button class="@TabClass("trajectory")" role="tab" aria-selected="@(_view == "trajectory")" @onclick='() => SwitchView("trajectory")'>Trajectory</button>
+                </div>
+                <div class="session-toolbar">
+                    <button class="ghost dock-toggle @(_terminalOpen ? "on" : "")" title="Run commands in a persistent shell for this session" @onclick="ToggleTerminal">Terminal</button>
+                    <button class="ghost dock-toggle @(_statsOpen ? "on" : "")" title="Session statistics: turns, tokens, duration, tool usage" @onclick='() => _statsOpen = !_statsOpen'>Stats</button>
+                    <button class="ghost" @onclick="ForkHere" title="Fork this session at the last completed turn">Fork</button>
+                    @if (_snapshot?.Todos is { Count: > 0 } toolbarTodos && _view == "chat")
                     {
-                        <div class="popover anchored ctx-card">
-                            <div class="popover-group">context window</div>
-                            <div class="ctx-meter-lg"><span class="meter-fill @MeterTone(context.OccupancyPercent)" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></div>
-                            <div class="ctx-row ctx-head">
-                                <span class="k">used</span>
-                                <span class="v">@Fmt(context.PressureTokens) tokens · @context.OccupancyPercent% of @(context.ContextWindowTokens is { } window ? Fmt(window) : "unknown window")</span>
-                            </div>
-                            <div class="ctx-section">
-                                <div class="ctx-row"><span class="k">system</span><span class="v">@Fmt(context.SystemTokens)</span></div>
-                                <div class="ctx-row"><span class="k">tools</span><span class="v">@Fmt(context.ToolsTokens)</span></div>
-                                <div class="ctx-row"><span class="k">messages</span><span class="v">@Fmt(context.MessageTokens)</span></div>
-                                <div class="ctx-row"><span class="k">provider usage</span><span class="v">@(context.ProviderPressureTokens is { } pressure ? $"{Fmt(pressure)} tokens" : "not reported yet")</span></div>
-                            </div>
-                            <div class="ctx-section">
-                                <div class="popover-group">session totals</div>
-                                <div class="ctx-row"><span class="k">input</span><span class="v">@Fmt(context.TotalInputTokens)</span></div>
-                                <div class="ctx-row"><span class="k">output</span><span class="v">@Fmt(context.TotalOutputTokens)</span></div>
-                                <div class="ctx-row"><span class="k">cache read</span><span class="v">@Fmt(context.TotalCacheReadTokens)</span></div>
-                                <div class="ctx-row"><span class="k">cache write</span><span class="v">@Fmt(context.TotalCacheWriteTokens)</span></div>
-                            </div>
+                        <button class="ghost dock-toggle @(!_todosCollapsed ? "on" : "")"
+                                title="@(_todosCollapsed ? "Show task list" : "Hide task list")"
+                                @onclick="() => _todosCollapsed = !_todosCollapsed">
+                            Tasks<span class="toolbar-count"> @(toolbarTodos.Count(t => t.Status == TodoItem.Completed))/@toolbarTodos.Count</span>
+                        </button>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="session-header-row status">
+            <div class="session-status">
+                <div class="chip-anchor">
+                    <button class="model-chip" title="Switch model for this session" @onclick="ToggleModelMenu">
+                        @(_agent?.Options.Provider)/@(_agent?.Options.Model) ▾
+                    </button>
+                    @if (_modelMenu)
+                    {
+                        <div class="popover anchored model-menu">
+                            <input class="popover-search" type="text" placeholder="Search models or providers…"
+                                   value="@_modelSearch" @oninput="OnModelSearch"
+                                   @onkeydown="OnSearchKey" @ref="_modelSearchInput"
+                                   title="Filter by model, provider, or id — Esc closes" />
+                            @{
+                                var currentModel = Facade.Harness.RuntimeModels(_agent?.Options.Provider ?? "")
+                                    .FirstOrDefault(m => m.Id == _agent?.Options.Model);
+                            }
+                            @{
+                                // Current provider pinned first, everything else alphabetical; groups with
+                                // no match for the search are hidden entirely.
+                                var query = _modelSearch.Trim();
+                                var current = _agent?.Options.Provider ?? "";
+                                var groups = Facade.Harness.Llm.ListProviders()
+                                    .OrderByDescending(p => p == current)
+                                    .ThenBy(p => p, StringComparer.Ordinal)
+                                    .Select(p => (Provider: p, Models: Facade.Harness.Llm.ListModels(p)
+                                        .Where(m => query.Length == 0
+                                            || m.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                                            || m.Id.Contains(query, StringComparison.OrdinalIgnoreCase)
+                                            || p.Contains(query, StringComparison.OrdinalIgnoreCase))
+                                        .ToList()))
+                                    .Where(g => g.Models.Count > 0 || g.Provider == current)
+                                    .ToList();
+                            }
+                            @foreach (var group in groups)
+                            {
+                                <div class="popover-group">@(group.Provider == current ? $"{group.Provider} · current" : group.Provider)
+                                    <span class="group-count">@group.Models.Count</span>
+                                </div>
+                                @if (group.Models.Count == 0)
+                                {
+                                    <div class="popover-empty">no models yet — load them on the Settings page</div>
+                                }
+                                @foreach (var model in group.Models)
+                                {
+                                    <button class="popover-item @(_agent?.Options.Provider == group.Provider && _agent?.Options.Model == model.Id ? "selected" : "")"
+                                            @onclick="() => SelectModel(group.Provider, model.Id)">
+                                        @model.Name
+                                    </button>
+                                }
+                            }
+                            @if (groups.Count == 0)
+                            {
+                                <div class="popover-empty">nothing matches “@_modelSearch”</div>
+                            }
+                            @if (query.Length == 0 && currentModel?.ReasoningEfforts is { Length: > 0 } efforts)
+                            {
+                                <div class="popover-group">reasoning effort</div>
+                                <button class="popover-item @(_agent?.Options.ReasoningEffort is null ? "selected" : "")" @onclick='() => SelectEffort(null)'>
+                                    model default@(currentModel.DefaultEffort is { } def ? $" ({def})" : "")
+                                </button>
+                                @foreach (var effort in efforts)
+                                {
+                                    <button class="popover-item @(_agent?.Options.ReasoningEffort == effort ? "selected" : "")" @onclick='() => SelectEffort(effort)'>@effort</button>
+                                }
+                            }
                         </div>
                     }
                 </div>
-            }
-            <span class="status-chip @(_snapshot?.Status == "running" ? "running" : "idle")">
-                @(_snapshot?.Status == "running" ? "● running" : "○ idle")
-            </span>
-        </div>
-        <div class="session-header-actions">
-            <div class="view-tabs">
-                <button class="@TabClass("chat")" @onclick='() => SwitchView("chat")'>Chat</button>
-                <button class="@TabClass("trajectory")" @onclick='() => SwitchView("trajectory")'>Trajectory</button>
+                <div class="chip-anchor">
+                    <button class="status-chip permission" title="@SandboxTitle" @onclick="TogglePermissionMenu">
+                        🔒 @(EffectiveSandbox)@(SandboxDegraded ? " ⚠" : "")
+                    </button>
+                    @if (_permissionMenu)
+                    {
+                        <div class="popover anchored">
+                            <div class="popover-group">permission preset</div>
+                            <button class="popover-item @(EffectiveSandbox == "read-only" ? "selected" : "")" @onclick='() => SelectPermission("read-only")'>read-only — deny all mutations</button>
+                            <button class="popover-item @(EffectiveSandbox == "workspace-write" ? "selected" : "")" @onclick='() => SelectPermission("workspace-write")'>workspace-write — writes confined to the session folder</button>
+                            <button class="popover-item @(EffectiveSandbox == "danger-full-access" ? "selected" : "")" @onclick='() => SelectPermission("danger-full-access")'>danger-full-access — no confinement</button>
+                        </div>
+                    }
+                </div>
+                @if (_snapshot?.PlanMode is { } planState)
+                {
+                    <span class="status-chip" title="Plan mode is active — mutations are blocked until a plan is approved via exit_plan_mode (engaged @(_snapshot.PlanMode == "auto" ? "automatically for a complex brief" : "manually via /plan"))">
+                        📋 plan · @(planState == "auto" ? "auto" : "on")
+                    </span>
+                }
+                @if (_snapshot?.Context is { } context)
+                {
+                    <div class="chip-anchor">
+                        <button class="status-chip context-meter" title="Context usage — click for the full reading" @onclick="ToggleContextMenu">
+                            <span class="meter"><span class="meter-fill @MeterTone(context.OccupancyPercent)" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></span>
+                            ctx @context.OccupancyPercent%
+                        </button>
+                        @if (_ctxMenu)
+                        {
+                            <div class="popover anchored ctx-card">
+                                <div class="popover-group">context window</div>
+                                <div class="ctx-meter-lg"><span class="meter-fill @MeterTone(context.OccupancyPercent)" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></div>
+                                <div class="ctx-row ctx-head">
+                                    <span class="k">used</span>
+                                    <span class="v">@Fmt(context.PressureTokens) tokens · @context.OccupancyPercent% of @(context.ContextWindowTokens is { } window ? Fmt(window) : "unknown window")</span>
+                                </div>
+                                <div class="ctx-section">
+                                    <div class="ctx-row"><span class="k">system</span><span class="v">@Fmt(context.SystemTokens)</span></div>
+                                    <div class="ctx-row"><span class="k">tools</span><span class="v">@Fmt(context.ToolsTokens)</span></div>
+                                    <div class="ctx-row"><span class="k">messages</span><span class="v">@Fmt(context.MessageTokens)</span></div>
+                                    <div class="ctx-row"><span class="k">provider usage</span><span class="v">@(context.ProviderPressureTokens is { } pressure ? $"{Fmt(pressure)} tokens" : "not reported yet")</span></div>
+                                </div>
+                                <div class="ctx-section">
+                                    <div class="popover-group">session totals</div>
+                                    <div class="ctx-row"><span class="k">input</span><span class="v">@Fmt(context.TotalInputTokens)</span></div>
+                                    <div class="ctx-row"><span class="k">output</span><span class="v">@Fmt(context.TotalOutputTokens)</span></div>
+                                    <div class="ctx-row"><span class="k">cache read</span><span class="v">@Fmt(context.TotalCacheReadTokens)</span></div>
+                                    <div class="ctx-row"><span class="k">cache write</span><span class="v">@Fmt(context.TotalCacheWriteTokens)</span></div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
             </div>
-            <button class="ghost @(_terminalOpen ? "stats-toggle on" : "")" title="Run commands in a persistent shell for this session" @onclick="ToggleTerminal">Terminal</button>
-            <button class="ghost @(_statsOpen ? "stats-toggle on" : "")" title="Session statistics: turns, tokens, duration, tool usage" @onclick='() => _statsOpen = !_statsOpen'>Stats</button>
-            <button class="ghost" @onclick="ForkHere" title="Fork this session at the last completed turn">Fork</button>
         </div>
     </header>
 
@@ -182,6 +198,8 @@
         </div>
     }
 
+    <div class="session-body">
+    <div class="session-main">
     @if (_view == "trajectory" && _session is not null)
     {
         var timeline = TrajectoryBuilder.Build(_session.Events);
@@ -358,27 +376,6 @@
             }
         </div>
 
-        @if (_snapshot?.Todos.Count > 0)
-        {
-            var todos = _snapshot.Todos;
-            var done = todos.Count(t => t.Status == TodoItem.Completed);
-            <aside class="todo-panel" aria-label="Task list">
-                <div class="todo-head">
-                    <span class="todo-head-title">Tasks</span>
-                    <span class="todo-count">@done/@todos.Count done</span>
-                </div>
-                <div class="todo-list">
-                    @foreach (var todo in todos)
-                    {
-                        <div class="todo-item @todo.Status">
-                            <span class="todo-glyph">@TodoGlyph(todo.Status)</span>
-                            <span class="todo-text">@todo.Content</span>
-                        </div>
-                    }
-                </div>
-            </aside>
-        }
-
         @if (_agent is { Inbox.HasPending: true })
         {
             <div class="queue-dock">
@@ -420,6 +417,7 @@
                     <button class="link" title="Interrupt the running command (SIGINT)" @onclick="TerminalInterrupt">Ctrl+C</button>
                     <button class="link" @onclick="TerminalClearView">clear</button>
                     <button class="link danger" title="Kill the shell; Terminal reopens a fresh one" @onclick="TerminalKillShell">kill shell</button>
+                    <button class="icon terminal-close" title="Close terminal" aria-label="Close terminal" @onclick="ToggleTerminal">✕</button>
                 </span>
             </div>
             <pre class="terminal-output" @ref="_terminalOut">@(_terminalOutput.Length > 0 ? _terminalOutput : "(empty shell — type a command below)")</pre>
@@ -433,31 +431,57 @@
             </div>
         </section>
     }
+    </div>
+
+    @if (ShowTodos)
+    {
+        var todos = _snapshot!.Todos;
+        var done = todos.Count(t => t.Status == TodoItem.Completed);
+        <aside class="todo-panel" aria-label="Task list">
+            <div class="todo-head">
+                <span class="todo-head-title">Tasks</span>
+                <span class="todo-count">@done/@todos.Count done</span>
+                <button class="icon" title="Hide task list" aria-label="Hide task list" @onclick="() => _todosCollapsed = true">✕</button>
+            </div>
+            <div class="todo-list">
+                @foreach (var todo in todos)
+                {
+                    <div class="todo-item @todo.Status">
+                        <span class="todo-glyph">@TodoGlyph(todo.Status)</span>
+                        <span class="todo-text">@todo.Content</span>
+                    </div>
+                }
+            </div>
+        </aside>
+    }
+    </div>
 
     <footer class="composer">
         <div class="command-menu" style="display:none" @ref="_slashMenu"></div>
         <div class="command-menu mention-menu" style="display:none" @ref="_mentionMenu"></div>
-        <div class="composer-input">
+        <div class="composer-bar">
             <span class="composer-cwd" title="@(_session?.Header.Cwd)">@WorkspaceLabel</span>
-            <textarea
-                @ref="_composerTa"
-                @bind="_draft"
-                @bind:event="oninput"
-                @onkeydown="OnKeyDown"
-                placeholder="@Placeholder"
-                rows="1"></textarea>
-        </div>
-        <div class="composer-actions">
-            @if (_running)
-            {
-                <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">Queue (⏎)</button>
-                <button class="ghost" disabled="@(_draft.Length == 0)" @onclick="SendSteer">Steer</button>
-                <button class="danger" @onclick="CancelTurn">Stop</button>
-            }
-            else
-            {
-                <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">@(_draft.StartsWith('/') ? "Run (⏎)" : "Send (⏎)")</button>
-            }
+            <div class="composer-input">
+                <textarea
+                    @ref="_composerTa"
+                    @bind="_draft"
+                    @bind:event="oninput"
+                    @onkeydown="OnKeyDown"
+                    placeholder="@Placeholder"
+                    rows="1"></textarea>
+            </div>
+            <div class="composer-actions">
+                @if (_running)
+                {
+                    <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">Queue<span class="send-kbd"> (⏎)</span></button>
+                    <button class="ghost" disabled="@(_draft.Length == 0)" @onclick="SendSteer">Steer</button>
+                    <button class="danger" @onclick="CancelTurn">Stop</button>
+                }
+                else
+                {
+                    <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">@(_draft.StartsWith('/') ? "Run" : "Send")<span class="send-kbd"> (⏎)</span></button>
+                }
+            </div>
         </div>
     </footer>
 </div>
@@ -494,6 +518,9 @@
     private PendingInteraction? _pendingQuestion;
     private bool _rawTrajectory;
     private bool _statsOpen;
+    private bool _todosCollapsed;
+
+    private bool ShowTodos => _view == "chat" && !_todosCollapsed && (_snapshot?.Todos.Count ?? 0) > 0;
 
     // ---- ui terminal state ----
     private bool _terminalOpen;
@@ -588,6 +615,7 @@
         _editingTitle = false;
         _editingQueue = null;
         _statsOpen = false;
+        _todosCollapsed = false;
         _rawTrajectory = false;
         _pendingApproval = null;
         _pendingQuestion = null;
@@ -633,6 +661,18 @@
                 SlashCommands.Select(c => new { name = c.Name, args = c.Args, description = c.Description }),
                 _slashRef);
             await TryJs("blazorly.mention.attach", _composerTa, _mentionMenu, SessionId);
+            // Phones: keep the transcript as the primary surface. Tasks stay one tap away.
+            try
+            {
+                var width = await Js.InvokeAsync<int>("blazorly.viewportWidth");
+                if (width > 0 && width <= 760 && !_todosCollapsed)
+                {
+                    _todosCollapsed = true;
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+            catch (JSDisconnectedException) { }
+            catch (JSException) { }
         }
         if (_pendingScroll)
         {

@@ -329,9 +329,11 @@ button.icon:disabled { opacity: 0.35; }
 /* ============================= chat pane ============================= */
 .chat-pane {
     display: flex;
+    flex-direction: column;
     min-width: 0;
     min-height: 0;
-    overflow-y: auto;
+    height: 100%;
+    overflow: hidden;
 }
 
 .session-view {
@@ -340,26 +342,55 @@ button.icon:disabled { opacity: 0.35; }
     flex: 1;
     min-width: 0;
     min-height: 0;
-    position: relative;
+    height: 100%;
+    overflow: hidden;
 }
 
-/* ---- session header ---- */
+/* ---- session header: identity + views on row 1, status chips on row 2 ---- */
 .session-header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 8px 16px;
-    padding: 10px 20px;
+    flex-direction: column;
+    gap: 0;
+    padding: 0;
     border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    flex: none;
+    z-index: 5;
 }
 
-.session-header-title {
+.session-header-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.session-header-row.primary {
+    padding: 8px 20px 6px;
+    gap: 16px;
+}
+
+.session-header-row.status {
+    padding: 0 20px 8px;
+    gap: 8px;
+}
+
+.session-identity {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+}
+.session-identity .status-chip { flex: none; }
+
+.session-status {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
+    flex: 1;
 }
 
 .session-header-actions {
@@ -369,7 +400,19 @@ button.icon:disabled { opacity: 0.35; }
     flex: none;
 }
 
-.session-title {
+.session-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.session-toolbar .ghost,
+.session-header-row.status .ghost.compact {
+    padding: 5px 10px;
+    font-size: 12.5px;
+}
+
+.session-identity .session-title {
     background: none;
     border: none;
     color: var(--text);
@@ -378,12 +421,15 @@ button.icon:disabled { opacity: 0.35; }
     cursor: text;
     padding: 2px 4px;
     border-radius: 6px;
-    max-width: 320px;
+    min-width: 0;
+    flex: 0 1 auto;
+    max-width: min(560px, 52vw);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-align: left;
 }
-.session-title:hover { text-decoration: underline dotted; }
+.session-identity .session-title:hover { text-decoration: underline dotted; }
 
 .title-edit {
     background: var(--bg-raised);
@@ -392,7 +438,8 @@ button.icon:disabled { opacity: 0.35; }
     color: var(--text);
     font: inherit;
     padding: 2px 8px;
-    width: 260px;
+    min-width: 160px;
+    width: min(360px, 46vw);
 }
 
 .model-chip, .status-chip {
@@ -434,6 +481,7 @@ button.icon:disabled { opacity: 0.35; }
     border: 1px solid var(--border-strong);
     border-radius: 8px;
     padding: 2px;
+    flex: none;
 }
 .view-tabs .tab {
     background: none;
@@ -545,15 +593,18 @@ button.icon:disabled { opacity: 0.35; }
 }
 .popover-empty { padding: 8px 10px 6px; font-size: 12px; color: var(--text-faint); }
 
-/* ---- stats dock ---- */
-.stats-toggle.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+/* ---- stats dock: full-bleed strip under the header, never a floating overlay ---- */
+.stats-toggle.on, .dock-toggle.on {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
 .stats-dock {
     background: var(--bg-raised);
-    border: 1px solid var(--border);
-    border-top: none;
-    border-radius: 0 0 var(--radius) var(--radius);
-    margin: 0 20px;
-    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    margin: 0;
+    padding: 10px 20px;
+    flex: none;
 }
 .stats-grid {
     display: grid;
@@ -568,7 +619,8 @@ button.icon:disabled { opacity: 0.35; }
 
 /* ============================= transcript ============================= */
 .transcript {
-    flex: 1;
+    flex: 1 1 0%;
+    min-height: 0;
     overflow-y: auto;
     padding: 22px 0 12px;
     scroll-behavior: smooth;
@@ -610,6 +662,7 @@ button.icon:disabled { opacity: 0.35; }
     padding: 0 20px;
     text-align: center;
     color: var(--text-dim);
+    overflow-wrap: anywhere;
 }
 
 .hero-mark {
@@ -902,29 +955,50 @@ button.link:hover { text-decoration: underline; }
 
 .question .option:hover { border-color: var(--accent); background: var(--accent-soft); }
 
-/* ---- todo panel: a floating card pinned top-right; the transcript makes room ---- */
+/* ---- session body: chat column + optional tasks column. nothing overlays. ---- */
+.session-body {
+    flex: 1 1 0%;
+    min-height: 0;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+}
+
+.session-view.with-todos .session-body {
+    grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+.session-main {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    align-self: stretch;
+}
+
+/* ---- todo panel: a real column, not a floating card ---- */
 .todo-panel {
-    position: absolute;
-    top: 112px; /* below the session header */
-    right: 20px;
-    width: 308px;
-    max-width: calc(100vw - 40px);
-    max-height: min(52vh, 480px);
+    min-width: 0;
+    min-height: 0;
     overflow-y: auto;
     background: var(--bg-raised);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-2);
-    padding: 10px 12px;
-    z-index: 20;
+    border-left: 1px solid var(--border);
+    padding: 12px 14px 16px;
 }
 .todo-head {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 0 2px 6px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 0 8px;
     border-bottom: 1px solid var(--border);
-    margin-bottom: 6px;
+    margin-bottom: 8px;
+    position: sticky;
+    top: 0;
+    background: var(--bg-raised);
+    z-index: 1;
 }
 .todo-head-title {
     font-size: 11px;
@@ -932,7 +1006,7 @@ button.link:hover { text-decoration: underline; }
     letter-spacing: 0.08em;
     color: var(--text-faint);
 }
-.todo-count { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+.todo-count { font-size: 11px; color: var(--text-dim); font-family: var(--mono); margin-right: auto; }
 .todo-list { display: flex; flex-direction: column; gap: 6px; }
 .todo-item { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; color: var(--text-dim); line-height: 1.4; }
 .todo-text { overflow-wrap: anywhere; }
@@ -941,18 +1015,15 @@ button.link:hover { text-decoration: underline; }
 .todo-glyph { color: var(--accent); font-size: 13px; flex: none; }
 .todo-item.completed .todo-glyph { color: var(--success); }
 
-/* Wide screens: the chat column yields the card's width and sits left of it. */
-@media (min-width: 1101px) {
-    .session-view.with-todos .transcript { padding-right: 336px; }
-}
-/* Narrow screens: the card becomes a normal full-width block above the composer. */
 @media (max-width: 1100px) {
+    .session-view.with-todos .session-body {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(160px, 1fr) auto;
+    }
     .todo-panel {
-        position: static;
-        width: calc(100% - 48px);
-        max-height: none;
-        margin: 0 auto 8px;
-        box-shadow: var(--shadow-1);
+        border-left: none;
+        border-top: 1px solid var(--border);
+        max-height: 22vh;
     }
 }
 
@@ -961,10 +1032,11 @@ button.link:hover { text-decoration: underline; }
     max-width: 860px;
     margin: 0 auto;
     width: calc(100% - 48px);
-    padding: 6px 0;
+    padding: 6px 0 8px;
     display: flex;
     flex-direction: column;
     gap: 4px;
+    flex: none;
 }
 
 .queue-item {
@@ -1061,32 +1133,16 @@ button.link:hover { text-decoration: underline; }
 }
 .mention-menu .command-desc { margin-left: auto; flex: none; font-family: var(--mono); font-size: 11px; }
 
-.composer-input { position: relative; }
-.composer-cwd {
-    position: absolute;
-    left: 14px;
-    top: -9px;
-    font-size: 10.5px;
-    font-family: var(--mono);
-    background: var(--bg-raised);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0 6px;
-    color: var(--text-dim);
-}
-.composer textarea { padding-left: 14px; padding-top: 14px; }
-
-/* ---- ui terminal drawer ---- */
-/* Drag handle: resize the terminal as a section below the chat, never over it. */
+/* ---- ui terminal: a reserved split under the transcript, full width of the chat column ---- */
 .terminal-resize {
     flex: none;
-    height: 7px;
-    max-width: 860px;
-    width: calc(100% - 40px);
-    margin: 4px auto 0;
+    height: 8px;
+    width: 100%;
+    margin: 0;
     cursor: row-resize;
-    border-radius: 4px;
-    background: transparent;
+    border-radius: 0;
+    background: var(--bg-raised);
+    border-top: 1px solid var(--border);
     position: relative;
 }
 .terminal-resize::after {
@@ -1103,17 +1159,16 @@ button.link:hover { text-decoration: underline; }
 .terminal-resize:hover::after { background: var(--accent); }
 
 .terminal-drawer {
-    max-width: 860px;
     width: 100%;
-    margin: 0 auto 10px;
-    background: var(--bg-raised);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius);
+    margin: 0;
+    background: var(--bg);
+    border: none;
+    border-radius: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     flex: none;
-    height: 240px;          /* default split; drag the handle above to change */
+    height: 240px;
     min-height: 140px;
     max-height: 70vh;
 }
@@ -1127,7 +1182,8 @@ button.link:hover { text-decoration: underline; }
     flex: none;
 }
 .terminal-title { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
-.terminal-actions { display: flex; gap: 4px; }
+.terminal-actions { display: flex; align-items: center; gap: 4px; }
+.terminal-close { margin-left: 4px; }
 .terminal-output {
     margin: 0;
     padding: 10px 12px;
@@ -1161,39 +1217,92 @@ button.link:hover { text-decoration: underline; }
 }
 .terminal-input::placeholder { color: var(--text-faint); }
 
-/* ---- composer ---- */
+/* ---- composer: one aligned bar — workspace chip + input + send ---- */
 .composer {
     border-top: 1px solid var(--border);
-    padding: 14px 24px 16px;
+    padding: 12px 20px 14px;
     background: var(--bg);
+    flex: none;
+}
+
+.composer .command-menu {
+    max-width: 920px;
+    width: 100%;
+}
+
+.composer-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    max-width: 920px;
+    margin: 0 auto;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    padding: 6px 6px 6px 10px;
+}
+
+.composer-bar:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.composer-cwd {
+    flex: none;
+    align-self: center;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    font-family: var(--mono);
+    background: var(--bg-overlay);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+.composer-input {
+    position: relative;
+    flex: 1;
+    min-width: 0;
 }
 
 .composer textarea {
     display: block;
     width: 100%;
-    max-width: 860px;
-    margin: 0 auto;
-    background: var(--bg-raised);
+    max-width: none;
+    margin: 0;
+    background: transparent;
     color: var(--text);
-    border: 1px solid var(--border-strong);
-    border-radius: 12px;
-    padding: 11px 14px;
+    border: none;
+    border-radius: 0;
+    padding: 8px 6px;
     font: inherit;
     resize: none;
-    min-height: 44px;
+    min-height: 40px;
     max-height: 200px;
-    transition: border-color 0.1s;
 }
 
 .composer textarea::placeholder { color: var(--text-faint); }
-.composer textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.composer textarea:focus { outline: none; box-shadow: none; border: none; }
 
 .composer-actions {
-    max-width: 860px;
-    margin: 8px auto 0;
     display: flex;
+    align-items: center;
     justify-content: flex-end;
-    gap: 8px;
+    gap: 6px;
+    flex: none;
+    margin: 0;
+    padding: 2px;
+}
+
+.composer-actions .primary,
+.composer-actions .ghost,
+.composer-actions .danger {
+    white-space: nowrap;
 }
 
 /* ============================= buttons ============================= */
@@ -1242,7 +1351,15 @@ button.danger {
 button.danger:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger); }
 
 /* ============================= settings ============================= */
-.settings-page { max-width: 760px; margin: 0 auto 40px; padding: 0 20px; min-width: 0; }
+.settings-page {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 20px 40px;
+    min-width: 0;
+    width: 100%;
+    flex: 1;
+    overflow-y: auto;
+}
 .settings-topbar {
     position: sticky; top: 0; z-index: 30;
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -1597,6 +1714,12 @@ button.chip:hover:not(:disabled) { border-color: var(--accent); color: var(--tex
 }
 
 /* ============================= responsive ============================= */
+@media (max-width: 980px) {
+    .session-header-row.primary { flex-wrap: wrap; }
+    .session-identity { flex: 1 1 100%; }
+    .session-header-actions { margin-left: auto; }
+}
+
 @media (max-width: 900px) {
     .app-shell { grid-template-columns: 220px 1fr; }
 }
@@ -1650,10 +1773,69 @@ button.chip:hover:not(:disabled) { border-color: var(--accent); color: var(--tex
         cursor: pointer;
     }
 
-    .session-header { padding: 10px 14px; }
-    .stats-dock { margin: 0 14px; }
-    .composer { padding: 12px 14px 14px; }
-    .todo-panel, .queue-dock { width: calc(100% - 28px); }
+    .session-header-row.primary { padding: 8px 14px 6px; flex-wrap: wrap; }
+    .session-header-row.status { padding: 0 14px 8px; min-width: 0; }
+    .session-identity { flex: 1 1 100%; }
+    .session-identity .session-title { max-width: none; }
+    .session-status {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+    .session-status::-webkit-scrollbar { display: none; }
+    .session-header-actions {
+        width: 100%;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+    .session-header-row.primary .view-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        width: 100%;
+        flex: 1 1 auto;
+        min-width: 0;
+        box-sizing: border-box;
+        overflow: hidden;
+    }
+    .session-header-row.primary .view-tabs .tab {
+        min-width: 0;
+        width: 100%;
+        text-align: center;
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    .session-toolbar {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        width: 100%;
+        gap: 6px;
+    }
+    .session-toolbar .ghost { width: 100%; text-align: center; }
+    .toolbar-count { display: none; }
+    .stats-dock { margin: 0; padding: 10px 14px; }
+    .composer { padding: 10px 14px 12px; }
+    .composer .composer-bar {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        grid-template-areas: "cwd input actions";
+        align-items: center;
+        gap: 6px;
+        padding: 6px 8px;
+    }
+    .composer .composer-cwd { grid-area: cwd; max-width: 88px; }
+    .composer .composer-input { grid-area: input; width: auto; flex: none; min-width: 0; }
+    .composer .composer-actions { grid-area: actions; width: auto; }
+    .composer .composer-actions .primary,
+    .composer .composer-actions .ghost,
+    .composer .composer-actions .danger { padding: 7px 12px; }
+    .send-kbd { display: none; }
+    .todo-panel { width: auto; }
+    .queue-dock { width: calc(100% - 28px); }
 
     /* touch: always show row actions */
     .workspace-actions { opacity: 1; }

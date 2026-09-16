@@ -194,7 +194,11 @@ public sealed class Session
     /// <summary>Model history projected from the surface; the only path into a model request.</summary>
     public IReadOnlyList<Message> DeriveMessages()
     {
-        lock (_gate) return _surface.DeriveMessages(seq => _log[seq]);
+        // Repair after the surface fold: a compaction boundary (or a tail repaired after a kill)
+        // can leave a tool result whose assistant call was shadowed away. Providers answer that
+        // with a hard 400 ("role 'tool' must respond to a preceding message with 'tool_calls'"),
+        // so the derivation drops what cannot be sent instead of shipping a guaranteed rejection.
+        lock (_gate) return MessagePairing.Repair(_surface.DeriveMessages(seq => _log[seq]));
     }
 
     /// <summary>Seqs of the current surface, in model-visible order (compaction plans ranges over these).</summary>

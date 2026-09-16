@@ -75,7 +75,10 @@ public class SessionTests
         var callId = "call_1";
         session.Append(SessionEventTypes.AssistantChunk,
             new SessionPayloads.AssistantChunk(1, 1, new TextDeltaChunk(0, "hi")));
-        var assistant = Message.CreateAssistant("scripted", "demo", [new TextBlock("hi")]);
+        // Production assistant messages carry their tool calls; a result whose call is not on the
+        // surface is an orphan the derivation must drop (providers 400 on it).
+        var assistant = Message.CreateAssistant("scripted", "demo",
+            [new TextBlock("hi"), new ToolCallBlock(callId, "bash", "{}")]);
         session.Append(SessionEventTypes.AssistantMessage, new SessionPayloads.AssistantMessage(1, 1, assistant),
             new Session.AppendOptions(SourceEventSeqs: [2], SurfaceOp: new SurfaceOp.Append()));
         session.Append(SessionEventTypes.ToolCall, new SessionPayloads.ToolCall(1, 1, callId, "bash", "{}"));
@@ -138,6 +141,10 @@ public class SessionTests
             new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
         session.Append(SessionEventTypes.StepStart, new SessionPayloads.StepStart(1, 1));
         var callId = "call_1";
+        session.Append(SessionEventTypes.AssistantMessage,
+            new SessionPayloads.AssistantMessage(1, 1, Message.CreateAssistant("scripted", "demo",
+                [new ToolCallBlock(callId, "bash", "{}")])),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
         session.Append(SessionEventTypes.ToolCall, new SessionPayloads.ToolCall(1, 1, callId, "bash", "{}"));
         // crash: no tool/result, no step/end, no turn/end
 
@@ -148,9 +155,32 @@ public class SessionTests
         Assert.Equal(SessionEventTypes.TurnEnd, repaired[^1].Type);
         Assert.IsType<TurnEndReason.Interrupted>(SessionEventRead.TurnEndReasonOf(repaired[^1]));
 
-        // the repaired seed passes validation and derives cleanly
+        // the repaired seed passes validation and derives cleanly: the synthetic result still
+        // belongs to the assistant call that precedes it, so the history stays sendable.
         var reopened = new Session(session.Header, repaired);
-        Assert.Equal(2, reopened.DeriveMessages().Count); // user message + synthetic tool result
+        var derived = reopened.DeriveMessages();
+        Assert.Equal(3, derived.Count); // user message + assistant call + synthetic tool result
+        Assert.False(MessagePairing.HasOrphans(derived));
+        Assert.Contains(derived, m => m.Content.OfType<ToolResultBlock>().Any(r => r.ToolCallId == callId));
+    }
+
+    [Fact]
+    public void Repair_SyntheticResultWithoutADurableCall_IsDroppedFromTheDerivation()
+    {
+        var (session, _) = NewSession();
+        OpenTurn(session);
+        session.Append(SessionEventTypes.UserMessage, Message.CreateUserText("go"),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        session.Append(SessionEventTypes.StepStart, new SessionPayloads.StepStart(1, 1));
+        // Killed before the assistant message landed: only the tool/call event is durable.
+        session.Append(SessionEventTypes.ToolCall, new SessionPayloads.ToolCall(1, 1, "call_1", "bash", "{}"));
+
+        var reopened = new Session(session.Header, SessionRepair.Repair(session.Events));
+        var derived = reopened.DeriveMessages();
+
+        Assert.False(MessagePairing.HasOrphans(derived));
+        Assert.DoesNotContain(derived, m => m.Content.OfType<ToolResultBlock>().Any());
+        Assert.Equal("go", Assert.Single(derived).FlattenText());
     }
 }
 

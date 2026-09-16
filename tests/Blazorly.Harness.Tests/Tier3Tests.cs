@@ -157,6 +157,12 @@ public class CompactionPrunerTests
         var agent = harness.CreateAgent();
         agent.Session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
         agent.Session.Append(SessionEventTypes.StepStart, new SessionPayloads.StepStart(1, 1));
+        // The assistant message that owns the call must be on the surface: providers reject a tool
+        // result with no preceding tool_calls, and DeriveMessages drops the orphan (MessagePairing).
+        agent.Session.Append(SessionEventTypes.AssistantMessage,
+            new SessionPayloads.AssistantMessage(1, 1, Llm.Message.CreateAssistant("scripted", "test",
+                [new ToolCallBlock("call_1", "bash", "{}")])),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
         var call = agent.Session.Append(SessionEventTypes.ToolCall,
             new SessionPayloads.ToolCall(1, 1, "call_1", "bash", "{}"));
         var message = Llm.Message.CreateToolResult("call_1",

@@ -104,6 +104,83 @@ public class CompactionTests
         agent.Session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(1, new TurnEndReason.Completed()));
         Assert.False(compaction.ShouldCompact(agent));
     }
+
+    [Fact]
+    public async Task Compaction_NeverSplitsAToolCallFromItsResult()
+    {
+        await using var harness = TestHarness.Create(options => options.Purpose == "compaction"
+            ? Scripted.Text("SUMMARY: inspected the workspace.")
+            : Scripted.Text("ok"));
+        var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions
+        {
+            ContextWindowTokens = 8_192,
+            Threshold = 0.9,
+            KeepRatio = 0.05,
+        });
+        var agent = harness.CreateAgent();
+        var session = agent.Session;
+        session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+        for (var i = 0; i < 3; i++)
+        {
+            session.Append(SessionEventTypes.UserMessage, Message.CreateUserText(Big(800) + $" context {i}"),
+                new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        }
+        AppendToolStep(session, "call_1");
+
+        // keepTokens: 0 puts the boundary on the last surface node — the tool result — which is
+        // exactly the split that produced "Messages with role 'tool' must be a response to a
+        // preceding message with 'tool_calls'".
+        var shadowed = await compaction.CompactAsync(agent, keepTokens: 0);
+
+        Assert.Equal(3, shadowed); // the three big user messages; the assistant step stays whole
+        var derived = session.DeriveMessages();
+        Assert.False(MessagePairing.HasOrphans(derived));
+        Assert.Contains(derived, m => m.Content.OfType<ToolCallBlock>().Any(c => c.Id == "call_1"));
+        Assert.Contains(derived, m => m.Content.OfType<ToolResultBlock>().Any(r => r.ToolCallId == "call_1"));
+        Assert.Contains(derived, m => m.FlattenText().Contains("SUMMARY: inspected the workspace."));
+    }
+
+    [Fact]
+    public async Task DeriveMessages_DropsAToolResultWhoseCallWasAlreadyShadowed()
+    {
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
+        var agent = harness.CreateAgent();
+        var session = agent.Session;
+        session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+        var userEvent = session.Append(SessionEventTypes.UserMessage, Message.CreateUserText("list the files"),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        var assistantSeq = AppendToolStep(session, "call_1");
+
+        // A summary replacing surface positions 0..1 shadows the user message *and* the assistant
+        // call, leaving the result orphaned: the history v0.1.7 sent after a compaction.
+        session.Append(SessionEventTypes.UserMessage,
+            Message.CreateUserText("[Context compacted] Summary of the earlier conversation."),
+            new Session.AppendOptions(
+                SourceEventSeqs: [userEvent.Seq, assistantSeq],
+                SurfaceOp: new SurfaceOp.Replace(0, 1)));
+
+        var derived = session.DeriveMessages();
+
+        Assert.False(MessagePairing.HasOrphans(derived));
+        Assert.DoesNotContain(derived, m => m.Content.OfType<ToolResultBlock>().Any());
+        Assert.Contains(derived, m => m.FlattenText().Contains("[Context compacted]"));
+    }
+
+    /// <summary>One assistant step that calls a tool, plus its result. Returns the assistant event seq.</summary>
+    private static int AppendToolStep(Core.Sessions.Session session, string callId)
+    {
+        session.Append(SessionEventTypes.StepStart, new SessionPayloads.StepStart(1, 1));
+        var assistant = session.Append(SessionEventTypes.AssistantMessage,
+            new SessionPayloads.AssistantMessage(1, 1, Message.CreateAssistant("scripted", "test",
+                [new ToolCallBlock(callId, "bash", "{\"command\":\"ls\"}")])),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        session.Append(SessionEventTypes.ToolCall, new SessionPayloads.ToolCall(1, 1, callId, "bash", "{\"command\":\"ls\"}"));
+        session.Append(SessionEventTypes.ToolResult,
+            new SessionPayloads.ToolResult(1, 1, Message.CreateToolResult(callId, [new TextBlock("file-a")])),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        session.Append(SessionEventTypes.StepEnd, new SessionPayloads.StepEnd(1, 1));
+        return assistant.Seq;
+    }
 }
 
 public class SandboxedBashTests : IDisposable

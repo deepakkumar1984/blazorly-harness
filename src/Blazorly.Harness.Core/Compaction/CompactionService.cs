@@ -221,6 +221,10 @@ public sealed class CompactionService
         }
         if (boundary <= 1) boundary = 2; // always keep at least one recent node
         if (boundary >= surface.Count) return 0;
+        // A boundary that lands between an assistant tool_calls message and its results would
+        // shadow the call and keep the results — a history every provider rejects with a 400.
+        boundary = AlignBoundaryToToolPairs(session, surface, boundary);
+        if (boundary < 2) return 0; // only reachable by keeping a pair whole; nothing worth shadowing
 
         var shadowSeqs = surface.Take(boundary).ToList();
         var shadowedMessages = shadowSeqs.Select(seq => ProjectNode(session, seq)).Where(m => m is not null).ToList()!;
@@ -285,6 +289,41 @@ public sealed class CompactionService
     }
 
     /// <summary>
+    /// Retreats the keep-boundary so a tool-call/result pair is never split: when the first
+    /// retained node is a tool result, the assistant message that owns the call is retained too.
+    /// Shadowing both would also be valid, but keeping the pair preserves the live detail the
+    /// model is still working from. Strictly decreasing, so the walk terminates.
+    /// </summary>
+    private static int AlignBoundaryToToolPairs(Core.Sessions.Session session, IReadOnlyList<int> surface, int boundary)
+    {
+        while (boundary > 0 && boundary < surface.Count)
+        {
+            var first = ProjectNode(session, surface[boundary]);
+            if (first is null) break;
+            var wanted = first.Content.OfType<Llm.ToolResultBlock>()
+                .Select(block => block.ToolCallId)
+                .ToHashSet(StringComparer.Ordinal);
+            if (wanted.Count == 0) break;
+
+            var owner = -1;
+            for (var i = boundary - 1; i >= 0; i--)
+            {
+                var candidate = ProjectNode(session, surface[i]);
+                if (candidate is null) continue;
+                if (candidate.Content.OfType<Llm.ToolCallBlock>().Any(call => wanted.Contains(call.Id)))
+                {
+                    owner = i;
+                    break;
+                }
+                if (candidate.Role == "assistant") break; // a different assistant step: the owner is already gone
+            }
+            if (owner < 0 || owner >= boundary) break;
+            boundary = owner;
+        }
+        return boundary;
+    }
+
+    /// <summary>
     /// Summarizes the pruned shadowed messages by replaying the conversation's own system
     /// prompt, tool schemas, and message order verbatim (dsh: reuse the provider's warm KV
     /// cache), with the summarization instruction appended as the final user message.
@@ -299,7 +338,7 @@ public sealed class CompactionService
             MaxTokens = _options.SummaryMaxTokens,
             System = SystemPromptService.RenderPrompt(assembly),
             Tools = assembly.ToolSchemas,
-            Messages = [.. shadowed, Llm.Message.CreateUserText("""
+            Messages = [.. Llm.MessagePairing.Repair(shadowed), Llm.Message.CreateUserText("""
                 Summarize the conversation above so work can continue without it: the task and
                 its current state, decisions made, files touched, commands run and their
                 outcomes, open problems, and the immediate next steps. Be concrete and terse;

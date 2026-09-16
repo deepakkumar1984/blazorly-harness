@@ -220,7 +220,7 @@ public class EvalEnvironmentTests : BootstrapperTestBase
 
             var summary = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(Path.Combine(first, "results.json")));
             Assert.Equal(hash, summary.GetProperty("toolSchemaHashes").GetProperty("none").GetString());
-            Assert.True(File.ReadAllText(Path.Combine(first, "summary.md")).Contains("Tool schema hash"));
+            Assert.Contains("Tool schema hash", File.ReadAllText(Path.Combine(first, "summary.md")));
         }
         finally
         {
