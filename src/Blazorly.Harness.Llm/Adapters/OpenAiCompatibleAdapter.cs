@@ -78,7 +78,12 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
         }
         catch (HttpRequestException ex)
         {
-            throw new LlmException(LlmErrorCodes.Transport, ex.Message);
+            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/chat/completions", body.Length));
+        }
+        catch (IOException ex)
+        {
+            // The peer closed the connection during the request-body upload: no HTTP status ever arrived.
+            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/chat/completions", body.Length));
         }
 
         using var _ = response;
@@ -92,7 +97,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
         var fold = new AdapterFold();
-        await foreach (var payload in SsePayloads(reader, ct).ConfigureAwait(false))
+        await foreach (var payload in TransportErrors.GuardSse(SsePayloads(reader, ct), $"{_baseUrl}/chat/completions", ct).ConfigureAwait(false))
         {
             if (payload is null) continue;
             using var doc = JsonDocument.Parse(payload);
@@ -162,6 +167,11 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
         return new TokenUsage(uncached, completion, cached > 0 ? (long?)cached : null, null, reasoning);
     }
 
+    /// <summary>
+    /// Chat Completions wire body. Tool parameters are normalized because some OpenAI-compatible
+    /// servers (LM Studio, xAI's legacy route) reject argument-less tools whose schema omits
+    /// <c>properties</c>.
+    /// </summary>
     public object BuildWireBody(GenerateOptions options)
     {
         var body = new Dictionary<string, object?>
@@ -174,7 +184,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
                 ? options.Tools.Select(t => (object)new
                 {
                     type = "function",
-                    function = new { name = t.Name, description = t.Description, parameters = t.Parameters },
+                    function = new { name = t.Name, description = t.Description, parameters = ToolParameterSchemas.Normalize(t.Parameters) },
                 }).ToList()
                 : null,
             ["tool_choice"] = options.Tools is { Count: > 0 } ? "auto" : null,

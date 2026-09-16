@@ -404,7 +404,7 @@ public sealed class SendMessageTool(TeamService service) : ToolDefinition<SendMe
     };
 }
 
-public sealed record InterruptAgentArgs(string SessionId);
+public sealed record InterruptAgentArgs([property: JsonPropertyName("session_id")] string SessionId);
 
 public sealed record InterruptAgentOutput(string SessionId, string Status);
 
@@ -555,7 +555,7 @@ public sealed class TeamTaskUpdateTool(TeamService service) : ToolDefinition<Tea
         => [new TextBlock($"Task {output.Id} updated: {output.Title} ({output.Status}).")];
 }
 
-public sealed record WaitAgentArgs(string SessionId);
+public sealed record WaitAgentArgs([property: JsonPropertyName("session_id")] string SessionId);
 
 public sealed record WaitAgentOutput(string SessionId, string Status);
 

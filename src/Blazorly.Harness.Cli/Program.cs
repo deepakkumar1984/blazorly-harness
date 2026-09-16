@@ -56,8 +56,9 @@ static int Help()
            sessions         List persisted sessions (newest last). Flag:
                               --workspace <path>   only sessions for this root
            eval             Run a task benchmark: each <tasks>/<id>/task.json runs
-                            headless in an isolated workspace + fresh home, then
-                            shell checks score it. Writes results.json/summary.md.
+                            headless in an isolated workspace + fresh pinned home,
+                            once per execution backend, then shell checks score it.
+                            Writes results.json/summary.md/environment.json.
                             Flags:
                               --tasks <dir>        task directory (default: eval/tasks)
                               --out <dir>          output directory (default:
@@ -65,6 +66,12 @@ static int Help()
                               --provider <name>    route override for all tasks
                               --model <id>         model override for all tasks
                               --timeout <seconds>  per-task timeout override
+                              --sandbox <list>     comma-separated backend matrix:
+                                                   landlock,e2b,none (default: the
+                                                   task's own `sandbox`, else landlock
+                                                   where available, else none).
+                                                   Unavailable backends are recorded as
+                                                   skipped, never as passes.
           update          Self-update from GitHub Releases (checksum-verified, swaps
                            ~/.blazorly/app/current in place). Env:
                              BLAZORLY_INSTALL_BASE  install from a local dist/ folder
@@ -165,6 +172,7 @@ static async Task<int> EvalAsync(string[] args)
     string? outDir = null;
     string? provider = null;
     string? model = null;
+    string? sandbox = null;
     var timeout = 0;
     for (var i = 0; i < args.Length; i++)
     {
@@ -185,6 +193,9 @@ static async Task<int> EvalAsync(string[] args)
             case "--timeout" when i + 1 < args.Length && int.TryParse(args[++i], out var seconds):
                 timeout = seconds;
                 break;
+            case "--sandbox" when i + 1 < args.Length:
+                sandbox = args[++i];
+                break;
             default:
                 Console.Error.WriteLine($"unknown eval flag '{args[i]}'");
                 return 1;
@@ -200,7 +211,10 @@ static async Task<int> EvalAsync(string[] args)
             Provider = provider,
             Model = model,
             DefaultTimeoutSeconds = timeout,
+            Sandbox = EvalSandbox.ParseMatrix(sandbox),
         });
+        if (summary.Skipped > 0)
+            Console.Error.WriteLine($"eval: {summary.Skipped} row(s) skipped — see environment.json (a skip is a measurement gap, not a pass)");
         return summary.Failed == 0 ? 0 : 1;
     }
     catch (Exception ex)

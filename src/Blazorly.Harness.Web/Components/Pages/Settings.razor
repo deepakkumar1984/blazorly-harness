@@ -222,6 +222,16 @@
                     </select>
                 </label>
                 <label>
+                    <span>Hosts that cannot confine (no Linux Landlock)</span>
+                    <div class="settings-toggles">
+                        <label class="toggle">
+                            <input type="checkbox" checked="@_settings.SandboxFailClosedWhenUnsupported" @onchange="e => _settings.SandboxFailClosedWhenUnsupported = e.Value is true" />
+                            <span>Fail closed instead of running tools unconfined</span>
+                        </label>
+                    </div>
+                    <p class="settings-note">Off by default: an unconfigured sandbox runs tools directly on macOS/Windows. Explicit per-session overrides always fail closed.</p>
+                </label>
+                <label>
                     <span>Remote sandbox (E2B)</span>
                     <div class="settings-toggles">
                         <label class="toggle">

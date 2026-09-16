@@ -2,6 +2,7 @@
 @using Blazorly.Harness.Core.Agent
 @using Blazorly.Harness.Core.Sessions
 @using Blazorly.Harness.Llm
+@using Blazorly.Harness.Tools
 @using Blazorly.Harness.Web.Services
 @inject SessionFacade Facade
 @inject UiEventBroker Broker
@@ -92,8 +93,8 @@
                 }
             </div>
             <div class="chip-anchor">
-                <button class="status-chip permission" title="Switch permission preset (/permission)" @onclick="TogglePermissionMenu">
-                    🔒 @(EffectiveSandbox)
+                <button class="status-chip permission" title="@SandboxTitle" @onclick="TogglePermissionMenu">
+                    🔒 @(EffectiveSandbox)@(SandboxDegraded ? " ⚠" : "")
                 </button>
                 @if (_permissionMenu)
                 {
@@ -512,7 +513,17 @@
     [Inject] private IJSRuntime Js { get; set; } = null!;
     [Inject] private Microsoft.AspNetCore.Components.NavigationManager Navigation { get; set; } = null!;
 
-    private string EffectiveSandbox => _snapshot?.SandboxMode ?? Facade.Harness.Settings.SandboxMode;
+    private string EffectiveSandbox => Facade.Harness.Sandbox.ResolveMode(_snapshot?.SandboxMode);
+
+    /// <summary>True when commands run unconfined because this host has no Landlock and no preset was chosen.</summary>
+    private bool SandboxDegraded => _snapshot?.SandboxMode is null
+        && !SandboxPolicy.ConfinementSupported
+        && Facade.Harness.Sandbox.ResolveProcessMode(null) == SandboxPolicy.DangerFullAccess
+        && EffectiveSandbox != SandboxPolicy.DangerFullAccess;
+
+    private string SandboxTitle => SandboxDegraded
+        ? $"'{EffectiveSandbox}' cannot confine spawned commands on this host (no Linux Landlock); bash/run_code execute unconfined while file writes stay inside the workspace. Pick a preset to override — read-only/workspace-write fail closed for commands here."
+        : "Switch permission preset (/permission)";
     private string WorkspaceLabel => Facade.WorkspaceOf(_session) is { } ws ? ws.Name : Path.GetFileName(_session?.Header.Cwd ?? "");
     private string Placeholder => _running
         ? "Queue for the next turn (⏎) or type and hit Steer…"

@@ -1,0 +1,30 @@
+{
+  "description": "Tool failure recovery: the first tool call errors (read of a file that does not exist), the failure must land durably in the session log, and the same turn must recover with a successful write and still end completed — no restart, no lost turn",
+  "prompt": "RECOVER_AFTER_TOOL_FAILURE: read missing-input.txt, then write recovery.txt with the recovery note.",
+  "provider": "scripted",
+  "model": "test",
+  "timeoutSeconds": 60,
+  "expectFinish": "completed",
+  "checks": [
+    {
+      "name": "failed-call-is-durable",
+      "run": "python3 -c \"\nimport json, os\nevents = [json.loads(l) for l in open(os.environ['BLAZORLY_SESSION_LOG']) if l.strip()]\ncalls = {e['data']['callId']: e['data'] for e in events if e.get('type') == 'tool/call'}\nfailed = [e for e in events if e.get('type') == 'tool/result'\n          and any(b.get('isError') for b in e['data']['message']['content'])]\nassert failed, 'no durable tool failure in the log'\nfirst = failed[0]['data']\ncode = (first.get('error') or {}).get('code')\nassert code == 'FILE_NOT_FOUND', code\ncall = calls.get(first['message']['source']['callId'])\nassert call and call['name'] == 'read', call\nassert 'missing-input.txt' in call['arguments'], call['arguments']\n\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "recovered-in-the-same-turn",
+      "run": "python3 -c \"\nimport json, os\nevents = [json.loads(l) for l in open(os.environ['BLAZORLY_SESSION_LOG']) if l.strip()]\nresults = [e for e in events if e.get('type') == 'tool/result']\nfailed = [e for e in results if any(b.get('isError') for b in e['data']['message']['content'])]\nassert failed, 'no failure to recover from'\nfailure = failed[0]\nok = [e for e in results if e['seq'] > failure['seq']\n      and not any(b.get('isError') for b in e['data']['message']['content'])]\nassert ok, 'no successful tool result after the failure'\ncalls = {e['data']['callId']: e['data'] for e in events if e.get('type') == 'tool/call'}\nrecovery = calls[ok[0]['data']['message']['source']['callId']]\nassert recovery['name'] == 'write', recovery\nassert failure['data']['turn'] == ok[0]['data']['turn'], 'recovery happened in a different turn'\n\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "recovery-artifact-written",
+      "run": "python3 -c \"\ntext = open('recovery.txt').read()\nassert 'recovered' in text, text\n\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "one-turn-ended-completed",
+      "run": "python3 -c \"\nimport json, os\nevents = [json.loads(l) for l in open(os.environ['BLAZORLY_SESSION_LOG']) if l.strip()]\nstarts = [e['data']['turn'] for e in events if e.get('type') == 'turn/start']\nends = [(e['data']['turn'], e['data']['reason']['kind']) for e in events if e.get('type') == 'turn/end']\nassert starts == [1], starts\nassert ends == [(1, 'completed')], ends\n\"",
+      "timeoutSeconds": 30
+    }
+  ]
+}

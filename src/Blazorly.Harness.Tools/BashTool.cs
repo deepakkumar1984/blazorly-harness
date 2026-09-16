@@ -135,7 +135,11 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
         return new BashOutput("foreground", exitCode, signal, timedOut, aborted, truncatedOut, Truncate(stderr).Text, truncatedAt, null);
     }
 
-    /// <summary>Landlock-wraps argv under the session sandbox preset; fails closed for mutating modes.</summary>
+    /// <summary>
+    /// Landlock-wraps argv under the session's resolved sandbox preset; fails closed for confining
+    /// modes the host cannot enforce, and runs directly where no sandbox was configured and Landlock
+    /// is unavailable (macOS/Windows dev hosts).
+    /// </summary>
     internal static ProcessStartInfo BuildStartInfo(Args args, ToolRunContext exec, bool foreground)
     {
         var cwd = ResolveWorkdir(args, exec);
@@ -151,7 +155,10 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
         startInfo.Environment["BLAZORLY_SESSION"] = exec.Agent?.Id ?? "";
 
         var sandbox = exec.Agent?.Ctx.TryGet<SandboxPolicy>("sandboxPolicy");
-        var mode = exec.Session.LatestSandboxMode() ?? sandbox?.DefaultMode ?? SandboxPolicy.WorkspaceWrite;
+        var mode = SandboxPolicy.ResolveProcessMode(
+            exec.Session.LatestSandboxMode(),
+            sandbox?.DefaultMode,
+            sandbox?.AllowUnconfinedFallback ?? true);
         var command = args.Command;
         if (mode is null || mode == SandboxPolicy.WorkspaceWrite)
         {
@@ -160,8 +167,7 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             {
                 // Fail closed: a mutating shell without confinement is exactly what the mode forbids.
                 throw new ToolException("SANDBOX_UNAVAILABLE",
-                    "[sandbox: bash confinement unavailable (landlock helper could not be built on this machine); " +
-                    "switch the session to danger-full-access to run without confinement]");
+                    SandboxPolicy.ConfinementUnavailable("bash", SandboxPolicy.WorkspaceWrite));
             }
             startInfo.FileName = helper;
             startInfo.ArgumentList.Add(SandboxPolicy.WorkspaceWrite);
@@ -177,7 +183,7 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             if (helper is null)
             {
                 throw new ToolException("SANDBOX_UNAVAILABLE",
-                    "[sandbox: bash confinement unavailable; switch to danger-full-access to run without confinement]");
+                    SandboxPolicy.ConfinementUnavailable("bash", SandboxPolicy.ReadOnly));
             }
             startInfo.FileName = helper;
             startInfo.ArgumentList.Add(SandboxPolicy.ReadOnly);

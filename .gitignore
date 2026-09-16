@@ -22,7 +22,11 @@ clr-debug-pid-*.log
 msbuild.binlog
 *.binlog
 /docs
-/scripts
+# Scratch space, except the scripted-provider server: it is part of the eval contract the README
+# documents. (`/scripts/*` rather than `/scripts` so the negation below can re-include one file —
+# git never descends into an excluded directory.)
+/scripts/*
+!/scripts/fake_openai.py
 # Eval outputs contain a seeded home with copied provider keys — never commit them.
 /eval/results-*
 # Benchmark result directories (methodology lives in the test suite, numbers are per-machine).

@@ -136,6 +136,9 @@ static class RunnerOptions
 public sealed class RunnerGlobals(RunnerToolProxy tools)
 {
     public RunnerToolProxy Tools { get; } = tools;
+
+    /// <summary>Absolute workspace root; the child is launched with this as its cwd.</summary>
+    public string Workspace { get; } = Directory.GetCurrentDirectory();
 }
 
 public sealed class RunnerToolProxy

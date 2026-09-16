@@ -137,7 +137,7 @@ public sealed class WorkflowTool(SubagentService subagents) : ToolDefinition<Wor
     };
 }
 
-public sealed record RalphArgs(string Objective, int? MaxRounds = null);
+public sealed record RalphArgs(string Objective, [property: JsonPropertyName("max_rounds")] int? MaxRounds = null);
 
 public sealed record RalphRound(int Round, string Outcome, string Summary);
 

@@ -74,7 +74,11 @@ public sealed class ResponsesApiAdapter : LlmAdapter
         }
         catch (HttpRequestException ex)
         {
-            throw new LlmException(LlmErrorCodes.Transport, ex.Message);
+            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/responses", body.Length));
+        }
+        catch (IOException ex)
+        {
+            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/responses", body.Length));
         }
 
         using var _ = response;
@@ -88,7 +92,7 @@ public sealed class ResponsesApiAdapter : LlmAdapter
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
         var fold = new ResponsesFold();
-        await foreach (var payload in OpenAiCompatibleAdapter.SsePayloads(reader, ct).ConfigureAwait(false))
+        await foreach (var payload in TransportErrors.GuardSse(OpenAiCompatibleAdapter.SsePayloads(reader, ct), $"{_baseUrl}/responses", ct).ConfigureAwait(false))
         {
             if (payload is null || payload == "[DONE]") continue;
             using var doc = JsonDocument.Parse(payload);
@@ -113,7 +117,7 @@ public sealed class ResponsesApiAdapter : LlmAdapter
                     ["type"] = "function",
                     ["name"] = t.Name,
                     ["description"] = t.Description,
-                    ["parameters"] = NormalizeFunctionParameters(t.Parameters),
+                    ["parameters"] = ToolParameterSchemas.Normalize(t.Parameters),
                 }).ToList()
                 : null,
             ["tool_choice"] = options.Tools is { Count: > 0 } ? "auto" : null,
@@ -127,35 +131,6 @@ public sealed class ResponsesApiAdapter : LlmAdapter
             body["stop"] = options.Stop.ToList();
         return body;
     }
-
-    /// <summary>
-    /// xAI compiles function tools into a grammar and requires <c>parameters.properties</c>
-    /// to be an object (or a union of objects). Argument-less tools historically serialized
-    /// as <c>{"type":"object"}</c>, which Chat Completions accepted and Responses rejects.
-    /// </summary>
-    internal static JsonElement NormalizeFunctionParameters(JsonElement parameters)
-    {
-        if (parameters.ValueKind != JsonValueKind.Object)
-            return EmptyObjectParameters();
-        if (parameters.TryGetProperty("oneOf", out _) || parameters.TryGetProperty("anyOf", out _))
-            return parameters;
-        if (parameters.TryGetProperty("properties", out var properties) && properties.ValueKind == JsonValueKind.Object)
-            return parameters;
-
-        var map = new Dictionary<string, object?>();
-        foreach (var property in parameters.EnumerateObject())
-            map[property.Name] = property.Value.Clone();
-        map.TryAdd("type", "object");
-        map["properties"] = new Dictionary<string, object?>();
-        return JsonSerializer.SerializeToElement(map);
-    }
-
-    private static JsonElement EmptyObjectParameters()
-        => JsonSerializer.SerializeToElement(new Dictionary<string, object?>
-        {
-            ["type"] = "object",
-            ["properties"] = new Dictionary<string, object?>(),
-        });
 
     /// <summary>
     /// Responses API takes <c>reasoning.effort</c>. Title requests run at low effort so they

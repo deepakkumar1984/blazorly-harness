@@ -74,7 +74,11 @@ public sealed class AnthropicAdapter : LlmAdapter
         }
         catch (HttpRequestException ex)
         {
-            throw new LlmException(LlmErrorCodes.Transport, ex.Message);
+            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/v1/messages", body.Length));
+        }
+        catch (IOException ex)
+        {
+            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/v1/messages", body.Length));
         }
 
         using var _ = response;
@@ -88,7 +92,7 @@ public sealed class AnthropicAdapter : LlmAdapter
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
         var fold = new AnthropicFold();
-        await foreach (var payload in OpenAiCompatibleAdapter.SsePayloads(reader, ct).ConfigureAwait(false))
+        await foreach (var payload in TransportErrors.GuardSse(OpenAiCompatibleAdapter.SsePayloads(reader, ct), $"{_baseUrl}/v1/messages", ct).ConfigureAwait(false))
         {
             if (payload is null) continue;
             using var doc = JsonDocument.Parse(payload);
@@ -154,7 +158,7 @@ public sealed class AnthropicAdapter : LlmAdapter
             {
                 name = t.Name,
                 description = t.Description,
-                input_schema = t.Parameters,
+                input_schema = ToolParameterSchemas.Normalize(t.Parameters),
             }).ToList()
             : null,
         ["temperature"] = options.Temperature,

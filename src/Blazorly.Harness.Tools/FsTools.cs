@@ -10,7 +10,9 @@ namespace Blazorly.Harness.Tools;
 /// <summary>
 /// Sandbox policy: per-session mode override (durable sandbox/mode event, latest wins) over
 /// the deployment default, with mutations confined to the owning session's workspace root.
-/// deny() paths produce the shared sandbox marker.
+/// deny() paths produce the shared sandbox marker. Filesystem confinement is enforced in-process
+/// on every host; confining a spawned process needs Linux Landlock, so on hosts without it an
+/// unconfigured sandbox runs commands directly (see <see cref="ResolveProcessMode"/>).
 /// </summary>
 public sealed class SandboxPolicy
 {
@@ -21,9 +23,65 @@ public sealed class SandboxPolicy
     /// <summary>Deployment default mode applied when a session carries no override.</summary>
     public string DefaultMode { get; set; } = WorkspaceWrite;
 
+    /// <summary>
+    /// Whether spawned processes can be confined on this host. Landlock is Linux-only, so macOS and
+    /// Windows dev machines cannot honour workspace-write or read-only for bash/run_code.
+    /// </summary>
+    public static bool ConfinementSupported => LandlockSandbox.HelperPath() is not null;
+
+    /// <summary>
+    /// On hosts that cannot confine processes, an unconfigured sandbox runs commands directly
+    /// instead of failing every bash/run_code call. Set to <c>false</c> to fail closed.
+    /// Filesystem confinement is unaffected: it is enforced in-process and works everywhere.
+    /// </summary>
+    public bool AllowUnconfinedFallback { get; set; } = true;
+
+    private static int _fallbackWarned;
+
+    /// <summary>Resolves the mode a session actually runs under (override wins over the default).</summary>
+    public string ResolveMode(string? sessionMode) => sessionMode ?? DefaultMode;
+
+    /// <summary>Resolved mode for tools that mutate files; never widened by host capability.</summary>
+    public string ResolveFileMode(Blazorly.Harness.Core.Sessions.Session? session) => ResolveMode(session?.LatestSandboxMode());
+
+    /// <summary>Resolved mode for tools that spawn processes, with the mounted policy's default.</summary>
+    public string ResolveProcessMode(string? sessionMode) => ResolveProcessMode(sessionMode, DefaultMode, AllowUnconfinedFallback);
+
+    /// <summary>
+    /// Mode resolution for process-spawning tools (bash, run_code), shared with executions that have
+    /// no mounted policy. A confining mode needs the Landlock helper; where it cannot exist and the
+    /// session carries no explicit override, the deployment default runs unconfined rather than
+    /// failing closed. Explicit overrides are never widened: asking for read-only on a host that
+    /// cannot enforce it fails closed instead of silently becoming full access.
+    /// </summary>
+    public static string ResolveProcessMode(string? sessionMode, string? defaultMode, bool allowUnconfinedFallback = true)
+    {
+        var mode = sessionMode ?? defaultMode ?? WorkspaceWrite;
+        if (sessionMode is not null || mode == DangerFullAccess || !allowUnconfinedFallback || ConfinementSupported)
+            return mode;
+        if (Interlocked.Exchange(ref _fallbackWarned, 1) == 0)
+        {
+            Console.Error.WriteLine(
+                $"[sandbox] '{mode}' needs Linux Landlock to confine spawned commands, which this host does not " +
+                "provide; running commands unconfined. Set danger-full-access to silence this, or enable " +
+                "sandboxFailClosedWhenUnsupported to keep failing closed.");
+        }
+        return DangerFullAccess;
+    }
+
+    /// <summary>
+    /// Model-facing text for a confining mode this host cannot enforce. Wording matters: a vague
+    /// "sandbox unavailable" makes the model hop to run_code and retry the same dead end for turns.
+    /// </summary>
+    public static string ConfinementUnavailable(string tool, string mode)
+        => $"[sandbox: {tool} cannot run under '{mode}' here — confining a spawned process needs Linux Landlock, "
+            + "which this host does not have. This is permanent, not transient: do not retry, and do not switch "
+            + "tools (run_code is confined the same way). Ask the user to switch this session to danger-full-access "
+            + "(/permission danger-full-access), then re-issue the command.]";
+
     public string? DenyWrite(string absolutePath, Blazorly.Harness.Core.Sessions.Session? session)
     {
-        var mode = session?.LatestSandboxMode() ?? DefaultMode;
+        var mode = ResolveFileMode(session);
         if (mode == DangerFullAccess) return null;
         if (mode == ReadOnly) return $"[sandbox: file access denied under {mode} mode]";
         var root = Path.GetFullPath(session?.Header.Cwd ?? Directory.GetCurrentDirectory());
@@ -96,6 +154,7 @@ public sealed class ReadTool(FsObservationTracker tracker) : ToolDefinition<Read
 
     protected override async Task<ReadOutput> ExecuteTyped(ReadArgs args, ToolRunContext exec)
     {
+        if (string.IsNullOrEmpty(args.FilePath)) throw new ToolException("INVALID_ARGS", "file_path is required and must be a non-empty string");
         var path = Resolve(args.FilePath, exec);
         if (!File.Exists(path)) throw new ToolException("FILE_NOT_FOUND", $"file '{path}' does not exist");
         tracker.Observe(path);
@@ -213,6 +272,7 @@ public sealed class WriteTool(FsObservationTracker tracker, SandboxPolicy sandbo
     protected override async Task<WriteOutput> ExecuteTyped(WriteArgs args, ToolRunContext exec)
     {
         var path = ReadTool.Resolve(args.FilePath, exec);
+        if (args.Content is null) throw new ToolException("INVALID_ARGS", "content is required; send \"\" for an empty file, never null");
         if (sandbox.DenyWrite(path, exec.Session) is { } denied) throw new ToolException("SANDBOX_DENIED", denied);
         string? before = null;
         if (File.Exists(path))
@@ -239,7 +299,11 @@ public sealed class WriteTool(FsObservationTracker tracker, SandboxPolicy sandbo
     };
 }
 
-public sealed record EditArgs([property: System.Text.Json.Serialization.JsonPropertyName("file_path")] string FilePath, string OldString, string NewString, bool? ReplaceAll = null);
+public sealed record EditArgs(
+    [property: System.Text.Json.Serialization.JsonPropertyName("file_path")] string FilePath,
+    [property: System.Text.Json.Serialization.JsonPropertyName("old_string")] string OldString,
+    [property: System.Text.Json.Serialization.JsonPropertyName("new_string")] string NewString,
+    [property: System.Text.Json.Serialization.JsonPropertyName("replace_all")] bool? ReplaceAll = null);
 
 public sealed record EditOutput(string Path, string Before, string After);
 
@@ -275,6 +339,8 @@ public sealed class EditTool(FsObservationTracker tracker, SandboxPolicy sandbox
     protected override async Task<EditOutput> ExecuteTyped(EditArgs args, ToolRunContext exec)
     {
         var path = ReadTool.Resolve(args.FilePath, exec);
+        if (args.OldString is null) throw new ToolException("INVALID_ARGS", "old_string is required and must be a string (not null)");
+        if (args.NewString is null) throw new ToolException("INVALID_ARGS", "new_string is required; send \"\" to delete old_string, never null");
         if (!File.Exists(path)) throw new ToolException("FILE_NOT_FOUND", $"file '{path}' does not exist; use write to create it");
         if (!tracker.IsObserved(path))
             throw new ToolException("FS_NOT_OBSERVED", $"read '{path}' before editing it");

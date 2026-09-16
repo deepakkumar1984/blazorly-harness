@@ -29,6 +29,11 @@ public sealed class HarnessSettings
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
     public string WorkspaceRoot { get; set; } = Directory.GetCurrentDirectory();
     public string SandboxMode { get; set; } = SandboxPolicy.WorkspaceWrite;
+    /// <summary>
+    /// Fail closed when the host cannot confine (no Linux Landlock) instead of degrading an
+    /// unconfigured sandbox to danger-full-access.
+    /// </summary>
+    public bool SandboxFailClosedWhenUnsupported { get; set; }
     public string Persistence { get; set; } = "jsonl"; // jsonl | sqlite
     public long ContextWindowTokens { get; set; } = 65_536;
     public double CompactionThreshold { get; set; } = 0.72;
@@ -219,7 +224,11 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             ? new SqliteSessionPersistence(Path.Combine(_home, "sessions.db"))
             : new JsonlSessionPersistence(Path.Combine(_home, "sessions"));
         var tracker = new FsObservationTracker();
-        Sandbox = new SandboxPolicy { DefaultMode = Settings.SandboxMode };
+        Sandbox = new SandboxPolicy
+        {
+            DefaultMode = Settings.SandboxMode,
+            AllowUnconfinedFallback = !Settings.SandboxFailClosedWhenUnsupported,
+        };
         SystemPromptService? prompt = null;
 
         var plugins = new List<IHarnessPlugin>
@@ -682,6 +691,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     {
         Loop.DefaultSelection = new LlmCallConfig { Provider = Settings.Provider, Model = Settings.Model };
         Sandbox.DefaultMode = Settings.SandboxMode;
+        Sandbox.AllowUnconfinedFallback = !Settings.SandboxFailClosedWhenUnsupported;
         if (Compaction is not null)
         {
             Compaction.Options = Compaction.Options with

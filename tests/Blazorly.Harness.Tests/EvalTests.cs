@@ -143,10 +143,13 @@ public class EvalTaskLoaderTests : IDisposable
         Assert.NotNull(dir);
         var tasksRoot = Path.Combine(dir!.FullName, "eval", "tasks");
         var loaded = Directory.GetDirectories(tasksRoot).Select(EvalTask.Load).ToList();
-        Assert.True(loaded.Count >= 7);
+        Assert.True(loaded.Count >= 8);
         Assert.Contains(loaded, t => t.Id == "interrupt-cancel" && t.ExpectFinish == "aborted" && t.Interrupt!.CancelAfterMs > 0);
         Assert.Contains(loaded, t => t.Id == "interrupt-timeout" && t.ExpectFinish == "aborted" && t.Interrupt is null);
         Assert.Contains(loaded, t => t.Id == "interrupt-restart" && t.ExpectFinish == "completed" && t.Interrupt!.KillAfterMs > 0);
+        // Tool-failure recovery: the scripted provider must be pinned, or the trace is not reproducible.
+        Assert.Contains(loaded, t => t.Id == "recover-tool-failure" && t.Provider == "scripted"
+            && t.ExpectFinish == "completed" && t.Interrupt is null && t.Prompt.Contains(FakeOpenAiServer.FailureMarker));
     }
 }
 
@@ -188,7 +191,8 @@ public class EvalRunnerTests : BootstrapperTestBase
             Assert.Equal(1, summary.Failed);
             Assert.True(File.Exists(Path.Combine(finished, "results.json")));
             Assert.True(File.Exists(Path.Combine(finished, "summary.md")));
-            Assert.True(File.Exists(Path.Combine(finished, "smoke.json")));
+            Assert.True(File.Exists(Path.Combine(finished, "smoke.none.json"))); // per-task file carries the backend
+            Assert.True(File.Exists(Path.Combine(finished, "environment.json")));
             using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(finished, "results.json")));
             Assert.Equal(2, doc.RootElement.GetProperty("total").GetInt32());
             var md = File.ReadAllText(Path.Combine(finished, "summary.md"));
@@ -324,7 +328,8 @@ public class EvalRunnerTests : BootstrapperTestBase
             Assert.Equal("completed", result.Finish);
             Assert.Equal(0, result.ExitCode);
             Assert.All(result.Checks, c => Assert.True(c.Pass, $"{c.Name}: {c.Output}"));
-            Assert.True(Directory.Exists(Path.Combine(finished, "home", "sessions", "interrupt-restart")));
+            Assert.True(Directory.Exists(
+                Path.Combine(finished, $"home-{EvalSandbox.Default}", "sessions", "interrupt-restart")));
         }
         finally
         {

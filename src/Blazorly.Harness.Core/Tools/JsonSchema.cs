@@ -69,6 +69,12 @@ public static class JsonSchema
     /// <summary>An externally-owned schema emitted verbatim and validated only for JSON-ness.</summary>
     public static Schema Raw(JsonElement schema) => new() { Raw = schema };
 
+    /// <summary>Whether a property schema admits JSON null (untyped passthroughs do).</summary>
+    private static bool AllowsNull(Schema? schema)
+        => schema is null
+            || schema.Type is null or "null"
+            || (schema.OneOf?.Any(branch => branch.Type is null or "null") ?? false);
+
     /// <summary>Validates a value against a schema node; returns the first violation or null.</summary>
     public static string? Validate(JsonElement value, Schema schema, string path = "$")
     {
@@ -106,7 +112,12 @@ public static class JsonSchema
             {
                 foreach (var required in schema.Required ?? [])
                 {
-                    if (!value.TryGetProperty(required, out _)) return $"{path}: missing required property '{required}'";
+                    if (!value.TryGetProperty(required, out var requiredValue)) return $"{path}: missing required property '{required}'";
+                    // An explicit null satisfies TryGetProperty but not the contract; without this the
+                    // null reaches the tool body and surfaces as an ArgumentNullException.
+                    if (requiredValue.ValueKind == JsonValueKind.Null
+                        && !AllowsNull(schema.Properties.GetValueOrDefault(required)))
+                        return $"{path}: required property '{required}' must not be null";
                 }
                 if (schema.AdditionalProperties == false)
                 {

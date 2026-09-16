@@ -7,9 +7,14 @@ namespace Blazorly.Harness.Tests;
 /// A local OpenAI-compatible stand-in for tests that boot the real harness in another process:
 /// POST /v1/chat/completions streams the canonical two-step flow (bash + todo_write tool calls,
 /// then a summary once tool results return). GET /v1/models lists the scripted model.
+/// A prompt containing <see cref="FailureMarker"/> switches to the failure-recovery flow: a tool
+/// call that errors, then a successful recovery call, then the summary.
 /// </summary>
 public sealed class FakeOpenAiServer : IDisposable
 {
+    /// <summary>Prompt marker that selects the scripted tool-failure/recovery flow.</summary>
+    public const string FailureMarker = "RECOVER_AFTER_TOOL_FAILURE";
+
     private readonly HttpListener _listener = new();
     public string BaseUrl { get; }
     public int Requests { get; private set; }
@@ -60,9 +65,15 @@ public sealed class FakeOpenAiServer : IDisposable
                 Write(ctx, """{"object":"list","data":[{"id":"test"}]}""", "application/json");
                 return;
             }
-            var hasToolResults = body.Contains("\"role\":\"tool\"", StringComparison.Ordinal)
-                || body.Contains("\"role\": \"tool\"", StringComparison.Ordinal);
-            var sse = hasToolResults ? SummaryStream() : ToolCallStream();
+            var toolResults = CountToolResults(body);
+            var sse = body.Contains(FailureMarker, StringComparison.Ordinal)
+                ? toolResults switch
+                {
+                    0 => FailingToolCallStream(),
+                    1 => RecoveryToolCallStream(),
+                    _ => SummaryStream(),
+                }
+                : toolResults > 0 ? SummaryStream() : ToolCallStream();
             ctx.Response.ContentType = "text/event-stream";
             foreach (var line in sse)
             {
@@ -86,6 +97,40 @@ public sealed class FakeOpenAiServer : IDisposable
         var bytes = Encoding.UTF8.GetBytes(body);
         ctx.Response.OutputStream.Write(bytes);
         ctx.Response.Close();
+    }
+
+    private static int CountToolResults(string body)
+        => CountOccurrences(body, "\"role\":\"tool\"") + CountOccurrences(body, "\"role\": \"tool\"");
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+        return count;
+    }
+
+    /// <summary>Step 1 of the failure flow: a read of a file that does not exist, so the tool
+    /// returns a durable error (FILE_NOT_FOUND) rather than a shell exit code.</summary>
+    private static IEnumerable<string> FailingToolCallStream()
+    {
+        var args = JsonArg("{\"file_path\":\"missing-input.txt\"}");
+        yield return Sse($"{{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"call_missing\",\"type\":\"function\",\"function\":{{\"name\":\"read\",\"arguments\":\"{args}\"}}}}]}}}}]}}");
+        yield return Sse("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":60,"completion_tokens":14,"total_tokens":74,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}""");
+        yield return "data: [DONE]";
+    }
+
+    /// <summary>Step 2 of the failure flow: the recovery write, which must succeed.</summary>
+    private static IEnumerable<string> RecoveryToolCallStream()
+    {
+        var args = JsonArg("""{"file_path":"recovery.txt","content":"recovered after the failed read\n"}""");
+        yield return Sse($"{{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"call_recover\",\"type\":\"function\",\"function\":{{\"name\":\"write\",\"arguments\":\"{args}\"}}}}]}}}}]}}");
+        yield return Sse("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":90,"completion_tokens":20,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}""");
+        yield return "data: [DONE]";
     }
 
     private static IEnumerable<string> SummaryStream()

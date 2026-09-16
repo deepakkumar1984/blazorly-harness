@@ -17,15 +17,28 @@ namespace Blazorly.Harness.Tools;
 /// </summary>
 public sealed class CodeModeToolHost(ToolRuntime tools, ToolRunContext exec)
 {
+    /// <summary>
+    /// Scripts pass arguments under the tool's published schema names (file_path, old_string, …),
+    /// so forwarding must not camelCase them. This mirrors the confined runner's proxy options and
+    /// keeps the same script working in both modes.
+    /// </summary>
+    private static readonly JsonSerializerOptions ForwardedArgs = new() { PropertyNamingPolicy = null };
+
     public Task<JsonElement> CallAsync(string name, object arguments)
         => RunCodeTool.ExecuteForwardedAsync(tools, name,
-            JsonSerializer.SerializeToElement(arguments, SessionJson.Options), exec);
+            JsonSerializer.SerializeToElement(arguments, ForwardedArgs), exec);
 }
 
-/// <summary>Script globals for run_code: `Tools.CallAsync(name, args)` runs any registered tool.</summary>
-public sealed class ScriptGlobals(CodeModeToolHost tools)
+/// <summary>
+/// Script globals for run_code: `Tools.CallAsync(name, args)` runs any registered tool and
+/// `Workspace` is the session directory that relative paths resolve against.
+/// </summary>
+public sealed class ScriptGlobals(CodeModeToolHost tools, string workspace)
 {
     public CodeModeToolHost Tools { get; } = tools;
+
+    /// <summary>Absolute session workspace root; also the process cwd for the script's duration.</summary>
+    public string Workspace { get; } = workspace;
 }
 
 public sealed record RunCodeArgs(string Code, string Description);
@@ -71,8 +84,9 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
     public override string Description =>
         "Execute a C# snippet: the code is the body of an async method, so top-level await and return work. "
         + "Call tools with Tools.CallAsync(name, arguments); System, System.IO, System.Linq, System.Text.Json, "
-        + "System.Threading.Tasks and System.Collections.Generic are imported. The script runs confined to the "
-        + "session workspace (Landlock, like bash). Console output and the returned "
+        + "System.Threading.Tasks and System.Collections.Generic are imported. The script runs in the session "
+        + "workspace: relative paths resolve against it (also available as Workspace), and under "
+        + "workspace-write/read-only the run is Landlock-confined like bash. Console output and the returned "
         + "value are both reported; return or print only what matters.";
 
     public override int? TimeoutMs => 180_000;
@@ -97,9 +111,11 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
     {
         // Null-agent executions (tests, one-shot hosts) fall back to the process directory
         // and the default mode, exactly like BashTool's workdir fallback.
-        var mode = exec.Agent?.Session.LatestSandboxMode()
-            ?? exec.Agent?.Ctx.TryGet<SandboxPolicy>("sandboxPolicy")?.DefaultMode
-            ?? SandboxPolicy.WorkspaceWrite;
+        var sandbox = exec.Agent?.Ctx.TryGet<SandboxPolicy>("sandboxPolicy");
+        var mode = SandboxPolicy.ResolveProcessMode(
+            exec.Agent?.Session.LatestSandboxMode(),
+            sandbox?.DefaultMode,
+            sandbox?.AllowUnconfinedFallback ?? true);
         if (mode == SandboxPolicy.DangerFullAccess)
             return await ExecuteInProcessAsync(args, exec).ConfigureAwait(false);
         return await ExecuteConfinedAsync(args, exec, mode).ConfigureAwait(false);
@@ -146,7 +162,13 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
         public override void WriteLine(string? value) => Target.WriteLine(value);
     }
 
-    /// <summary>danger-full-access: today's in-process execution, unchanged.</summary>
+    /// <summary>
+    /// danger-full-access: in-process execution. Directory.GetCurrentDirectory is process-global,
+    /// so relative paths in a script would otherwise resolve against wherever the host binary was
+    /// launched (the confined path gets this right through ProcessStartInfo.WorkingDirectory).
+    /// Runs are serialized and the cwd is restored in a finally, which keeps `File.ReadAllText("src/x")`
+    /// meaning the session workspace — the same contract bash and the fs tools already honour.
+    /// </summary>
     private async Task<RunCodeOutput> ExecuteInProcessAsync(RunCodeArgs args, ToolRunContext exec)
     {
         var script = CSharpScript.Create<object?>(args.Code, Options, typeof(ScriptGlobals));
@@ -159,6 +181,9 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
             throw new ToolException("RUN_CODE_FAILED", ex.Diagnostics.FirstOrDefault()?.GetMessage() ?? ex.Message);
         }
 
+        var workspace = exec.Agent?.Session.Header.Cwd ?? Directory.GetCurrentDirectory();
+        await InProcessGate.WaitAsync(exec.Signal).ConfigureAwait(false);
+        var originalDirectory = Directory.GetCurrentDirectory();
         var originalOut = Console.Out;
         var originalError = Console.Error;
         var console = new StringWriter();
@@ -167,10 +192,11 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
         ConsoleCapture.Value = console;
         try
         {
+            if (Directory.Exists(workspace)) Directory.SetCurrentDirectory(workspace);
             ScriptState<object?> state;
             try
             {
-                state = await script.RunAsync(new ScriptGlobals(new CodeModeToolHost(tools, exec)), exec.Signal).ConfigureAwait(false);
+                state = await script.RunAsync(new ScriptGlobals(new CodeModeToolHost(tools, exec), workspace), exec.Signal).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -178,11 +204,11 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
             }
             catch (Exception ex)
             {
-                throw new ToolException("RUN_CODE_FAILED", ex.Message);
+                throw new ToolException("RUN_CODE_FAILED", DescribeWithWorkspace(ex, workspace));
             }
             if (state.Exception is not null)
             {
-                throw new ToolException("RUN_CODE_FAILED", state.Exception.Message);
+                throw new ToolException("RUN_CODE_FAILED", DescribeWithWorkspace(state.Exception, workspace));
             }
             return new RunCodeOutput(console.ToString(), Serialize(state.ReturnValue));
         }
@@ -191,8 +217,22 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
             ConsoleCapture.Value = null;
             Console.SetOut(originalOut);
             Console.SetError(originalError);
+            try { Directory.SetCurrentDirectory(originalDirectory); } catch (IOException) { }
+            InProcessGate.Release();
         }
     }
+
+    /// <summary>Serializes in-process runs: the cwd swap is process-global.</summary>
+    private static readonly SemaphoreSlim InProcessGate = new(1, 1);
+
+    /// <summary>
+    /// A script's "file not found" is undiagnosable without knowing which directory it ran in,
+    /// so path failures carry the workspace they resolved against.
+    /// </summary>
+    private static string DescribeWithWorkspace(Exception exception, string workspace)
+        => exception is DirectoryNotFoundException or FileNotFoundException
+            ? $"{exception.Message} (run_code cwd: {workspace})"
+            : exception.Message;
 
     /// <summary>
     /// workspace-write/read-only: one landlock-exec child running ScriptRunner.dll. The protocol
@@ -204,8 +244,7 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
         if (helper is null)
         {
             throw new ToolException("SANDBOX_UNAVAILABLE",
-                "[sandbox: run_code confinement unavailable (landlock helper could not be built on this machine); " +
-                "switch the session to danger-full-access to run without confinement]");
+                SandboxPolicy.ConfinementUnavailable("run_code", mode));
         }
         var runner = LocateRunner();
         if (runner is null)

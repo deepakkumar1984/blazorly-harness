@@ -130,14 +130,44 @@ then shell checks score it):
 
 ```bash
 ... -- eval --tasks eval/tasks --out eval/results-manual
+... -- eval --sandbox landlock,e2b,none      # measure every task under each backend
 ```
 
 Each task sets a prompt, optional workspace `setup` (files + shell commands), and `checks`
-(shell commands, exit 0 passes). Every task gets a fresh harness home seeded with your
-provider keys, so eval sessions never pollute `~/.blazorly`. Results land as per-task JSON
-plus `results.json`/`summary.md`; exit `0` means all tasks passed. **Never commit a results
-directory: the seeded home inside it contains copied provider keys** (matching `eval/results-*`
-entries in `.gitignore`).
+(shell commands, exit 0 passes). Results land as per-task JSON (`<id>.<backend>.json`) plus
+`results.json`/`summary.md`/`environment.json`; exit `0` means every executed row passed.
+**Never commit a results directory: the seeded homes inside it contain copied provider keys**
+(matching `eval/results-*` entries in `.gitignore`).
+
+**Execution backends** — a score is only comparable when the backend is named, so each task runs
+once per backend and every row records which one it was measured under:
+
+| Backend | What it pins | Availability |
+| --- | --- | --- |
+| `landlock` | `sandboxMode: workspace-write`, `sandboxFailClosedWhenUnsupported: true` | Linux + a C compiler for `landlock-exec` |
+| `e2b` | `enableE2b: true`, remote execution | an E2B API key (settings or `E2B_API_KEY`) |
+| `none` | `sandboxMode: danger-full-access` | always |
+
+Selection: `--sandbox a,b,c` measures every task under each; otherwise a task's own
+`"sandbox": "landlock"` field decides, and a task that declares nothing runs under the host
+default (`landlock` where confinement exists, else `none`). A backend that cannot run on this
+host produces a **skipped** row with the reason (`confinement-unavailable: …`,
+`e2b-not-configured: …`) — never a silent pass, never a failure. Skips do not affect the exit
+code; they are reported as measurement gaps.
+
+**Pinned environment** — each backend gets a fresh home whose settings are the documented eval
+baseline, not your ambient configuration: sandbox mode, every plugin toggle, persistence,
+context window/compaction/spill thresholds and telemetry are pinned, and third-party plugin
+directories are excluded. Only routes and credentials are inherited (provider, model, base URL,
+API keys, custom providers, retry policy), because those select *which* model answers rather than
+*how* the harness behaves. Eval sessions never pollute `~/.blazorly`.
+
+**`environment.json`** — the manifest a score was measured against: harness/runtime versions, OS
+and arch, Landlock availability, E2B configuration, commit SHA + dirty flag, resolved
+provider/model, and per backend the applied plugin list, the published tool names, and a
+`toolSchemaHash` (SHA-256 over the canonicalized tool schemas — names, descriptions and
+parameters with recursively sorted keys). Two runs whose hashes differ are not comparable: the
+surface changed, not the loop.
 
 **Interruption tasks** — scored assertions about the interruption contract, not just task
 outcomes. `expectFinish` declares how the run may end (`completed`, `max-tokens`, `aborted`,
@@ -156,10 +186,24 @@ outcomes. `expectFinish` declares how the run may end (`completed`, `max-tokens`
   (plus this delay). With `resumePrompt`, a second process must reload the log (torn tail
   discarded, interrupted turn repaired) and complete the session.
 
+**Tool-failure recovery** — `eval/tasks/recover-tool-failure` is the same idea for errors rather
+than interrupts: the scripted model's first call reads a file that does not exist, and the checks
+assert the failure landed durably (`error.code == FILE_NOT_FOUND`), that a *later* tool result in
+the *same* turn succeeded, that the recovery artifact exists, and that the turn still ended
+`completed` with exactly one `turn/start`. No restart, no lost turn.
+
 Checks receive `BLAZORLY_SESSION_ID` and `BLAZORLY_SESSION_LOG` so they can assert on the
 durable log directly (see `eval/tasks/interrupt-*`). These tasks pin `provider: "scripted"`
 and run against a fake OpenAI-compatible server (`scripts/fake_openai.py` or the C#
 `FakeOpenAiServer` in tests); a `--timeout` CLI override replaces every task's timeout.
+
+```bash
+python3 scripts/fake_openai.py --port 8931   # prints the baseUrl to configure as provider "scripted"
+```
+
+The Python server implements both scripted flows (tools → summary, and the failure/recovery flow
+for prompts containing `RECOVER_AFTER_TOOL_FAILURE`), byte-for-byte with the C# fake the test
+suite uses, so a task that passes in `dotnet test` behaves identically under `blazorly eval`.
 
 **Benchmarks** — the interruption-first measurement suite (cancel-propagation latency,
 replay/projection cost vs. session size, FTS5 backfill throughput). Every benchmark is also

@@ -31,7 +31,8 @@ public sealed record EvalTask(
     EvalSetup? Setup,
     IReadOnlyList<EvalCheck> Checks,
     string? ExpectFinish = null,
-    EvalInterrupt? Interrupt = null)
+    EvalInterrupt? Interrupt = null,
+    string? Sandbox = null)
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
@@ -82,6 +83,9 @@ public sealed record EvalTask(
         if (file.ExpectFinish is { } finish && !KnownFinishes.Contains(finish))
             throw new EvalLoadException(dir,
                 $"expectFinish must be one of: {string.Join(", ", KnownFinishes)} (got '{finish}')");
+        if (!EvalSandbox.IsKnown(file.Sandbox))
+            throw new EvalLoadException(dir,
+                $"sandbox must be one of: {string.Join(", ", EvalSandbox.All)} (got '{file.Sandbox}')");
         EvalInterrupt? interrupt = null;
         if (file.Interrupt is { } i)
         {
@@ -105,7 +109,8 @@ public sealed record EvalTask(
             file.Setup,
             checks,
             file.ExpectFinish,
-            interrupt);
+            interrupt,
+            file.Sandbox);
     }
 
     private sealed record EvalTaskFile(
@@ -117,7 +122,8 @@ public sealed record EvalTask(
         EvalSetup? Setup,
         List<EvalCheckFile>? Checks,
         string? ExpectFinish = null,
-        EvalInterruptFile? Interrupt = null);
+        EvalInterruptFile? Interrupt = null,
+        string? Sandbox = null);
 
     private sealed record EvalCheckFile(string? Name, string? Run, int? TimeoutSeconds);
 
@@ -134,6 +140,11 @@ public sealed record EvalOptions
     public string? Provider { get; init; }
     public string? Model { get; init; }
     public int DefaultTimeoutSeconds { get; init; } = 300;
+    /// <summary>
+    /// Execution-backend matrix: every task runs once per backend. Empty means each task's own
+    /// <c>sandbox</c> declaration, or <see cref="EvalSandbox.Default"/> when it declares none.
+    /// </summary>
+    public IReadOnlyList<string>? Sandbox { get; init; }
     public TextWriter Out { get; init; } = Console.Out;
 }
 
@@ -150,7 +161,13 @@ public sealed record EvalTaskResult(
     long InputTokens,
     long OutputTokens,
     IReadOnlyList<EvalCheckResult> Checks,
-    string? Error);
+    string? Error,
+    string Sandbox = EvalSandbox.None,
+    string? Skipped = null)
+{
+    /// <summary>Skipped rows are neither passes nor failures: the backend could not run here.</summary>
+    public bool IsSkipped => Skipped is not null;
+}
 
 public sealed record EvalSummary(
     int Total,
@@ -159,13 +176,23 @@ public sealed record EvalSummary(
     long DurationMs,
     long InputTokens,
     long OutputTokens,
-    IReadOnlyList<EvalTaskResult> Tasks);
+    IReadOnlyList<EvalTaskResult> Tasks,
+    int Skipped,
+    IReadOnlyList<string> Backends,
+    IReadOnlyDictionary<string, string> ToolSchemaHashes)
+{
+    /// <summary>Rows that actually ran (skips excluded) — the denominator a score means.</summary>
+    public int Executed => Total - Skipped;
+}
+
 
 /// <summary>
-/// Task benchmark runner: each task gets an isolated workspace and a fresh harness home
-/// (seeded with the ambient provider keys, so eval sessions never pollute the user's home),
-/// runs headless, then scores shell checks. Writes per-task JSON plus results.json/summary.md.
-/// Exit contract: caller maps all-pass to 0, anything else to 1.
+/// Task benchmark runner: each task runs once per execution backend (Landlock / E2B / unconfined)
+/// in an isolated workspace and a fresh, *pinned* harness home — credentials and provider routes are
+/// inherited from the ambient settings, everything behavioral is fixed by <see cref="EvalSandbox"/>.
+/// Writes per-task JSON, results.json, summary.md and environment.json (host facts, applied plugin
+/// set and a tool-schema hash per backend) so a score change is attributable.
+/// Exit contract: caller maps all-pass to 0, anything else to 1; skipped backends do not fail a run.
 /// </summary>
 public static class EvalRunner
 {
@@ -186,52 +213,96 @@ public static class EvalRunner
 
         Directory.CreateDirectory(options.OutDir);
         options = options with { OutDir = Path.GetFullPath(options.OutDir) };
+
+        // Load first: which backends to materialize depends on what the tasks declare.
+        var loaded = new List<(string Dir, string Id, EvalTask? Task, string? LoadError)>();
+        foreach (var dir in dirs)
+        {
+            var id = Path.GetFileName(dir) ?? dir;
+            try { loaded.Add((dir, id, EvalTask.Load(dir), null)); }
+            catch (Exception ex) { loaded.Add((dir, id, null, ex.Message)); }
+        }
+
+        var backends = ResolveBackends(options, loaded.Where(l => l.Task is not null).Select(l => l.Task!));
+        // Read the ambient configuration before BLAZORLY_HOME is repointed at the seeded homes.
+        var ambient = EvalSandbox.LoadAmbient();
+        var homes = backends.ToDictionary(b => b, b => HomeDir(options, b), StringComparer.Ordinal);
+        foreach (var (backend, home) in homes)
+            SetupHome(options, backend, ambient);
+
+        var environment = (await EvalEnvironmentCapture.CaptureAsync(backends, b => homes[b], ambient, ct).ConfigureAwait(false))
+            with
+            {
+                Provider = options.Provider ?? ambient.Provider,
+                Model = options.Model ?? ambient.Model,
+            };
+        await EvalEnvironmentCapture.WriteAsync(environment, options.OutDir, ct).ConfigureAwait(false);
+
         var previousHome = Environment.GetEnvironmentVariable("BLAZORLY_HOME");
-        var home = SetupHome(options);
-        Environment.SetEnvironmentVariable("BLAZORLY_HOME", home);
+        var results = new List<EvalTaskResult>();
+        var totalSw = Stopwatch.StartNew();
         try
         {
-            var results = new List<EvalTaskResult>();
-            var totalSw = Stopwatch.StartNew();
-            foreach (var dir in dirs)
+            foreach (var backend in backends)
             {
-                EvalTask task;
-                try
+                Environment.SetEnvironmentVariable("BLAZORLY_HOME", homes[backend]);
+                var pinned = SettingsFor(backend, ambient);
+                var unavailable = EvalSandbox.UnavailableReason(backend, pinned);
+                foreach (var (dir, id, task, loadError) in loaded)
                 {
-                    task = EvalTask.Load(dir);
-                    if (options.DefaultTimeoutSeconds > 0)
-                        task = task with { TimeoutSeconds = options.DefaultTimeoutSeconds };
+                    if (task is null)
+                    {
+                        // A task that cannot be parsed is reported once, not once per backend.
+                        if (backend != backends[0]) continue;
+                        results.Add(Failure(id, backend, loadError!));
+                        await options.Out.WriteLineAsync($"FAIL {id} [{backend}] (task failed to load: {loadError})").ConfigureAwait(false);
+                        continue;
+                    }
+                    if (!Targets(task, options, backend)) continue;
+                    var effective = options.DefaultTimeoutSeconds > 0
+                        ? task with { TimeoutSeconds = options.DefaultTimeoutSeconds }
+                        : task;
+
+                    if (unavailable is not null)
+                    {
+                        results.Add(Skipped(effective.Id, backend, unavailable));
+                        await options.Out.WriteLineAsync($"SKIP {effective.Id} [{backend}] ({unavailable})").ConfigureAwait(false);
+                        await WriteTaskResultAsync(options, Skipped(effective.Id, backend, unavailable), ct).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    var result = await RunTaskAsync(effective, options, backend, homes[backend], ct).ConfigureAwait(false);
+                    results.Add(result);
+                    await options.Out.WriteLineAsync(
+                        $"{(result.Pass ? "PASS" : "FAIL")} {result.Id} [{backend}] ({result.DurationMs}ms, {result.Finish})").ConfigureAwait(false);
+                    await WriteTaskResultAsync(options, result, ct).ConfigureAwait(false);
                 }
-                catch (Exception ex)
-                {
-                    results.Add(Failure(Path.GetFileName(dir) ?? dir, ex.Message));
-                    await options.Out.WriteLineAsync($"FAIL {Path.GetFileName(dir)} (task failed to load: {ex.Message})").ConfigureAwait(false);
-                    continue;
-                }
-                var result = await RunTaskAsync(task, options, ct).ConfigureAwait(false);
-                results.Add(result);
-                await options.Out.WriteLineAsync(
-                    $"{(result.Pass ? "PASS" : "FAIL")} {result.Id} ({result.DurationMs}ms, {result.Finish})").ConfigureAwait(false);
-                await File.WriteAllTextAsync(
-                    Path.Combine(options.OutDir, $"{result.Id}.json"),
-                    JsonSerializer.Serialize(result, Json), ct).ConfigureAwait(false);
             }
             totalSw.Stop();
+            var executed = results.Where(r => !r.IsSkipped).ToList();
             var summary = new EvalSummary(
                 results.Count,
-                results.Count(r => r.Pass),
-                results.Count(r => !r.Pass),
+                executed.Count(r => r.Pass),
+                executed.Count(r => !r.Pass),
                 totalSw.ElapsedMilliseconds,
-                results.Sum(r => r.InputTokens),
-                results.Sum(r => r.OutputTokens),
-                results);
+                executed.Sum(r => r.InputTokens),
+                executed.Sum(r => r.OutputTokens),
+                results,
+                results.Count(r => r.IsSkipped),
+                backends,
+                environment.Manifests.ToDictionary(
+                    kv => kv.Key,
+                    kv => kv.Value.ToolSchemaHash,
+                    StringComparer.Ordinal));
             await File.WriteAllTextAsync(Path.Combine(options.OutDir, "results.json"),
                 JsonSerializer.Serialize(summary, Json), ct).ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(options.OutDir, "summary.md"),
-                RenderMarkdown(summary), ct).ConfigureAwait(false);
+                RenderMarkdown(summary, environment), ct).ConfigureAwait(false);
             await options.Out.WriteLineAsync(
-                $"eval: {summary.Passed}/{summary.Total} passed in {summary.DurationMs}ms "
-                + $"(in {summary.InputTokens} / out {summary.OutputTokens} tokens)").ConfigureAwait(false);
+                $"eval: {summary.Passed}/{summary.Executed} passed in {summary.DurationMs}ms "
+                + $"(backends: {string.Join(", ", backends)}"
+                + (summary.Skipped > 0 ? $", {summary.Skipped} skipped" : "")
+                + $"; in {summary.InputTokens} / out {summary.OutputTokens} tokens)").ConfigureAwait(false);
             return summary;
         }
         finally
@@ -240,12 +311,53 @@ public static class EvalRunner
         }
     }
 
-    private static EvalTaskResult Failure(string id, string error) => new(
-        id, false, "error", 1, null, "", 0, 0, 0, [], error);
+    /// <summary>Per-backend seeded home under the output directory (never the user's ~/.blazorly).</summary>
+    public static string HomeDir(EvalOptions options, string backend) => Path.Combine(options.OutDir, $"home-{backend}");
 
-    private static async Task<EvalTaskResult> RunTaskAsync(EvalTask task, EvalOptions options, CancellationToken ct)
+    private static Web.Services.HarnessSettings SettingsFor(string backend, Web.Services.HarnessSettings ambient)
+        => EvalSandbox.InheritRoutes(EvalSandbox.PinnedSettings(backend), ambient);
+
+    /// <summary>The backend matrix: CLI override, else each task's declaration, else the host default.</summary>
+    internal static IReadOnlyList<string> ResolveBackends(EvalOptions options, IEnumerable<EvalTask> tasks)
     {
-        var workspace = Path.Combine(options.OutDir, "workspaces", task.Id);
+        if (options.Sandbox is { Count: > 0 } matrix) return matrix;
+        var materialized = tasks.ToList();
+        var backends = new List<string>();
+        if (materialized.Count == 0 || materialized.Any(t => t.Sandbox is null)) backends.Add(EvalSandbox.Default);
+        foreach (var declared in materialized.Where(t => t.Sandbox is not null).Select(t => t.Sandbox!)
+            .Distinct(StringComparer.Ordinal))
+        {
+            if (!backends.Contains(declared, StringComparer.Ordinal)) backends.Add(declared);
+        }
+        return backends;
+    }
+
+    /// <summary>
+    /// Whether a task is measured under this backend. A CLI matrix measures every task under every
+    /// backend; without one, a task runs under its declared backend, or under the host default when
+    /// it declares none (never both — that would silently double-count undeclared tasks).
+    /// </summary>
+    internal static bool Targets(EvalTask task, EvalOptions options, string backend)
+    {
+        if (options.Sandbox is { Count: > 0 }) return true;
+        var wanted = task.Sandbox ?? EvalSandbox.Default;
+        return string.Equals(wanted, backend, StringComparison.Ordinal);
+    }
+
+    private static async Task WriteTaskResultAsync(EvalOptions options, EvalTaskResult result, CancellationToken ct)
+        => await File.WriteAllTextAsync(
+            Path.Combine(options.OutDir, $"{result.Id}.{result.Sandbox}.json"),
+            JsonSerializer.Serialize(result, Json), ct).ConfigureAwait(false);
+
+    private static EvalTaskResult Failure(string id, string backend, string error) => new(
+        id, false, "error", 1, null, "", 0, 0, 0, [], error, backend);
+
+    private static EvalTaskResult Skipped(string id, string backend, string reason) => new(
+        id, false, "skipped", 0, null, "", 0, 0, 0, [], null, backend, reason);
+
+    private static async Task<EvalTaskResult> RunTaskAsync(EvalTask task, EvalOptions options, string backend, string home, CancellationToken ct)
+    {
+        var workspace = Path.Combine(options.OutDir, "workspaces", backend, task.Id);
         try
         {
             if (Directory.Exists(workspace)) Directory.Delete(workspace, recursive: true);
@@ -257,7 +369,7 @@ public static class EvalRunner
                 {
                     var full = Path.GetFullPath(path, workspace);
                     if (!full.StartsWith(workspace + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-                        return Failure(task.Id, $"setup file escapes the workspace: {path}");
+                        return Failure(task.Id, backend, $"setup file escapes the workspace: {path}");
                     Directory.CreateDirectory(Path.GetDirectoryName(full)!);
                     await File.WriteAllTextAsync(full, content, ct).ConfigureAwait(false);
                 }
@@ -268,13 +380,13 @@ public static class EvalRunner
                 {
                     var (exit, output) = await ShellAsync(cmd, workspace, 120, ct).ConfigureAwait(false);
                     if (exit != 0)
-                        return Failure(task.Id, $"setup command failed ({exit}): {cmd}\n{output}");
+                        return Failure(task.Id, backend, $"setup command failed ({exit}): {cmd}\n{output}");
                 }
             }
 
             var sw = Stopwatch.StartNew();
             var run = task.Interrupt?.KillAfterMs is { } killMs
-                ? await RunKillResumeAsync(task, options, workspace, killMs, ct).ConfigureAwait(false)
+                ? await RunKillResumeAsync(task, options, workspace, home, killMs, ct).ConfigureAwait(false)
                 : await HeadlessRunner.RunAsync(new HeadlessOptions
                 {
                     Job = task.Prompt,
@@ -288,7 +400,7 @@ public static class EvalRunner
             sw.Stop();
 
             if (run.Error is not null)
-                return Failure(task.Id, run.Error) with
+                return Failure(task.Id, backend, run.Error) with
                 {
                     Finish = run.Finish,
                     ExitCode = run.ExitCode,
@@ -298,7 +410,7 @@ public static class EvalRunner
 
             var expectedExit = EvalTask.ExitOfFinish(task.ExpectFinish);
             var checks = new List<EvalCheckResult>();
-            var checkEnv = CheckEnvironment(options, task.Id, run.SessionId);
+            var checkEnv = CheckEnvironment(home, task.Id, run.SessionId);
             foreach (var check in task.Checks)
             {
                 var (exit, output) = await ShellAsync(check.Run, workspace, check.TimeoutSeconds, ct, checkEnv).ConfigureAwait(false);
@@ -311,11 +423,12 @@ public static class EvalRunner
                 run.Usage?.Input ?? 0, run.Usage?.Output ?? 0,
                 checks, pass ? null
                     : run.ExitCode != expectedExit ? $"turn ended {run.Finish} (exit {run.ExitCode}), expected {task.ExpectFinish ?? "completed"} (exit {expectedExit})"
-                    : "checks failed");
+                    : "checks failed",
+                backend);
         }
         catch (Exception ex)
         {
-            return Failure(task.Id, ex.Message);
+            return Failure(task.Id, backend, ex.Message);
         }
     }
 
@@ -326,13 +439,13 @@ public static class EvalRunner
     /// reload (repairing the interrupted tail) and, when a resumePrompt is set, continue
     /// to completion in a second child.</summary>
     private static async Task<HeadlessResult> RunKillResumeAsync(
-        EvalTask task, EvalOptions options, string workspace, int killAfterMs, CancellationToken ct)
+        EvalTask task, EvalOptions options, string workspace, string home, int killAfterMs, CancellationToken ct)
     {
         var killSw = Stopwatch.StartNew();
         var first = SpawnCli(task, workspace, resume: null);
         using var anchorCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         anchorCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(5, task.TimeoutSeconds)));
-        var toolCallSeen = WaitForFirstToolCallAsync(options, task.Id, anchorCts.Token);
+        var toolCallSeen = WaitForFirstToolCallAsync(home, task.Id, anchorCts.Token);
         var winner = await Task.WhenAny(first.WaitForExitTask, toolCallSeen).ConfigureAwait(false);
         if (winner == first.WaitForExitTask && first.Process.ExitCode is 0 or 2 or 3)
         {
@@ -347,7 +460,7 @@ public static class EvalRunner
         await first.WaitForExitTask.ConfigureAwait(false);
         killSw.Stop();
 
-        var session = FindLatestSession(options, task.Id);
+        var session = FindLatestSession(home, task.Id);
         if (session is null)
             return new HeadlessResult { ExitCode = 1, Finish = "error", Error = "kill left no session log to resume" };
 
@@ -390,9 +503,9 @@ public static class EvalRunner
     /// the deterministic mid-turn anchor. Scoped to the task's own project directory so a
     /// sibling task's log (or a reattached old session) can never satisfy the anchor.
     /// Bounded by the caller's token.</summary>
-    private static async Task WaitForFirstToolCallAsync(EvalOptions options, string taskId, CancellationToken ct)
+    private static async Task WaitForFirstToolCallAsync(string home, string taskId, CancellationToken ct)
     {
-        var projectDir = Path.Combine(options.OutDir, "home", "sessions", Uri.EscapeDataString(taskId));
+        var projectDir = Path.Combine(home, "sessions", Uri.EscapeDataString(taskId));
         while (!ct.IsCancellationRequested)
         {
             if (Directory.Exists(projectDir))
@@ -473,9 +586,9 @@ public static class EvalRunner
     /// <summary>Newest session log under the task's own project key (the workspace basename;
     /// layout &lt;home&gt;/sessions/&lt;projectKey&gt;/&lt;sessionId&gt;/session.jsonl). Never falls back to
     /// another project's sessions — a kill/resume must operate on this task's log.</summary>
-    private static (string SessionId, string Log)? FindLatestSession(EvalOptions options, string taskId)
+    private static (string SessionId, string Log)? FindLatestSession(string home, string taskId)
     {
-        var projectDir = Path.Combine(options.OutDir, "home", "sessions", Uri.EscapeDataString(taskId));
+        var projectDir = Path.Combine(home, "sessions", Uri.EscapeDataString(taskId));
         if (!Directory.Exists(projectDir)) return null;
         var candidates = Directory.EnumerateFiles(projectDir, "session.jsonl", SearchOption.AllDirectories)
             .Select(log =>
@@ -490,18 +603,18 @@ public static class EvalRunner
 
     /// <summary>Env vars handed to every check command so assertions can reach the session
     /// log without guessing paths: BLAZORLY_SESSION_ID and BLAZORLY_SESSION_LOG.</summary>
-    private static Dictionary<string, string>? CheckEnvironment(EvalOptions options, string taskId, string? sessionId)
+    private static Dictionary<string, string>? CheckEnvironment(string home, string taskId, string? sessionId)
     {
         if (sessionId is null) return null;
         var env = new Dictionary<string, string> { ["BLAZORLY_SESSION_ID"] = sessionId };
-        var log = FindSessionLog(options, taskId, sessionId);
+        var log = FindSessionLog(home, taskId, sessionId);
         if (log is not null) env["BLAZORLY_SESSION_LOG"] = log;
         return env;
     }
 
-    private static string? FindSessionLog(EvalOptions options, string taskId, string sessionId)
+    private static string? FindSessionLog(string home, string taskId, string sessionId)
     {
-        var sessionsRoot = Path.Combine(options.OutDir, "home", "sessions");
+        var sessionsRoot = Path.Combine(home, "sessions");
         if (!Directory.Exists(sessionsRoot)) return null;
         var escaped = Uri.EscapeDataString(sessionId);
         return Directory.EnumerateFiles(sessionsRoot, "session.jsonl", SearchOption.AllDirectories)
@@ -509,30 +622,16 @@ public static class EvalRunner
                 string.Equals(Path.GetFileName(Path.GetDirectoryName(log)), escaped, StringComparison.Ordinal));
     }
 
-    /// <summary>Fresh home seeded from the ambient settings (keys + provider/model), so eval
-    /// uses the user's routes without polluting their sessions, spills, or telemetry.</summary>
-    internal static string SetupHome(EvalOptions options)
+    /// <summary>
+    /// Fresh per-backend home seeded with the pinned eval baseline plus the ambient provider routes
+    /// and credentials, so evals use the developer's models without inheriting their behavioral
+    /// configuration (sandbox mode, plugin toggles, context window) or polluting their sessions.
+    /// </summary>
+    internal static string SetupHome(EvalOptions options, string backend, Web.Services.HarnessSettings ambient)
     {
-        var home = Path.Combine(options.OutDir, "home");
+        var home = HomeDir(options, backend);
         if (Directory.Exists(home)) Directory.Delete(home, recursive: true);
-        Directory.CreateDirectory(home);
-        var ambient = Environment.GetEnvironmentVariable("BLAZORLY_HOME") is { Length: > 0 } custom
-            ? custom
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".blazorly");
-        var ambientSettings = Path.Combine(ambient, "settings.json");
-        if (File.Exists(ambientSettings))
-        {
-            File.Copy(ambientSettings, Path.Combine(home, "settings.json"));
-        }
-        else
-        {
-            File.WriteAllText(Path.Combine(home, "settings.json"), JsonSerializer.Serialize(new
-            {
-                provider = options.Provider ?? "deepseek",
-                model = options.Model ?? "deepseek-v4-flash",
-            }));
-        }
-        return home;
+        return EvalSandbox.WriteHome(home, SettingsFor(backend, ambient));
     }
 
     public static async Task<(int ExitCode, string Output)> ShellAsync(
@@ -588,23 +687,58 @@ public static class EvalRunner
     private static string Truncate(string text, int max)
         => text.Length <= max ? text : text[^max..];
 
-    private static string RenderMarkdown(EvalSummary summary)
+    private static string RenderMarkdown(EvalSummary summary, EvalEnvironment? environment = null)
     {
         var builder = new StringBuilder();
         builder.AppendLine("# Eval results");
         builder.AppendLine();
-        builder.AppendLine($"**{summary.Passed}/{summary.Total} passed** in {summary.DurationMs}ms "
-            + $"(in {summary.InputTokens} / out {summary.OutputTokens} tokens).");
+        builder.AppendLine($"**{summary.Passed}/{summary.Executed} passed** in {summary.DurationMs}ms "
+            + $"(in {summary.InputTokens} / out {summary.OutputTokens} tokens"
+            + (summary.Skipped > 0 ? $"; {summary.Skipped} skipped" : "") + ").");
         builder.AppendLine();
-        builder.AppendLine("| Task | Result | Finish | Time | Checks |");
-        builder.AppendLine("| --- | --- | --- | --- | --- |");
+        if (environment is not null)
+        {
+            builder.AppendLine("## Environment");
+            builder.AppendLine();
+            builder.AppendLine($"- harness `{environment.HarnessVersion}` · runtime `{environment.RuntimeVersion}`");
+            builder.AppendLine($"- host `{environment.Os} {environment.Arch}` · landlock `{(environment.LandlockSupported ? "available" : "unavailable")}` · e2b `{(environment.E2bConfigured ? "configured" : "not configured")}`");
+            builder.AppendLine($"- commit `{environment.GitSha ?? "unknown"}`{(environment.GitDirty ? " (dirty tree)" : "")} · model `{environment.Provider}/{environment.Model}` · default backend `{environment.DefaultBackend}`");
+            builder.AppendLine();
+            builder.AppendLine("| Backend | Tool schema hash | Tools | Plugins |");
+            builder.AppendLine("| --- | --- | --- | --- |");
+            foreach (var manifest in environment.Manifests.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                var value = manifest.Value;
+                var hash = value.ToolSchemaHash.Length == 0
+                    ? $"— ({Truncate(value.Error ?? "unavailable", 48)})"
+                    : value.ToolSchemaHash[..12];
+                builder.AppendLine($"| {manifest.Key} | `{hash}` | {value.Tools.Count} | {value.AppliedPlugins.Count} |");
+            }
+            builder.AppendLine();
+            builder.AppendLine("Scores are only comparable across runs whose backend rows match: "
+                + "a different tool-schema hash or plugin count means the surface changed, not the loop.");
+            builder.AppendLine();
+        }
+        builder.AppendLine("| Task | Backend | Result | Finish | Time | Checks |");
+        builder.AppendLine("| --- | --- | --- | --- | --- | --- |");
         foreach (var task in summary.Tasks)
         {
             var checks = task.Checks.Count == 0
                 ? "—"
                 : string.Join(", ", task.Checks.Select(c => $"{(c.Pass ? "✓" : "✗")} {c.Name}"));
-            builder.AppendLine($"| {task.Id} | {(task.Pass ? "PASS" : "FAIL")} | {task.Finish} "
+            var result = task.IsSkipped ? "SKIP" : task.Pass ? "PASS" : "FAIL";
+            builder.AppendLine($"| {task.Id} | {task.Sandbox} | {result} | {task.Finish} "
                 + $"| {task.DurationMs}ms | {checks} |");
+        }
+        if (summary.Tasks.Any(t => t.IsSkipped))
+        {
+            builder.AppendLine();
+            builder.AppendLine("## Skipped backends");
+            builder.AppendLine();
+            foreach (var task in summary.Tasks.Where(t => t.IsSkipped))
+                builder.AppendLine($"- `{task.Id}` [{task.Sandbox}]: {task.Skipped}");
+            builder.AppendLine();
+            builder.AppendLine("A skipped row is a measurement gap, not a pass.");
         }
         return builder.ToString();
     }
