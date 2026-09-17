@@ -43,6 +43,31 @@ public class SessionTests
     }
 
     [Fact]
+    public void ReadEvents_ReturnsOnlyRequestedRangeAndStableSnapshot()
+    {
+        var (session, _) = NewSession();
+        for (var i = 0; i < 10_000; i++)
+            session.Append(SessionEventTypes.SessionTitle, new { title = "event" });
+
+        var page = session.ReadEvents(9_950, 50);
+        session.Append(SessionEventTypes.SessionTitle, new { title = "new" });
+
+        Assert.Equal(Enumerable.Range(9_950, 50), page.Select(e => e.Seq));
+        Assert.Equal(2, session.ReadEvents(9_999, int.MaxValue).Count);
+        Assert.Empty(session.ReadEvents(10_001, 50));
+        Assert.Empty(session.ReadEvents(0, 0));
+    }
+
+    [Theory]
+    [InlineData(-1, 50)]
+    [InlineData(0, -1)]
+    public void ReadEvents_RejectsNegativeRanges(int start, int count)
+    {
+        var (session, _) = NewSession();
+        Assert.Throws<ArgumentOutOfRangeException>(() => session.ReadEvents(start, count));
+    }
+
+    [Fact]
     public void RejectsTurnStartWhenTurnOpen()
     {
         var (session, _) = NewSession();
@@ -265,13 +290,21 @@ public class WorkspaceSandboxTests : IDisposable
 
         var inside = await harness.Tools.Execute(new ToolExecutionInput
         {
-            Name = "write", Arguments = ArgsFor(Path.Combine(cwd, "inside.txt")), CallId = "c1", Signal = CancellationToken.None, Agent = agent,
+            Name = "write",
+            Arguments = ArgsFor(Path.Combine(cwd, "inside.txt")),
+            CallId = "c1",
+            Signal = CancellationToken.None,
+            Agent = agent,
         });
         Assert.False(inside.IsError, inside.Error?.Message ?? "no error");
 
         var outside = await harness.Tools.Execute(new ToolExecutionInput
         {
-            Name = "write", Arguments = ArgsFor(Path.Combine(other, "outside.txt")), CallId = "c2", Signal = CancellationToken.None, Agent = agent,
+            Name = "write",
+            Arguments = ArgsFor(Path.Combine(other, "outside.txt")),
+            CallId = "c2",
+            Signal = CancellationToken.None,
+            Agent = agent,
         });
         Assert.True(outside.IsError);
         Assert.Equal("SANDBOX_DENIED", outside.Error!.Info!.Code);
@@ -284,7 +317,11 @@ public class WorkspaceSandboxTests : IDisposable
         var (harness, agent, cwd) = Create(defaultMode: SandboxPolicy.ReadOnly);
         var blocked = await harness.Tools.Execute(new ToolExecutionInput
         {
-            Name = "write", Arguments = ArgsFor(Path.Combine(cwd, "a.txt")), CallId = "c1", Signal = CancellationToken.None, Agent = agent,
+            Name = "write",
+            Arguments = ArgsFor(Path.Combine(cwd, "a.txt")),
+            CallId = "c1",
+            Signal = CancellationToken.None,
+            Agent = agent,
         });
         Assert.True(blocked.IsError);
 
@@ -292,7 +329,11 @@ public class WorkspaceSandboxTests : IDisposable
         agent.Session.Append(SessionEventTypes.SandboxMode, new SessionPayloads.SandboxModePayload(SandboxPolicy.DangerFullAccess));
         var allowed = await harness.Tools.Execute(new ToolExecutionInput
         {
-            Name = "write", Arguments = ArgsFor(Path.Combine(cwd, "a.txt")), CallId = "c2", Signal = CancellationToken.None, Agent = agent,
+            Name = "write",
+            Arguments = ArgsFor(Path.Combine(cwd, "a.txt")),
+            CallId = "c2",
+            Signal = CancellationToken.None,
+            Agent = agent,
         });
         Assert.False(allowed.IsError, allowed.Error?.Message ?? "no error");
         Assert.Equal(SandboxPolicy.DangerFullAccess, agent.Session.LatestSandboxMode());

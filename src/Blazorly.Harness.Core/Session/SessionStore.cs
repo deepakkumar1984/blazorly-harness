@@ -169,11 +169,47 @@ public static class SessionRepair
 
         int? openTurn = null, openStep = null;
         var pendingCalls = new List<SessionPayloads.ToolCall>();
-        foreach (var e in events)
+        for (var i = 0; i < repaired.Count; i++)
         {
+            var e = repaired[i];
             switch (e.Type)
             {
                 case SessionEventTypes.TurnStart:
+                    if (openTurn is not null)
+                    {
+                        var insertTime = e.Time;
+                        var insertSeq = e.Seq;
+                        var insertions = new List<SessionEvent>();
+                        foreach (var call in pendingCalls)
+                        {
+                            var msg = Llm.Message.CreateToolResult(
+                                call.CallId,
+                                [new Llm.TextBlock("Error: duplicate turn start — tool outcome was not recorded.")],
+                                isError: true);
+                            insertions.Add(new SessionEvent
+                            {
+                                Type = SessionEventTypes.ToolResult,
+                                Seq = insertSeq++,
+                                Time = insertTime,
+                                Data = SessionJson.ToElement(new SessionPayloads.ToolResult(call.Turn, call.Step, msg)),
+                                SurfaceOp = new SurfaceOp.Append(),
+                            });
+                        }
+                        if (openStep is not null)
+                            insertions.Add(new SessionEvent
+                            {
+                                Type = SessionEventTypes.StepEnd, Seq = insertSeq++, Time = insertTime,
+                                Data = SessionJson.ToElement(new SessionPayloads.StepEnd(openTurn.Value, openStep.Value)),
+                            });
+                        insertions.Add(new SessionEvent
+                        {
+                            Type = SessionEventTypes.TurnEnd, Seq = insertSeq++, Time = insertTime,
+                            Data = SessionJson.ToElement(new SessionPayloads.TurnEnd(openTurn.Value, new TurnEndReason.Interrupted())),
+                        });
+                        repaired.InsertRange(i, insertions);
+                        i += insertions.Count;
+                        openTurn = null; openStep = null; pendingCalls.Clear();
+                    }
                     openTurn = SessionEventRead.TurnOf(e);
                     openStep = null;
                     pendingCalls.Clear();
@@ -205,7 +241,7 @@ public static class SessionRepair
         }
 
         if (openTurn is null) return repaired;
-        var time = events[^1].Time;
+        var time = repaired[^1].Time;
         var seq = repaired.Count;
 
         foreach (var call in pendingCalls)

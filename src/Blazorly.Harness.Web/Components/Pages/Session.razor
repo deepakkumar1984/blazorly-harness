@@ -11,7 +11,7 @@
 @implements IDisposable
 
 <div class="session-view @(ShowTodos ? "with-todos" : "") @(_terminalOpen ? "with-terminal" : "")">
-    @if (_modelMenu || _permissionMenu || _ctxMenu)
+    @if (_permissionMenu || _ctxMenu)
     {
         <div class="menu-backdrop" @onclick="CloseMenus"></div>
     }
@@ -24,7 +24,7 @@
                 }
                 else
                 {
-                    <button class="session-title" title="Rename (/title)" @onclick="StartEditTitle">@(_snapshot?.Title is { Length: > 0 } t ? t : SessionFacade.DeriveTitle(_session))</button>
+                    <button class="session-title" title="Rename (/title)" @onclick="StartEditTitle">@(_snapshot?.Title is { Length: > 0 } t ? t : _session is not null ? SessionFacade.DeriveTitle(_session) : SessionId)</button>
                 }
                 <span class="status-chip @(_snapshot?.Status == "running" ? "running" : "idle")" title="Session status">
                     @(_snapshot?.Status == "running" ? "● running" : "○ idle")
@@ -52,84 +52,34 @@
         </div>
         <div class="session-header-row status">
             <div class="session-status">
-                <div class="chip-anchor">
-                    <button class="model-chip" title="Switch model for this session" @onclick="ToggleModelMenu">
-                        @(_agent?.Options.Provider)/@(_agent?.Options.Model) ▾
-                    </button>
-                    @if (_modelMenu)
-                    {
-                        <div class="popover anchored model-menu">
-                            <input class="popover-search" type="text" placeholder="Search models or providers…"
-                                   value="@_modelSearch" @oninput="OnModelSearch"
-                                   @onkeydown="OnSearchKey" @ref="_modelSearchInput"
-                                   title="Filter by model, provider, or id — Esc closes" />
-                            @{
-                                var currentModel = Facade.Harness.RuntimeModels(_agent?.Options.Provider ?? "")
-                                    .FirstOrDefault(m => m.Id == _agent?.Options.Model);
-                            }
-                            @{
-                                // Current provider pinned first, everything else alphabetical; groups with
-                                // no match for the search are hidden entirely.
-                                var query = _modelSearch.Trim();
-                                var current = _agent?.Options.Provider ?? "";
-                                var groups = Facade.Harness.Llm.ListProviders()
-                                    .OrderByDescending(p => p == current)
-                                    .ThenBy(p => p, StringComparer.Ordinal)
-                                    .Select(p => (Provider: p, Models: Facade.Harness.Llm.ListModels(p)
-                                        .Where(m => query.Length == 0
-                                            || m.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
-                                            || m.Id.Contains(query, StringComparison.OrdinalIgnoreCase)
-                                            || p.Contains(query, StringComparison.OrdinalIgnoreCase))
-                                        .ToList()))
-                                    .Where(g => g.Models.Count > 0 || g.Provider == current)
-                                    .ToList();
-                            }
-                            @foreach (var group in groups)
-                            {
-                                <div class="popover-group">@(group.Provider == current ? $"{group.Provider} · current" : group.Provider)
-                                    <span class="group-count">@group.Models.Count</span>
-                                </div>
-                                @if (group.Models.Count == 0)
-                                {
-                                    <div class="popover-empty">no models yet — load them on the Settings page</div>
-                                }
-                                @foreach (var model in group.Models)
-                                {
-                                    <button class="popover-item @(_agent?.Options.Provider == group.Provider && _agent?.Options.Model == model.Id ? "selected" : "")"
-                                            @onclick="() => SelectModel(group.Provider, model.Id)">
-                                        @model.Name
-                                    </button>
-                                }
-                            }
-                            @if (groups.Count == 0)
-                            {
-                                <div class="popover-empty">nothing matches “@_modelSearch”</div>
-                            }
-                            @if (query.Length == 0 && currentModel?.ReasoningEfforts is { Length: > 0 } efforts)
-                            {
-                                <div class="popover-group">reasoning effort</div>
-                                <button class="popover-item @(_agent?.Options.ReasoningEffort is null ? "selected" : "")" @onclick='() => SelectEffort(null)'>
-                                    model default@(currentModel.DefaultEffort is { } def ? $" ({def})" : "")
-                                </button>
-                                @foreach (var effort in efforts)
-                                {
-                                    <button class="popover-item @(_agent?.Options.ReasoningEffort == effort ? "selected" : "")" @onclick='() => SelectEffort(effort)'>@effort</button>
-                                }
-                            }
-                        </div>
-                    }
-                </div>
+                <button class="model-chip" title="Configure model and effort" aria-haspopup="dialog" @onclick="ToggleModelMenu" @ref="_modelTrigger">
+                    @(_agent?.Options.Provider)/@(_agent?.Options.Model)
+                </button>
+                <button class="model-chip" title="Configure reasoning effort" aria-haspopup="dialog" @onclick="ToggleModelMenu">
+                    effort: @(_agent?.Options.ReasoningEffort ?? "model default")
+                </button>
                 <div class="chip-anchor">
                     <button class="status-chip permission" title="@SandboxTitle" @onclick="TogglePermissionMenu">
                         🔒 @(EffectiveSandbox)@(SandboxDegraded ? " ⚠" : "")
                     </button>
                     @if (_permissionMenu)
                     {
+                        var confinementAvailable = SandboxPolicy.ConfinementSupported;
                         <div class="popover anchored">
                             <div class="popover-group">permission preset</div>
-                            <button class="popover-item @(EffectiveSandbox == "read-only" ? "selected" : "")" @onclick='() => SelectPermission("read-only")'>read-only — deny all mutations</button>
-                            <button class="popover-item @(EffectiveSandbox == "workspace-write" ? "selected" : "")" @onclick='() => SelectPermission("workspace-write")'>workspace-write — writes confined to the session folder</button>
-                            <button class="popover-item @(EffectiveSandbox == "danger-full-access" ? "selected" : "")" @onclick='() => SelectPermission("danger-full-access")'>danger-full-access — no confinement</button>
+                            <button class="popover-item @(EffectiveSandbox == "read-only" ? "selected" : "")" @onclick='() => SelectPermission("read-only")'>
+                                read-only — deny all mutations@(!confinementAvailable ? " ⚠ bash blocked on this host" : "")
+                            </button>
+                            <button class="popover-item @(EffectiveSandbox == "workspace-write" ? "selected" : "")" @onclick='() => SelectPermission("workspace-write")'>
+                                workspace-write — writes confined to the session folder@(!confinementAvailable ? " ⚠ bash blocked on this host" : "")
+                            </button>
+                            <button class="popover-item @(EffectiveSandbox == "danger-full-access" ? "selected" : "")" @onclick='() => SelectPermission("danger-full-access")'>
+                                danger-full-access — no confinement
+                            </button>
+                            @if (!confinementAvailable)
+                            {
+                                <div class="popover-empty">This host does not have Linux Landlock. Only danger-full-access allows bash/run_code.</div>
+                            }
                         </div>
                     }
                 </div>
@@ -200,32 +150,56 @@
 
     <div class="session-body">
     <div class="session-main">
-    @if (_view == "trajectory" && _session is not null)
+    @if (_loadError is not null)
     {
-        var timeline = TrajectoryBuilder.Build(_session.Events);
+        <div class="empty">
+            <p style="color:var(--danger);margin-bottom:12px">@_loadError</p>
+            <button class="ghost" @onclick="ReloadPage">Retry</button>
+        </div>
+    }
+    else if (_view == "trajectory" && _session is not null)
+    {
         <div class="transcript trajectory">
             <div class="trajectory-head">
                 <button class="ghost" @onclick='() => _rawTrajectory = !_rawTrajectory'>@(_rawTrajectory ? "◀ timeline" : "raw events ▶")</button>
             </div>
             @if (_rawTrajectory)
             {
-                <table class="event-table">
-                    <thead><tr><th>seq</th><th>type</th><th>time</th><th>data</th></tr></thead>
-                    <tbody>
-                        @foreach (var e in _session.Events)
-                        {
-                            <tr>
-                                <td class="mono">@e.Seq</td>
-                                <td class="mono type-@e.Type.Contains('/')">@e.Type</td>
-                                <td class="mono">@e.Time</td>
-                                <td class="mono preview">@Preview(e)</td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
+                var total = _session.Seq;
+                var lastPage = Math.Max(0, (total - 1) / RawTrajectoryPage.PageSize);
+                var rows = _rawEvents.Read(_session, _rawPageIndex);
+                <nav class="trajectory-head" aria-label="Raw event pages">
+                    <button class="ghost" disabled="@(_rawPageIndex == 0)" @onclick="() => _rawPageIndex = 0">First</button>
+                    <button class="ghost" disabled="@(_rawPageIndex == 0)" @onclick="() => _rawPageIndex--">Previous</button>
+                    <span role="status">Page @(_rawPageIndex + 1) of @(lastPage + 1) · @total.ToString("N0") events · @RawTrajectoryPage.PageSize per page</span>
+                    <button class="ghost" disabled="@(_rawPageIndex >= lastPage)" @onclick="() => _rawPageIndex++">Next</button>
+                    <button class="ghost" disabled="@(_rawPageIndex >= lastPage)" @onclick="() => _rawPageIndex = lastPage">Latest</button>
+                </nav>
+                @if (total == 0)
+                {
+                    <div class="empty">No events yet.</div>
+                }
+                else
+                {
+                    <table class="event-table">
+                        <thead><tr><th>seq</th><th>type</th><th>time</th><th>data</th></tr></thead>
+                        <tbody>
+                            @foreach (var row in rows)
+                            {
+                                <tr @key="row.Seq">
+                                    <td class="mono">@row.Seq</td>
+                                    <td class="mono">@row.Type</td>
+                                    <td class="mono">@row.Time</td>
+                                    <td class="mono preview">@row.Preview</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
             }
             else
             {
+                var timeline = TrajectoryBuilder.Build(_session.Events);
                 @if (timeline.Preamble.Count > 0)
                 {
                     <div class="tl-preamble">
@@ -486,12 +460,80 @@
     </footer>
 </div>
 
+@if (_modelMenu)
+{
+    var query = _modelSearch.Trim();
+    var groups = Facade.Harness.Llm.ListProviders()
+        .OrderByDescending(p => p == _draftProvider)
+        .ThenBy(p => p, StringComparer.Ordinal)
+        .Select(p => (Provider: p, Models: Facade.Harness.RuntimeModels(p)
+            .Where(m => query.Length == 0
+                || m.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || m.Id.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || p.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .ToList()))
+        .Where(g => g.Models.Count > 0)
+        .ToList();
+    var selectedModel = DraftModelInfo;
+    <div class="modal-overlay" @onclick="CloseMenus">
+        <div class="modal model-config" role="dialog" aria-modal="true" aria-labelledby="model-config-title"
+             @onclick:stopPropagation="true" @onkeydown="OnSearchKey" @ref="_modelDialog">
+            <div class="modal-head">
+                <h3 id="model-config-title">Model and reasoning effort</h3>
+                <button class="ghost" aria-label="Close model settings" @onclick="CloseMenus">Close</button>
+            </div>
+            <label class="modal-field">
+                <span>Search models or providers</span>
+                <input type="search" value="@_modelSearch" @oninput="OnModelSearch" @ref="_modelSearchInput" />
+            </label>
+            <div class="model-config-list" aria-label="Models">
+                @foreach (var group in groups)
+                {
+                    <div class="popover-group">@group.Provider <span class="group-count">@group.Models.Count</span></div>
+                    @foreach (var model in group.Models)
+                    {
+                        <button @key="(group.Provider, model.Id)" class="popover-item @(_draftProvider == group.Provider && _draftModel == model.Id ? "selected" : "")"
+                                aria-pressed="@(_draftProvider == group.Provider && _draftModel == model.Id)"
+                                @onclick="() => SelectModel(group.Provider, model.Id)">
+                            @model.Name <span class="model-config-id">@model.Id</span>
+                        </button>
+                    }
+                }
+                @if (groups.Count == 0)
+                {
+                    <div class="popover-empty">No matching models. Load models on the Settings page if needed.</div>
+                }
+            </div>
+            <div class="model-config-selection">Selected: @_draftProvider/@_draftModel</div>
+            <label class="modal-field">
+                <span>Reasoning effort</span>
+                <select @bind="_draftEffort" disabled="@(selectedModel?.ReasoningEfforts is not { Length: > 0 })">
+                    <option value="">Model default@(selectedModel?.DefaultEffort is { } defaultEffort ? $" ({defaultEffort})" : "")</option>
+                    @foreach (var effort in selectedModel?.ReasoningEfforts ?? [])
+                    {
+                        <option value="@effort">@effort</option>
+                    }
+                </select>
+            </label>
+            @if (selectedModel?.ReasoningEfforts is not { Length: > 0 })
+            {
+                <div class="popover-empty">This model does not advertise configurable reasoning effort.</div>
+            }
+            <div class="modal-actions">
+                <button class="ghost" @onclick="CloseMenus">Cancel</button>
+                <button class="primary" disabled="@(_draftProvider.Length == 0 || _draftModel.Length == 0)" @onclick="ApplyModelSettings">Apply</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter] public string SessionId { get; set; } = "";
 
-    private Core.Sessions.Session _session = null!;
-    private Agent _agent = null!;
+    private Core.Sessions.Session? _session;
+    private Agent? _agent;
     private ConversationSnapshot? _snapshot;
+    private string? _loadError;
     private string _draft = "";
     private bool _running;
     private volatile bool _dirty;
@@ -503,6 +545,13 @@
     private string _modelSearch = "";
     private bool _focusModelSearch;
     private ElementReference _modelSearchInput;
+    private ElementReference _modelTrigger;
+    private ElementReference _modelDialog;
+    private bool _restoreModelFocus;
+    private string _draftProvider = "";
+    private string _draftModel = "";
+    private string _draftEffort = "";
+    private LlmModelInfo? DraftModelInfo => Facade.Harness.RuntimeModels(_draftProvider).FirstOrDefault(m => m.Id == _draftModel);
     private ElementReference _composerTa;
     private ElementReference _slashMenu;
     private ElementReference _mentionMenu;
@@ -517,6 +566,8 @@
     private PendingInteraction? _pendingApproval;
     private PendingInteraction? _pendingQuestion;
     private bool _rawTrajectory;
+    private int _rawPageIndex;
+    private RawTrajectoryPage _rawEvents = new();
     private bool _statsOpen;
     private bool _todosCollapsed;
 
@@ -551,7 +602,7 @@
     private string SandboxTitle => SandboxDegraded
         ? $"'{EffectiveSandbox}' cannot confine spawned commands on this host (no Linux Landlock); bash/run_code execute unconfined while file writes stay inside the workspace. Pick a preset to override — read-only/workspace-write fail closed for commands here."
         : "Switch permission preset (/permission)";
-    private string WorkspaceLabel => Facade.WorkspaceOf(_session) is { } ws ? ws.Name : Path.GetFileName(_session?.Header.Cwd ?? "");
+    private string WorkspaceLabel => _session is not null && Facade.WorkspaceOf(_session) is { } ws ? ws.Name : Path.GetFileName(_session?.Header.Cwd ?? "");
     private string Placeholder => _running
         ? "Queue for the next turn (⏎) or type and hit Steer…"
         : "Describe a task… or type / for commands";
@@ -574,9 +625,15 @@
                 {
                     _snapshot = _folder?.Update(_agent) ?? Assembler.Fold(_session, _agent);
                     _running = _agent.Status == "running";
+                    var hadPending = _pendingApproval is not null || _pendingQuestion is not null;
                     RefreshPending();
+                    var hasNewPending = (_pendingApproval is not null || _pendingQuestion is not null) && !hadPending;
                     StateHasChanged();
-                    if (_pinned && _view == "chat") await ScrollToBottom();
+                    if (_pinned && _view == "chat")
+                    {
+                        if (hasNewPending) _pendingScroll = true;
+                        else await ScrollToBottom();
+                    }
                 }
                 catch (Exception ex) when (ex is not TaskCanceledException)
                 {
@@ -603,8 +660,22 @@
         var sessionId = SessionId;
         _subscription?.Dispose();
         _subscription = null;
-        _session = await Facade.OpenSessionAsync(sessionId);
-        _agent = Facade.EnsureAgent(_session);
+        _loadError = null;
+        try
+        {
+            _session = await Facade.OpenSessionAsync(sessionId);
+            _agent = Facade.EnsureAgent(_session);
+        }
+        catch (Exception ex)
+        {
+            _session = null;
+            _agent = null;
+            _snapshot = null;
+            _loadError = $"Failed to load session: {ex.Message}";
+            Console.Error.WriteLine($"[ui] LoadSessionAsync failed for {sessionId}: {ex}");
+            StateHasChanged();
+            return;
+        }
         _folder = Assembler.CreateFolder(_session);
         _snapshot = _folder.Update(_agent);
         _running = _agent.Status == "running";
@@ -617,6 +688,8 @@
         _statsOpen = false;
         _todosCollapsed = false;
         _rawTrajectory = false;
+        _rawPageIndex = 0;
+        _rawEvents = new RawTrajectoryPage();
         _pendingApproval = null;
         _pendingQuestion = null;
         _dirty = false;
@@ -638,8 +711,11 @@
             {
                 InvokeAsync(() =>
                 {
+                    var hadPending = _pendingApproval is not null || _pendingQuestion is not null;
                     RefreshPending();
+                    var hasNewPending = (_pendingApproval is not null || _pendingQuestion is not null) && !hadPending;
                     StateHasChanged();
+                    if (hasNewPending && _pinned && _view == "chat") _pendingScroll = true;
                 });
                 return Task.CompletedTask;
             }
@@ -679,19 +755,28 @@
             _pendingScroll = false;
             await ScrollToBottom(force: true);
         }
-        if (_modelMenu || _permissionMenu || _ctxMenu)
+        if (_permissionMenu || _ctxMenu)
         {
             // keep an open dropdown inside the viewport (chips near the right edge on
             // narrow screens would otherwise push the menu off-screen)
             await TryJs("blazorly.clampMenu");
         }
-        if (_focusModelSearch)
+        if (_focusModelSearch && _modelMenu)
         {
             _focusModelSearch = false;
+            await TryJs("blazorly.trapModalFocus", _modelDialog);
             try { await _modelSearchInput.FocusAsync(); }
             catch (ObjectDisposedException) { }
             catch (JSDisconnectedException) { }
-            await TryJs("blazorly.clampMenu"); // focus scroll can shift layout
+            catch (JSException) { }
+        }
+        if (_restoreModelFocus)
+        {
+            _restoreModelFocus = false;
+            try { await _modelTrigger.FocusAsync(); }
+            catch (ObjectDisposedException) { }
+            catch (JSDisconnectedException) { }
+            catch (JSException) { }
         }
         if (_terminalOpen && !_terminalResizeAttached)
         {
@@ -1050,6 +1135,10 @@
         _permissionMenu = false;
         _ctxMenu = false;
         _modelSearch = "";
+        _draftProvider = _agent.Options.Provider ?? "";
+        _draftModel = _agent.Options.Model ?? "";
+        _draftEffort = _agent.Options.ReasoningEffort ?? "";
+        NormalizeDraftEffort();
         _focusModelSearch = _modelMenu;
     }
 
@@ -1060,11 +1149,7 @@
 
     private void OnSearchKey(KeyboardEventArgs e)
     {
-        if (e.Key is "Escape")
-        {
-            if (_modelSearch.Length > 0) _modelSearch = "";
-            else CloseMenus();
-        }
+        if (e.Key is "Escape") CloseMenus();
     }
 
     private void TogglePermissionMenu()
@@ -1083,24 +1168,38 @@
 
     private void CloseMenus()
     {
+        _restoreModelFocus = _modelMenu;
+        _focusModelSearch = false;
         _modelMenu = false;
         _permissionMenu = false;
         _ctxMenu = false;
     }
 
-    private Task SelectModel(string provider, string model)
+    private void SelectModel(string provider, string model)
     {
-        Facade.SetSessionModel(SessionId, provider, model);
-        _modelMenu = false;
-        StateHasChanged();
-        return Task.CompletedTask;
+        _draftProvider = provider;
+        _draftModel = model;
+        NormalizeDraftEffort();
     }
 
-    private void SelectEffort(string? effort)
+    private void NormalizeDraftEffort()
     {
-        if (_agent is not null) _agent.Options = _agent.Options with { ReasoningEffort = effort };
-        _modelMenu = false;
-        StateHasChanged();
+        if (DraftModelInfo?.ReasoningEfforts?.Contains(_draftEffort, StringComparer.Ordinal) != true)
+            _draftEffort = "";
+    }
+
+    private void ApplyModelSettings()
+    {
+        if (_draftProvider.Length == 0 || _draftModel.Length == 0) return;
+        NormalizeDraftEffort();
+        _agent.Options = _agent.Options with
+        {
+            Provider = _draftProvider,
+            Model = _draftModel,
+            ReasoningEffort = _draftEffort.Length == 0 ? null : _draftEffort,
+        };
+        _dirty = true;
+        CloseMenus();
     }
 
     private Task SelectPermission(string mode)
@@ -1110,6 +1209,8 @@
         _dirty = true;
         return Task.CompletedTask;
     }
+
+    private void ReloadPage() => Navigation.NavigateTo($"/session/{SessionId}", forceLoad: true);
 
     private void SwitchView(string view) => _view = view;
 
@@ -1151,12 +1252,6 @@
         if (key is { Length: > 0 } && key.StartsWith("te-") && int.TryParse(key[3..], out var seq)) atSeq = seq;
         var child = Facade.Fork(SessionId, atSeq);
         Navigation.NavigateTo($"/session/{child.Id}", forceLoad: true);
-    }
-
-    private string Preview(SessionEvent e)
-    {
-        var raw = e.Data.GetRawText();
-        return raw.Length > 160 ? raw[..160] + "…" : raw;
     }
 
     private static string FormatMs(double ms)

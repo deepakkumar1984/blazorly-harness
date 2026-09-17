@@ -39,6 +39,24 @@ window.blazorly = {
         handle.addEventListener("pointerup", stop);
         handle.addEventListener("pointercancel", stop);
     },
+    trapModalFocus: function (element) {
+        if (!element || element.dataset.focusBound) return;
+        element.dataset.focusBound = "1";
+        element.addEventListener("keydown", event => {
+            if (event.key !== "Tab") return;
+            const controls = [...element.querySelectorAll('button, input, select, textarea, a[href], [tabindex]')]
+                .filter(control => !control.disabled && control.tabIndex >= 0 && control.getClientRects().length > 0);
+            const first = controls[0];
+            const last = controls[controls.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+            }
+        });
+    },
     viewportWidth: function () {
         return window.innerWidth || document.documentElement.clientWidth || 0;
     },

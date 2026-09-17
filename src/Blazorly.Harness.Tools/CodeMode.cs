@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Blazorly.Harness.Core;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Core.SystemPrompt;
 using Blazorly.Harness.Core.Tools;
@@ -118,6 +119,28 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
             sandbox?.AllowUnconfinedFallback ?? true);
         if (mode == SandboxPolicy.DangerFullAccess)
             return await ExecuteInProcessAsync(args, exec).ConfigureAwait(false);
+
+        var helper = LandlockSandbox.HelperPath();
+        if (helper is null)
+        {
+            var approval = exec.Agent?.Ctx.TryGet<ApprovalService>("approval");
+            if (approval is null)
+                throw new ToolException("SANDBOX_UNAVAILABLE",
+                    SandboxPolicy.ConfinementUnavailable("run_code", mode));
+
+            var outcome = await approval.RequestAsync(
+                new ApprovalRequest(exec.Agent!, "run_code", exec.CallId ?? "",
+                    $"run_code needs to run without sandbox confinement (Linux Landlock is not available on this host). Allow this code to run unconfined?"),
+                exec.Signal).ConfigureAwait(false);
+
+            if (outcome is not ApprovalOutcome.AllowedOnce)
+                throw new ToolException("SANDBOX_DENIED",
+                    $"[sandbox: run_code cannot run under '{mode}' — Linux Landlock is not available. "
+                    + "The user declined to run the code unconfined. Ask the user to switch to danger-full-access "
+                    + "(/permission danger-full-access) if they want run_code to run without prompting.]");
+
+            return await ExecuteInProcessAsync(args, exec).ConfigureAwait(false);
+        }
         return await ExecuteConfinedAsync(args, exec, mode).ConfigureAwait(false);
     }
 

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Blazorly.Harness.Core;
 using Blazorly.Harness.Core.Jobs;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Core.Tools;
@@ -75,7 +76,29 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
 
     protected override async Task<BashOutput> ExecuteTyped(Args args, ToolRunContext exec)
     {
-        var startInfo = BuildStartInfo(args, exec, foreground: true);
+        var startInfo = BuildStartInfo(args, exec, foreground: true, forceUnconfined: false);
+        if (startInfo is null)
+        {
+            var approval = exec.Agent?.Ctx.TryGet<ApprovalService>("approval");
+            if (approval is null)
+                throw new ToolException("SANDBOX_UNAVAILABLE",
+                    SandboxPolicy.ConfinementUnavailable("bash", SandboxPolicy.WorkspaceWrite));
+
+            var outcome = await approval.RequestAsync(
+                new ApprovalRequest(exec.Agent!, "bash", exec.CallId ?? "",
+                    $"bash needs to run without sandbox confinement (Linux Landlock is not available on this host). Allow this command to run unconfined?"),
+                exec.Signal).ConfigureAwait(false);
+
+            if (outcome is not ApprovalOutcome.AllowedOnce)
+                throw new ToolException("SANDBOX_DENIED",
+                    $"[sandbox: bash cannot run under '{SandboxPolicy.WorkspaceWrite}' — Linux Landlock is not available. "
+                    + "The user declined to run the command unconfined. Ask the user to switch to danger-full-access "
+                    + "(/permission danger-full-access) if they want bash to run without prompting.]");
+
+            startInfo = BuildStartInfo(args, exec, foreground: true, forceUnconfined: true)
+                ?? throw new ToolException("SANDBOX_UNAVAILABLE",
+                    SandboxPolicy.ConfinementUnavailable("bash", SandboxPolicy.WorkspaceWrite));
+        }
         if (args.RunInBackground == true)
         {
             var jobs = BackgroundJobs(exec);
@@ -83,7 +106,9 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             {
                 throw new ToolException("NO_JOBS", "no jobs runtime is mounted for background execution");
             }
-            var startInfoBackground = BuildStartInfo(args, exec, foreground: false);
+            var startInfoBackground = BuildStartInfo(args, exec, foreground: false, forceUnconfined: true)
+                ?? throw new ToolException("SANDBOX_UNAVAILABLE",
+                    SandboxPolicy.ConfinementUnavailable("bash", SandboxPolicy.WorkspaceWrite));
             var jobId = jobs.StartProcess("bash", args.Description, startInfoBackground, owner: exec.Agent);
             return new BashOutput("background", null, null, false, false, "", "", -1, jobId);
         }
@@ -140,7 +165,7 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
     /// modes the host cannot enforce, and runs directly where no sandbox was configured and Landlock
     /// is unavailable (macOS/Windows dev hosts).
     /// </summary>
-    internal static ProcessStartInfo BuildStartInfo(Args args, ToolRunContext exec, bool foreground)
+    internal static ProcessStartInfo? BuildStartInfo(Args args, ToolRunContext exec, bool foreground, bool forceUnconfined)
     {
         var cwd = ResolveWorkdir(args, exec);
         var startInfo = new ProcessStartInfo
@@ -160,15 +185,16 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             sandbox?.DefaultMode,
             sandbox?.AllowUnconfinedFallback ?? true);
         var command = args.Command;
-        if (mode is null || mode == SandboxPolicy.WorkspaceWrite)
+        if (forceUnconfined)
+        {
+            startInfo.FileName = "/bin/bash";
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add(command);
+        }
+        else if (mode is null || mode == SandboxPolicy.WorkspaceWrite)
         {
             var helper = LandlockSandbox.HelperPath();
-            if (helper is null)
-            {
-                // Fail closed: a mutating shell without confinement is exactly what the mode forbids.
-                throw new ToolException("SANDBOX_UNAVAILABLE",
-                    SandboxPolicy.ConfinementUnavailable("bash", SandboxPolicy.WorkspaceWrite));
-            }
+            if (helper is null) return null;
             startInfo.FileName = helper;
             startInfo.ArgumentList.Add(SandboxPolicy.WorkspaceWrite);
             startInfo.ArgumentList.Add(cwd);
@@ -180,11 +206,7 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
         else if (mode == SandboxPolicy.ReadOnly)
         {
             var helper = LandlockSandbox.HelperPath();
-            if (helper is null)
-            {
-                throw new ToolException("SANDBOX_UNAVAILABLE",
-                    SandboxPolicy.ConfinementUnavailable("bash", SandboxPolicy.ReadOnly));
-            }
+            if (helper is null) return null;
             startInfo.FileName = helper;
             startInfo.ArgumentList.Add(SandboxPolicy.ReadOnly);
             startInfo.ArgumentList.Add(cwd);

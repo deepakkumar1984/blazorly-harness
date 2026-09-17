@@ -19,6 +19,49 @@ public class ConversationFoldTests
         return (harness, session);
     }
 
+    [Fact]
+    public void RawTrajectoryPage_BoundsLargeLogsAndReusesPreviews()
+    {
+        var session = new Session(new SessionHeader { Id = "raw-large", CreatedAt = 1, Cwd = "/tmp" });
+        for (var i = 0; i < 10_000; i++)
+            session.Append(SessionEventTypes.SessionTitle, new { title = new string('x', 200) });
+        var page = new RawTrajectoryPage();
+
+        var rows = page.Read(session, 0);
+        var first = rows[0];
+        Assert.Equal(RawTrajectoryPage.PageSize, rows.Count);
+        Assert.Equal(161, first.Preview.Length);
+        Assert.Same(first, page.Read(session, 0)[0]);
+
+        var last = page.Read(session, 199);
+        Assert.Equal(Enumerable.Range(9_950, 50), last.Select(row => row.Seq));
+        Assert.Empty(page.Read(session, 200));
+        Assert.Equal(0, page.Read(session, 0)[0].Seq);
+    }
+
+    [Fact]
+    public void RawTrajectoryPage_AppendsOnlyWithinCurrentPageAndResetsForSession()
+    {
+        var session = new Session(new SessionHeader { Id = "raw-live", CreatedAt = 1, Cwd = "/tmp" });
+        var page = new RawTrajectoryPage();
+        Assert.Empty(page.Read(session, 0));
+        session.Append(SessionEventTypes.SessionTitle, new { title = "first" });
+        var first = Assert.Single(page.Read(session, 0));
+        Assert.Equal("{\"title\":\"first\"}", first.Preview);
+
+        for (var i = 0; i < 50; i++)
+            session.Append(SessionEventTypes.SessionTitle, new { title = "next" });
+        Assert.Equal(50, page.Read(session, 0).Count);
+        Assert.Same(first, page.Read(session, 0)[0]);
+        Assert.Equal(50, Assert.Single(page.Read(session, 1)).Seq);
+
+        var other = new Session(new SessionHeader { Id = "raw-other", CreatedAt = 1, Cwd = "/tmp" });
+        Assert.Empty(page.Read(other, 1));
+        other.Append(SessionEventTypes.SessionTitle, new { title = "other" });
+        Assert.Contains("other", Assert.Single(page.Read(other, 0)).Preview);
+        Assert.Throws<ArgumentOutOfRangeException>(() => page.Read(other, -1));
+    }
+
     private static ConversationNode? Fold(TestHarness harness, Session session, string kind)
     {
         var snapshot = new ConversationAssembler(harness.Tools).Fold(session, agent: null);

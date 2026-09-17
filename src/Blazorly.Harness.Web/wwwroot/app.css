@@ -355,7 +355,6 @@ button.icon:disabled { opacity: 0.35; }
     border-bottom: 1px solid var(--border);
     background: var(--bg);
     flex: none;
-    z-index: 5;
 }
 
 .session-header-row {
@@ -1485,6 +1484,29 @@ html[data-theme="light"] .modal-overlay { background: rgba(31, 35, 40, 0.4); }
     box-shadow: var(--shadow-2);
 }
 
+.model-config { max-height: calc(100dvh - 40px); overscroll-behavior: contain; }
+.model-config-list {
+    max-height: min(320px, 35dvh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px;
+}
+.model-config-id { display: block; color: var(--text-faint); font-size: 11px; overflow-wrap: anywhere; }
+.model-config-selection { margin-top: 12px; color: var(--text-dim); font-size: 12px; overflow-wrap: anywhere; }
+.model-config select {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+}
+.model-config select:focus { outline: 2px solid var(--accent); }
+.model-config select:disabled { opacity: 0.6; }
+
 .modal-head {
     display: flex;
     align-items: center;
@@ -1620,6 +1642,8 @@ button.chip:hover:not(:disabled) { border-color: var(--accent); color: var(--tex
 .trajectory { padding: 12px 18px; }
 .trajectory-head {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
     justify-content: flex-end;
     margin-bottom: 10px;

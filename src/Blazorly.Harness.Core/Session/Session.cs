@@ -40,6 +40,17 @@ public sealed class Session
         get { lock (_gate) return [.. _log]; }
     }
 
+    public IReadOnlyList<SessionEvent> ReadEvents(int startIndex, int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        lock (_gate)
+        {
+            if (startIndex >= _log.Count || count == 0) return [];
+            return _log.GetRange(startIndex, Math.Min(count, _log.Count - startIndex));
+        }
+    }
+
     /// <summary>Observers must not block; async work belongs behind a queue.</summary>
     public IDisposable Subscribe(Action<SessionEvent> observer)
     {
@@ -117,58 +128,58 @@ public sealed class Session
         switch (e.Type)
         {
             case SessionEventTypes.TurnStart:
-            {
-                var turn = SessionEventRead.TurnOf(e);
-                if (_openTurn is not null) throw new SessionValidationException("TURN_OPEN", "a turn is already open");
-                if (turn != _nextTurn) throw new SessionValidationException("TURN_NUMBER", $"turn numbering must be {_nextTurn}");
-                break;
-            }
+                {
+                    var turn = SessionEventRead.TurnOf(e);
+                    if (_openTurn is not null) throw new SessionValidationException("TURN_OPEN", "a turn is already open");
+                    if (turn != _nextTurn) throw new SessionValidationException("TURN_NUMBER", $"turn numbering must be {_nextTurn}");
+                    break;
+                }
             case SessionEventTypes.TurnEnd:
-            {
-                var turn = SessionEventRead.TurnOf(e);
-                if (_openTurn != turn) throw new SessionValidationException("TURN_NOT_OPEN", "turn/end must close the open turn");
-                if (_openStep is not null) throw new SessionValidationException("STEP_OPEN", "cannot end a turn with an open step");
-                break;
-            }
+                {
+                    var turn = SessionEventRead.TurnOf(e);
+                    if (_openTurn != turn) throw new SessionValidationException("TURN_NOT_OPEN", "turn/end must close the open turn");
+                    if (_openStep is not null) throw new SessionValidationException("STEP_OPEN", "cannot end a turn with an open step");
+                    break;
+                }
             case SessionEventTypes.StepStart:
-            {
-                var turn = SessionEventRead.TurnOf(e);
-                var step = SessionEventRead.StepOf(e);
-                if (_openTurn != turn) throw new SessionValidationException("TURN_NOT_OPEN", "step/start must name the open turn");
-                if (_openStep is not null) throw new SessionValidationException("STEP_OPEN", "a step is already open");
-                if (step < 1) throw new SessionValidationException("STEP_NUMBER", "step numbering starts at 1");
-                break;
-            }
+                {
+                    var turn = SessionEventRead.TurnOf(e);
+                    var step = SessionEventRead.StepOf(e);
+                    if (_openTurn != turn) throw new SessionValidationException("TURN_NOT_OPEN", "step/start must name the open turn");
+                    if (_openStep is not null) throw new SessionValidationException("STEP_OPEN", "a step is already open");
+                    if (step < 1) throw new SessionValidationException("STEP_NUMBER", "step numbering starts at 1");
+                    break;
+                }
             case SessionEventTypes.StepEnd:
-            {
-                var turn = SessionEventRead.TurnOf(e);
-                var step = SessionEventRead.StepOf(e);
-                if (_openTurn != turn || _openStep != step) throw new SessionValidationException("STEP_NOT_OPEN", "step/end must close the open step");
-                // Pending calls are cleared, not required empty: failure paths may leave
-                // dangling calls that resume-time repair closes synthetically.
-                break;
-            }
+                {
+                    var turn = SessionEventRead.TurnOf(e);
+                    var step = SessionEventRead.StepOf(e);
+                    if (_openTurn != turn || _openStep != step) throw new SessionValidationException("STEP_NOT_OPEN", "step/end must close the open step");
+                    // Pending calls are cleared, not required empty: failure paths may leave
+                    // dangling calls that resume-time repair closes synthetically.
+                    break;
+                }
             case SessionEventTypes.AssistantChunk:
             case SessionEventTypes.AssistantMessage:
                 RequireOpenStep(e);
                 break;
             case SessionEventTypes.ToolCall:
-            {
-                RequireOpenStep(e);
-                var call = SessionEventRead.ToolCallOf(e);
-                if (!_pendingCalls.Add(call.CallId)) throw new SessionValidationException("CALL_DUP", $"tool call '{call.CallId}' is already pending in this step");
-                break;
-            }
+                {
+                    RequireOpenStep(e);
+                    var call = SessionEventRead.ToolCallOf(e);
+                    if (!_pendingCalls.Add(call.CallId)) throw new SessionValidationException("CALL_DUP", $"tool call '{call.CallId}' is already pending in this step");
+                    break;
+                }
             case SessionEventTypes.ToolResult:
-            {
-                RequireOpenStep(e);
-                var result = SessionEventRead.ToolResultOf(e);
-                var callId = result.Message.Content.OfType<ToolResultBlock>().FirstOrDefault()?.ToolCallId
-                    ?? throw new SessionValidationException("TOOL_RESULT_SHAPE", "tool/result must carry exactly one tool-result block");
-                if (!_pendingCalls.Remove(callId))
-                    throw new SessionValidationException("CALL_NOT_PENDING", "tool/result must answer a pending call of the open step");
-                break;
-            }
+                {
+                    RequireOpenStep(e);
+                    var result = SessionEventRead.ToolResultOf(e);
+                    var callId = result.Message.Content.OfType<ToolResultBlock>().FirstOrDefault()?.ToolCallId
+                        ?? throw new SessionValidationException("TOOL_RESULT_SHAPE", "tool/result must carry exactly one tool-result block");
+                    if (!_pendingCalls.Remove(callId))
+                        throw new SessionValidationException("CALL_NOT_PENDING", "tool/result must answer a pending call of the open step");
+                    break;
+                }
             case SessionEventTypes.TodoWrite:
             case SessionEventTypes.RequestHeader:
             case SessionEventTypes.RequestContext:

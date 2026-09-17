@@ -20,6 +20,40 @@ public sealed record TrajectoryTurnRow(int Turn, string Status, double DurationM
 
 public sealed record TrajectoryModel(IReadOnlyList<TrajectoryRow> Preamble, IReadOnlyList<TrajectoryTurnRow> Turns);
 
+public sealed class RawTrajectoryPage
+{
+    public const int PageSize = 50;
+    private Session? _session;
+    private int _start = -1;
+    private readonly List<Row> _rows = [];
+
+    public sealed record Row(int Seq, string Type, long Time, string Preview);
+
+    public IReadOnlyList<Row> Read(Session session, int pageIndex)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(pageIndex);
+        var start = checked(pageIndex * PageSize);
+        if (!ReferenceEquals(_session, session) || _start != start)
+        {
+            _session = session;
+            _start = start;
+            _rows.Clear();
+        }
+
+        var count = Math.Min(PageSize - _rows.Count, Math.Max(0, session.Seq - start - _rows.Count));
+        if (count > 0)
+        {
+            foreach (var e in session.ReadEvents(start + _rows.Count, count))
+            {
+                var raw = e.Data.GetRawText();
+                var preview = raw.Length > 160 ? raw[..160] + "…" : raw;
+                _rows.Add(new Row(e.Seq, e.Type, e.Time, preview));
+            }
+        }
+        return _rows;
+    }
+}
+
 /// <summary>
 /// Folds the durable event log into a trajectory timeline: pre-turn preamble, then
 /// turns → steps → rows, with tool call/result pairs joined into one row. Pure fold —
@@ -63,82 +97,82 @@ public static class TrajectoryBuilder
                     step = null;
                     continue;
                 case SessionEventTypes.ToolCall:
-                {
-                    var call = SessionEventRead.ToolCallOf(e);
-                    if (step is not null && call.CallId is { Length: > 0 })
-                        pendingCalls[call.CallId] = (e, step);
-                    continue;
-                }
+                    {
+                        var call = SessionEventRead.ToolCallOf(e);
+                        if (step is not null && call.CallId is { Length: > 0 })
+                            pendingCalls[call.CallId] = (e, step);
+                        continue;
+                    }
                 case SessionEventTypes.ToolResult:
-                {
-                    var target = step ?? turn?.OpenTail();
-                    if (target is null) continue;
-                    var payload = SessionEventRead.ToolResultOf(e);
-                    var resultBlock = payload.Message.Content.OfType<ToolResultBlock>().FirstOrDefault();
-                    var callId = resultBlock?.ToolCallId ?? "";
-                    var failed = resultBlock?.IsError == true || payload.Error is not null;
-                    var text = string.Join("\n", resultBlock?.Content.OfType<TextBlock>().Select(b => b.Text) ?? []);
-                    var name = callId;
-                    string? argsJson = null;
-                    double? duration = null;
-                    if (pendingCalls.Remove(callId, out var pending))
                     {
-                        var call = SessionEventRead.ToolCallOf(pending.Call);
-                        name = call.Name;
-                        argsJson = call.Arguments;
-                        duration = Math.Max(0, e.Time - pending.Call.Time);
-                    }
-                    target.Rows.Add(new TrajectoryRow(
-                        "tool",
-                        failed ? "✕" : "✓",
-                        name,
-                        OneLine(text),
-                        failed ? "error" : "completed",
-                        duration,
-                        argsJson,
-                        text.Length > 0 ? text : null));
-                    continue;
-                }
-                case SessionEventTypes.UserMessage:
-                {
-                    var target = step ?? turn?.OpenTail();
-                    if (target is null) continue;
-                    var message = SessionEventRead.MessageOf(e);
-                    target.Rows.Add(new TrajectoryRow("user", "❯", "you", OneLine(message.FlattenText())));
-                    continue;
-                }
-                case SessionEventTypes.AssistantMessage:
-                {
-                    var target = step ?? turn?.OpenTail();
-                    if (target is null) continue;
-                    var payload = SessionEventRead.AssistantMessageOf(e);
-                    var reasoning = string.Join(" ", payload.Message.Content.OfType<ReasoningBlock>().Select(b => b.Text)).Trim();
-                    if (reasoning.Length > 0)
-                        target.Rows.Add(new TrajectoryRow("thought", "◌", "thought", OneLine(reasoning)));
-                    var text = string.Join("\n", payload.Message.Content.OfType<TextBlock>().Select(b => b.Text)).Trim();
-                    if (text.Length > 0 || payload.Interrupted == true)
-                    {
-                        var meta = payload.Usage is { } usage ? $"{usage.InputTokens} in · {usage.OutputTokens} out" : null;
+                        var target = step ?? turn?.OpenTail();
+                        if (target is null) continue;
+                        var payload = SessionEventRead.ToolResultOf(e);
+                        var resultBlock = payload.Message.Content.OfType<ToolResultBlock>().FirstOrDefault();
+                        var callId = resultBlock?.ToolCallId ?? "";
+                        var failed = resultBlock?.IsError == true || payload.Error is not null;
+                        var text = string.Join("\n", resultBlock?.Content.OfType<TextBlock>().Select(b => b.Text) ?? []);
+                        var name = callId;
+                        string? argsJson = null;
+                        double? duration = null;
+                        if (pendingCalls.Remove(callId, out var pending))
+                        {
+                            var call = SessionEventRead.ToolCallOf(pending.Call);
+                            name = call.Name;
+                            argsJson = call.Arguments;
+                            duration = Math.Max(0, e.Time - pending.Call.Time);
+                        }
                         target.Rows.Add(new TrajectoryRow(
-                            "assistant",
-                            "◆",
-                            "assistant",
-                            OneLine(text) is { Length: > 0 } line ? line : "(interrupted)",
-                            payload.Interrupted == true ? "interrupted" : null,
-                            Meta: meta));
+                            "tool",
+                            failed ? "✕" : "✓",
+                            name,
+                            OneLine(text),
+                            failed ? "error" : "completed",
+                            duration,
+                            argsJson,
+                            text.Length > 0 ? text : null));
+                        continue;
                     }
-                    continue;
-                }
+                case SessionEventTypes.UserMessage:
+                    {
+                        var target = step ?? turn?.OpenTail();
+                        if (target is null) continue;
+                        var message = SessionEventRead.MessageOf(e);
+                        target.Rows.Add(new TrajectoryRow("user", "❯", "you", OneLine(message.FlattenText())));
+                        continue;
+                    }
+                case SessionEventTypes.AssistantMessage:
+                    {
+                        var target = step ?? turn?.OpenTail();
+                        if (target is null) continue;
+                        var payload = SessionEventRead.AssistantMessageOf(e);
+                        var reasoning = string.Join(" ", payload.Message.Content.OfType<ReasoningBlock>().Select(b => b.Text)).Trim();
+                        if (reasoning.Length > 0)
+                            target.Rows.Add(new TrajectoryRow("thought", "◌", "thought", OneLine(reasoning)));
+                        var text = string.Join("\n", payload.Message.Content.OfType<TextBlock>().Select(b => b.Text)).Trim();
+                        if (text.Length > 0 || payload.Interrupted == true)
+                        {
+                            var meta = payload.Usage is { } usage ? $"{usage.InputTokens} in · {usage.OutputTokens} out" : null;
+                            target.Rows.Add(new TrajectoryRow(
+                                "assistant",
+                                "◆",
+                                "assistant",
+                                OneLine(text) is { Length: > 0 } line ? line : "(interrupted)",
+                                payload.Interrupted == true ? "interrupted" : null,
+                                Meta: meta));
+                        }
+                        continue;
+                    }
                 default:
-                {
-                    if (e.Ignorable == true && !SessionEventTypes.KnownTypes.Contains(e.Type)) continue;
-                    var chip = ChipOf(e);
-                    if (chip is null) continue;
-                    var target = step ?? turn?.OpenTail();
-                    if (target is null) preamble.Add(chip);
-                    else target.Rows.Add(chip);
-                    continue;
-                }
+                    {
+                        if (e.Ignorable == true && !SessionEventTypes.KnownTypes.Contains(e.Type)) continue;
+                        var chip = ChipOf(e);
+                        if (chip is null) continue;
+                        var target = step ?? turn?.OpenTail();
+                        if (target is null) preamble.Add(chip);
+                        else target.Rows.Add(chip);
+                        continue;
+                    }
             }
         }
 
