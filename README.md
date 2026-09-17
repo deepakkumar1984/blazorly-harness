@@ -281,6 +281,7 @@ dotnet run --project src/Blazorly.Harness.Web
 |---|---|---|
 | `provider` / `model` | `deepseek` / `deepseek-v4-flash` | Default LLM route and model |
 | `baseUrl` | `https://api.deepseek.com` | Endpoint for the main route |
+| `baseUrlProvider` / `providerBaseUrls` | — | Which provider `baseUrl` belongs to, and the per-provider endpoint stash used when switching routes |
 | `apiKey` | — | Stored key (env vars take precedence only if this is empty) |
 | `sandboxMode` | `workspace-write` | Tool sandbox: `read-only` or `workspace-write` |
 | `persistence` | `jsonl` | `jsonl` or `sqlite` session storage |
@@ -295,8 +296,71 @@ dotnet run --project src/Blazorly.Harness.Web
 | `tavilyApiKey` / `braveApiKey` | — | Search API keys (or `TAVILY_API_KEY` / `BRAVE_API_KEY` env vars); without a key the backend falls back to DuckDuckGo |
 | `pluginDirs` | `<home>/plugins` | Third-party plugin directories (each `*.dll` with `IHarnessPlugin` impls loads at boot) |
 | `disabledPlugins` | `[]` | Plugin names to skip at boot (built-in, capability, or third-party) |
+| `retry` | see below | LLM retry policy: `mode`, `maxRetries`, `initialDelayMs`, `maxDelayMs`, `jitterRatio`, `maxRetryAfterMs`, `rateLimitMinDelayMs`, `rateLimitMaxDelayMs`, `retryableCodes` |
+| `retryProviders` | `{}` | Per-provider `retry` overrides keyed by provider id (e.g. `"zai"`); routes without an entry use `retry` |
 
 Changes made in the Settings page persist to `settings.json` and re-apply live (provider routes are rebuilt without a restart).
+
+### Rate limits and retries
+
+The harness never throttles itself — there is no client-side rate limiter, quota, or concurrency
+cap on LLM calls. It only *reacts* to provider failures, at the `agent/request-error` waterfall
+(`RetryService`): retryable codes are `RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT` and
+`EMPTY_RESPONSE`, and each retry writes a durable `llm/retry` + `llm/retry-started` pair to the
+session (visible as ↻ chips in the trajectory view).
+
+Waits are chosen in this order:
+
+1. **Provider `Retry-After`** — honored verbatim, no jitter, up to `maxRetryAfterMs` (default
+   **120s**). An ask longer than that is unschedulable: normal mode declines and lets downstream
+   recovery handle it.
+2. **Rate-limit window** — a `RATE_LIMIT` with no usable `Retry-After` backs off from
+   `rateLimitMinDelayMs` (**5s**) doubling up to `rateLimitMaxDelayMs` (**30s**). Quotas reset on a
+   rolling minute, so sub-second retries just burn attempts against the same window; the defaults
+   spread `maxRetries: 5` attempts across ~95s (5s, 10s, 20s, 30s, 30s).
+3. **Generic ladder** — everything else uses `initialDelayMs` (500ms) doubling to `maxDelayMs`
+   (10s), ± `jitterRatio`.
+
+A sustained 429 that outlives `maxRetries` fails the turn with the provider's message; raise the
+ceiling for flaky routes without changing global behavior:
+
+```json
+"retryProviders": {
+  "zai": { "maxRetries": 8, "rateLimitMaxDelayMs": 60000, "maxRetryAfterMs": 180000 }
+}
+```
+
+`"mode": "always"` retries every failure code with no attempt ceiling — useful for unattended batch
+runs, wrong for interactive use. Stop/interrupt cancels a pending backoff immediately.
+
+### Provider errors
+
+Every failure carries the provider's own words, not just a status code: the error body's
+`message`/`code` is parsed and appended, so the web turn banner, `blazorly run` (stderr and the
+`error` field of `--json`), ACP (`turn failed: …`) and the session log all show what the provider
+actually said. Connection failures name the phase and cause — unresolvable host, refused port,
+rejected TLS handshake, upload-phase close, mid-stream drop, or a timeout — with the endpoint and
+the underlying socket error.
+
+**A 429 is not always a rate limit.** Providers also use it for money: Z.ai answers an empty balance
+with `429 {"error":{"code":"1113","message":"Insufficient balance or no resource package. Please
+recharge."}}`, and OpenAI uses `insufficient_quota`. Those classify as `QUOTA`, which is *not*
+retryable — the turn fails in about a second with the provider's message instead of spending ~95s
+retrying something that cannot succeed:
+
+```
+$ blazorly run "say hi" --provider zai --model glm-5.3
+error: provider balance or quota exhausted (429: Insufficient balance or no resource package. Please recharge.)
+```
+
+Genuine throttling (per-minute windows, `Throttling.*`, unparseable bodies) stays `RATE_LIMIT` and
+is retried as above.
+
+`--provider <id>` switches the whole route, not just the label: the previous provider's API key and
+base URL are stashed per provider (`providerKeys`, `providerBaseUrls`) and the selected provider's
+own endpoint and key are used, so an override never sends one route's credentials to another host.
+The Settings page keeps a custom gateway URL attached to the newly selected provider instead,
+since a proxy is usually meant to serve all of them.
 
 ### MCP servers
 

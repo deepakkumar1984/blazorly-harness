@@ -202,6 +202,80 @@ public class OpenAiAdapterWireTests
     }
 
     [Fact]
+    public void ClassifyHttp_CarriesTheProvidersOwnMessage()
+    {
+        // A bare "rate limited (429)" is a dead end; the body says what to do about it.
+        var auth = OpenAiCompatibleAdapter.ClassifyHttp(401, """{"error":{"message":"Invalid API key provided."}}""");
+        Assert.Contains("Invalid API key provided.", auth.Failure.Message);
+        Assert.Equal(401, auth.Failure.Status);
+
+        var server = OpenAiCompatibleAdapter.ClassifyHttp(502, """{"error":{"message":"upstream connect error"}}""");
+        Assert.Contains("upstream connect error", server.Failure.Message);
+
+        var html = OpenAiCompatibleAdapter.ClassifyHttp(503, "<html><body>Service Unavailable</body></html>");
+        Assert.Equal(LlmErrorCodes.Server, html.Failure.Code); // unparseable body still classifies
+    }
+
+    [Theory]
+    // Z.ai reports an empty balance as a plain 429 with code 1113; OpenAI uses insufficient_quota.
+    [InlineData("""{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}""")]
+    [InlineData("""{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan or billing details."}}""")]
+    [InlineData("""{"error":{"message":"Insufficient balance. Please top up your account."}}""")]
+    public void ClassifyHttp_BalanceErrorsOn429_AreNonRetryableQuota(string body)
+    {
+        var failure = OpenAiCompatibleAdapter.ClassifyHttp(429, body).Failure;
+        Assert.Equal(LlmErrorCodes.Quota, failure.Code);
+        Assert.False(LlmErrorCodes.IsRetryable(failure.Code)); // retrying an empty balance only burns minutes
+    }
+
+    [Theory]
+    [InlineData("""{"error":{"message":"Number of requests per minute exceeded your rate limit."}}""")]
+    [InlineData("""{"error":{"code":"Throttling.RateQuota","message":"Requests throttling triggered."}}""")]
+    [InlineData("not json at all")]
+    public void ClassifyHttp_TransientThrottling_StaysRetryable(string body)
+    {
+        var failure = OpenAiCompatibleAdapter.ClassifyHttp(429, body).Failure;
+        Assert.Equal(LlmErrorCodes.RateLimit, failure.Code);
+        Assert.True(LlmErrorCodes.IsRetryable(failure.Code));
+    }
+
+    [Fact]
+    public async Task Stream_BalanceErrorOn429_ReportsTheProviderMessage()
+    {
+        var http = new ErrorHttpHandler(HttpStatusCode.TooManyRequests,
+            """{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}""");
+        var adapter = new OpenAiCompatibleAdapter("zai", "https://api.z.ai/api/paas/v4", "k", [], new HttpClient(http));
+
+        var failure = await Assert.ThrowsAsync<LlmException>(async () =>
+        {
+            await foreach (var _ in adapter.Stream(Options())) { }
+        });
+
+        Assert.Equal(LlmErrorCodes.Quota, failure.Failure.Code);
+        Assert.Equal(429, failure.Failure.Status);
+        Assert.Contains("Insufficient balance or no resource package. Please recharge.", failure.Failure.Message);
+        Assert.False(LlmErrorCodes.IsRetryable(failure.Failure.Code));
+    }
+
+    [Fact]
+    public async Task Stream_TransientRateLimit_KeepsTheProviderAsk()
+    {
+        var http = new ErrorHttpHandler(HttpStatusCode.TooManyRequests,
+            """{"error":{"message":"Number of requests per minute exceeded your rate limit."}}""",
+            ("Retry-After", "30"));
+        var adapter = new OpenAiCompatibleAdapter("zai", "https://api.z.ai/api/paas/v4", "k", [], new HttpClient(http));
+
+        var failure = await Assert.ThrowsAsync<LlmException>(async () =>
+        {
+            await foreach (var _ in adapter.Stream(Options())) { }
+        });
+
+        Assert.Equal(LlmErrorCodes.RateLimit, failure.Failure.Code);
+        Assert.Equal(30_000, failure.Failure.ProviderRetryAfterMs);
+        Assert.Contains("Number of requests per minute exceeded your rate limit.", failure.Failure.Message);
+    }
+
+    [Fact]
     public async Task KeylessRoute_StreamsWithoutAuthorizationHeader()
     {
         // Local servers (ollama/lmstudio/omlx) and open gateways run without keys; the
@@ -285,6 +359,23 @@ public class OpenAiAdapterWireTests
             var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(body));
             var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) };
             response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/event-stream");
+            return Task.FromResult(response);
+        }
+    }
+
+    /// <summary>Replies with a fixed error status, body and headers so classification is testable end to end.</summary>
+    private sealed class ErrorHttpHandler(
+        HttpStatusCode status,
+        string body,
+        params (string Name, string Value)[] headers) : HttpClientHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
+            };
+            foreach (var (name, value) in headers) response.Headers.TryAddWithoutValidation(name, value);
             return Task.FromResult(response);
         }
     }

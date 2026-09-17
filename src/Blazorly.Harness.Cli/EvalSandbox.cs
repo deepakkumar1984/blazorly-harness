@@ -131,11 +131,14 @@ public static class EvalSandbox
         pinned.Provider = ambient.Provider;
         pinned.Model = ambient.Model;
         pinned.BaseUrl = ambient.BaseUrl;
+        pinned.BaseUrlProvider = ambient.BaseUrlProvider;
+        pinned.ProviderBaseUrls = ambient.ProviderBaseUrls;
         pinned.ApiKey = ambient.ApiKey;
         pinned.ProviderKeys = ambient.ProviderKeys;
         pinned.DiscoveredModels = ambient.DiscoveredModels;
         pinned.CustomProviders = ambient.CustomProviders;
         pinned.Retry = ambient.Retry;
+        pinned.RetryProviders = ambient.RetryProviders;
         pinned.E2bApiKey = ambient.E2bApiKey;
         pinned.E2bApiKeyEnv = ambient.E2bApiKeyEnv;
         pinned.E2bTemplate = ambient.E2bTemplate;

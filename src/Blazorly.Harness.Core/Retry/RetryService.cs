@@ -15,6 +15,24 @@ public sealed record RetryPolicyConfig
     public long MaxDelayMs { get; init; } = 10_000;
     public double JitterRatio { get; init; } = 0.1;
 
+    /// <summary>
+    /// Longest provider Retry-After that is waited out verbatim. Rate-limit windows are routinely
+    /// longer than MaxDelayMs (30–60s is common), and failing the turn instead of honoring the ask
+    /// loses work the provider already told us how to recover. An ask beyond this cap is
+    /// unschedulable: normal mode declines and falls through, always mode uses local backoff.
+    /// </summary>
+    public long MaxRetryAfterMs { get; init; } = 120_000;
+
+    /// <summary>
+    /// Local-backoff window for RATE_LIMIT failures with no usable provider Retry-After. Most
+    /// providers reset quotas on a rolling minute, so a sub-second first retry just burns attempts
+    /// against the same window; the floor spaces attempts out and the ceiling keeps any single wait
+    /// bounded (default 5s → 30s, so MaxRetries 5 waits ~95s in total). Both apply only to
+    /// RATE_LIMIT; other codes keep InitialDelayMs/MaxDelayMs.
+    /// </summary>
+    public long RateLimitMinDelayMs { get; init; } = 5_000;
+    public long RateLimitMaxDelayMs { get; init; } = 30_000;
+
     /// <summary>Overrides the default retryable set when non-null (normal mode only).</summary>
     public IReadOnlyList<string>? RetryableCodes { get; init; }
 }
@@ -29,7 +47,7 @@ public sealed record RetryOptions
 /// <summary>
 /// Exact-provider retry policy executed at the agent/request-error waterfall. A retrying
 /// decision appends a durable llm/retry event, sleeps the backoff (bounded exponential with
-/// symmetric jitter; a provider Retry-After at or below MaxDelayMs replaces local backoff
+/// symmetric jitter; a provider Retry-After at or below MaxRetryAfterMs replaces local backoff
 /// without jitter), appends llm/retry-started, and returns a BackoffHandled retry so the
 /// driver does not delay again. Everything else falls through to the next policy.
 /// </summary>
@@ -78,13 +96,14 @@ public sealed class RetryService
             if (payload.Attempts >= policy.MaxRetries) return null;
         }
 
-        // Context-overflow recovery belongs to compaction; an over-cap provider delay
-        // delegates to downstream recovery in normal mode (always mode uses local backoff).
+        // Context-overflow recovery belongs to compaction; a provider ask longer than we are
+        // willing to sleep delegates to downstream recovery in normal mode (always mode uses
+        // local backoff instead of stalling on an unbounded wait).
         var providerDelay = payload.Failure.ProviderRetryAfterMs;
         if (payload.Failure.Code == LlmErrorCodes.ContextWindowExceeded) return null;
-        if (providerDelay is { } cap && cap > policy.MaxDelayMs && policy.Mode != "always") return null;
+        if (providerDelay is { } ask && ask > RetryAfterCap(policy) && policy.Mode != "always") return null;
 
-        var delay = ScheduleDelay(policy, providerDelay, payload.Attempts);
+        var delay = ScheduleDelay(policy, providerDelay, payload.Attempts, payload.Failure.Code);
         var retryId = $"retry_{++_counter}";
         var session = payload.Agent.Session;
         session.Append(SessionEventTypes.LlmRetry, new
@@ -96,6 +115,7 @@ public sealed class RetryService
             message = payload.Failure.Message,
             attempt = payload.Attempts + 1,
             delayMs = delay,
+            retryAfterMs = delay == providerDelay ? providerDelay : null,
             maxRetries = policy.Mode == "always" ? (int?)null : policy.MaxRetries,
         });
 
@@ -119,14 +139,25 @@ public sealed class RetryService
         return RequestErrorAction.Retry(backoffHandled: true);
     }
 
-    /// <summary>Scheduled wait in milliseconds: provider Retry-After when usable, else bounded exponential with jitter.</summary>
-    public static long ScheduleDelay(RetryPolicyConfig policy, long? providerRetryAfterMs, int attempts = 0)
+    /// <summary>Longest provider Retry-After waited out verbatim; never below MaxDelayMs.</summary>
+    public static long RetryAfterCap(RetryPolicyConfig policy) => Math.Max(policy.MaxDelayMs, policy.MaxRetryAfterMs);
+
+    /// <summary>
+    /// Scheduled wait in milliseconds: the provider's Retry-After when schedulable, else bounded
+    /// exponential with symmetric jitter — inside the rate-limit window when <paramref name="code"/>
+    /// is RATE_LIMIT, so attempts are spaced to outlast a rolling quota reset.
+    /// </summary>
+    public static long ScheduleDelay(RetryPolicyConfig policy, long? providerRetryAfterMs, int attempts = 0, string? code = null)
     {
-        if (providerRetryAfterMs is { } retryAfter && retryAfter <= policy.MaxDelayMs)
+        if (providerRetryAfterMs is { } retryAfter && retryAfter <= RetryAfterCap(policy))
         {
             return Math.Max(0, retryAfter); // replaces local backoff without jitter
         }
-        var baseDelay = Math.Min(policy.InitialDelayMs * Math.Pow(2, attempts), policy.MaxDelayMs);
+        var rateLimited = string.Equals(code, LlmErrorCodes.RateLimit, StringComparison.Ordinal);
+        var floor = rateLimited ? Math.Max(0, policy.RateLimitMinDelayMs) : 0;
+        var ceiling = Math.Max(rateLimited ? Math.Max(policy.MaxDelayMs, policy.RateLimitMaxDelayMs) : policy.MaxDelayMs, floor);
+        var initial = Math.Max(policy.InitialDelayMs, floor);
+        var baseDelay = Math.Clamp(initial * Math.Pow(2, attempts), floor, ceiling);
         var jitter = baseDelay * policy.JitterRatio * 2 * (Random.Shared.NextDouble() - 0.5);
         return Math.Max(0, (long)(baseDelay + jitter));
     }

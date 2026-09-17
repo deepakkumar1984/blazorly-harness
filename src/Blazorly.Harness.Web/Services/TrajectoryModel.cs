@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Llm;
 
@@ -199,7 +200,7 @@ public static class TrajectoryBuilder
         SessionEventTypes.CompactionSummary => new TrajectoryRow("chip", "✷", "compaction summary", null),
         SessionEventTypes.CompactionEnd => new TrajectoryRow("chip", "✷", "compaction done", null),
         SessionEventTypes.CompactionPrune => new TrajectoryRow("chip", "✷", "tool outputs pruned", NumberDetail(e, "prunedChars", "chars")),
-        SessionEventTypes.LlmRetry => new TrajectoryRow("chip", "↻", "retry scheduled", NumberDetail(e, "delayMs", "ms delay")),
+        SessionEventTypes.LlmRetry => new TrajectoryRow("chip", "↻", "retry scheduled", RetryDetail(e)),
         SessionEventTypes.LlmRetryStarted => new TrajectoryRow("chip", "↻", "retrying request", null),
         SessionEventTypes.SessionTitle => new TrajectoryRow("chip", "✎", "titled", SafeTitle(e)),
         SessionEventTypes.SandboxMode => new TrajectoryRow("chip", "⛨", "sandbox", SafeDetail(e, "mode")),
@@ -212,6 +213,24 @@ public static class TrajectoryBuilder
 
     private static string? NumberDetail(SessionEvent e, string property, string suffix)
         => e.Data.TryGetProperty(property, out var value) ? $"{value.GetInt64():N0} {suffix}" : null;
+
+    /// <summary>
+    /// Rate-limit backoffs now run to tens of seconds, so the chip reports the attempt and the wait
+    /// in seconds and flags a delay the provider asked for rather than one we computed.
+    /// </summary>
+    private static string? RetryDetail(SessionEvent e)
+    {
+        if (!e.Data.TryGetProperty("delayMs", out var delay)) return null;
+        var ms = delay.GetInt64();
+        var wait = ms >= 1000 ? $"{ms / 1000.0:0.#}s" : $"{ms} ms";
+        var attempt = e.Data.TryGetProperty("attempt", out var n)
+            ? e.Data.TryGetProperty("maxRetries", out var max) && max.ValueKind == JsonValueKind.Number
+                ? $"attempt {n.GetInt32()}/{max.GetInt32()}, "
+                : $"attempt {n.GetInt32()}, "
+            : "";
+        var source = e.Data.TryGetProperty("retryAfterMs", out _) ? " (provider retry-after)" : "";
+        return $"{attempt}waiting {wait}{source}";
+    }
 
     private static string? SafeDetail(SessionEvent e, string property)
         => e.Data.TryGetProperty(property, out var value) ? value.GetRawText().Trim('"') : null;

@@ -80,13 +80,13 @@
 
                 <label>
                     <span>Base URL</span>
-                    <input type="text" @bind="_settings.BaseUrl" @bind:event="oninput" />
+                    <input type="text" @bind="_settings.BaseUrl" @bind:event="oninput" @bind:after="BaseUrlEdited" />
                 </label>
                 @if (ProviderCatalog.Info(_settings.Provider)?.DefaultBaseUrl is { Length: > 0 } def
                     && _settings.BaseUrl.TrimEnd('/') != def.TrimEnd('/'))
                 {
                     <div class="discover-row">
-                        <button type="button" class="chip" @onclick='() => _settings.BaseUrl = def'>reset to @def</button>
+                        <button type="button" class="chip" @onclick='() => { _settings.BaseUrl = def; BaseUrlEdited(); }'>reset to @def</button>
                     </div>
                 }
                 @if (_providerInfo is not null)
@@ -380,22 +380,14 @@
         _ => "Other",
     };
 
+    /// <summary>Records which provider the typed URL belongs to, so a later provider switch does not send it to the wrong host.</summary>
+    private void BaseUrlEdited() => _settings.BaseUrlProvider = _settings.Provider;
+
     private async Task ProviderChanged()
     {
-        // Stash the typed key for the provider we're leaving, restore the one we're entering.
-        if (_lastProvider.Length > 0 && _settings.ApiKey is { Length: > 0 } leaving)
-        {
-            _settings.ProviderKeys[_lastProvider] = leaving;
-        }
-        _settings.ApiKey = _settings.ProviderKeys.TryGetValue(_settings.Provider, out var stashed) ? stashed : null;
-        // Swap the base URL when it is blank or still at another provider's default; keep custom URLs (proxies).
-        var current = _settings.BaseUrl?.TrimEnd('/') ?? "";
-        if (string.IsNullOrWhiteSpace(current) ||
-            ProviderCatalog.All.Any(p => p.DefaultBaseUrl.TrimEnd('/') == current))
-        {
-            _settings.BaseUrl = ProviderCatalog.Info(_settings.Provider)?.DefaultBaseUrl ?? _settings.BaseUrl ?? "";
-        }
-        _settings.Model = ProviderCatalog.DefaultModel(_settings.Provider);
+        // Key stashing, base-URL swap and the new provider's default model live in one place so the
+        // CLI's --provider override cannot drift from what the UI does.
+        _settings.SelectProvider(_lastProvider, _settings.Provider);
         _lastProvider = _settings.Provider;
         _discovered = null;
         _discoverError = null;

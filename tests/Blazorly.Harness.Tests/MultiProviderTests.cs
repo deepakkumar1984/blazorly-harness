@@ -34,6 +34,73 @@ public class MultiProviderTests
     }
 
     [Fact]
+    public void SelectProvider_DoesNotCarryThePreviousRoutesUrlOrKey()
+    {
+        try
+        {
+            Environment.SetEnvironmentVariable("ZAI_API_KEY", null);
+            const string gateway = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+            // The CLI override path: --provider zai while settings still point at a custom gateway.
+            var settings = new HarnessSettings
+            {
+                Provider = "openai-compatible",
+                Model = "deepseek-v4.1-flash",
+                ApiKey = "sk-gateway",
+                BaseUrl = gateway,
+            };
+            settings.ProviderKeys["zai"] = "zai-key";
+
+            settings.SelectProvider("openai-compatible", "zai", keepCustomBaseUrl: false);
+
+            Assert.Equal("zai", settings.Provider);
+            Assert.Equal(ProviderCatalog.Info("zai")!.DefaultBaseUrl, settings.BaseUrlFor("zai")); // the gateway stayed with its own route
+            Assert.Equal("zai", settings.BaseUrlProvider);
+            Assert.Equal(gateway, settings.ProviderBaseUrls["openai-compatible"]);
+            Assert.Equal("zai-key", settings.ApiKey);
+            Assert.Equal("sk-gateway", settings.ProviderKeys["openai-compatible"]); // stashed, never sent to z.ai
+            Assert.Equal(ProviderCatalog.DefaultModel("zai"), settings.Model);
+
+            // Switching back restores the stashed endpoint; an explicit model override wins over the default.
+            settings.SelectProvider("zai", "openai-compatible", "glm-5.3", keepCustomBaseUrl: false);
+            Assert.Equal("glm-5.3", settings.Model);
+            Assert.Equal(gateway, settings.BaseUrlFor("openai-compatible"));
+            Assert.Equal("zai-key", settings.ApiKeyFor("zai"));
+
+            // Settings-page semantics: a gateway URL follows the selection and serves the new provider.
+            var ui = new HarnessSettings { Provider = "deepseek", ApiKey = "sk-ds", BaseUrl = gateway };
+            ui.SelectProvider("deepseek", "zai");
+            Assert.Equal(gateway, ui.BaseUrlFor("zai"));
+            Assert.Equal("zai", ui.BaseUrlProvider);
+            Assert.Equal("sk-ds", ui.ProviderKeys["deepseek"]);
+            Assert.Equal(gateway, ui.ProviderBaseUrls["deepseek"]); // and switching back restores it
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ZAI_API_KEY", null);
+        }
+    }
+
+    [Fact]
+    public void SelectProvider_SwapsACatalogDefaultUrlAndRestoresLegacySettings()
+    {
+        var settings = new HarnessSettings
+        {
+            Provider = "deepseek",
+            ApiKey = "sk-ds",
+            BaseUrl = ProviderCatalog.Info("deepseek")!.DefaultBaseUrl,
+        };
+
+        settings.SelectProvider("deepseek", "zai");
+        Assert.Equal(ProviderCatalog.Info("zai")!.DefaultBaseUrl, settings.BaseUrl);
+        Assert.Equal("zai", settings.BaseUrlProvider);
+        Assert.Equal(ProviderCatalog.Info("deepseek")!.DefaultBaseUrl, settings.ProviderBaseUrls["deepseek"]);
+
+        // Legacy settings.json has no baseUrlProvider: the URL belongs to the active provider.
+        var legacy = new HarnessSettings { Provider = "openai-compatible", BaseUrl = "https://gw.internal/v1" };
+        Assert.Equal("https://gw.internal/v1", legacy.BaseUrlFor("openai-compatible"));
+    }
+
+    [Fact]
     public void ApiKeyFor_EnvFallbacksFollowTheDocumentedRules()
     {
         try

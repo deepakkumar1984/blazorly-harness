@@ -68,9 +68,10 @@ public sealed class AnthropicAdapter : LlmAdapter
         {
             throw new LlmException(LlmErrorCodes.Aborted, "request cancelled");
         }
-        catch (TaskCanceledException)
+        catch (TaskCanceledException ex)
         {
-            throw new LlmException(LlmErrorCodes.Timeout, "request timed out");
+            // Reached only when the caller did not cancel: the HTTP client's own timeout fired.
+            throw new LlmException(LlmErrorCodes.Timeout, TransportErrors.DescribeTimeout($"{_baseUrl}/v1/messages", ex));
         }
         catch (HttpRequestException ex)
         {

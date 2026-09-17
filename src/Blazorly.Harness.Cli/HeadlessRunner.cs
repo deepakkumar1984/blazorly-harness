@@ -52,9 +52,12 @@ public static class HeadlessRunner
         bootstrapper.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
         try
         {
-            // Route overrides must land before the selection is applied.
-            if (!string.IsNullOrWhiteSpace(options.Provider)) bootstrapper.Settings.Provider = options.Provider;
-            if (!string.IsNullOrWhiteSpace(options.Model)) bootstrapper.Settings.Model = options.Model;
+            // Route overrides must land before the selection is applied, and must not carry the
+            // persisted route's base URL or typed key onto a different provider's host.
+            if (!string.IsNullOrWhiteSpace(options.Provider))
+                bootstrapper.Settings.SelectProvider(bootstrapper.Settings.Provider, options.Provider, options.Model,
+                    keepCustomBaseUrl: false);
+            else if (!string.IsNullOrWhiteSpace(options.Model)) bootstrapper.Settings.Model = options.Model;
             bootstrapper.ApplyProviderSelection();
             bootstrapper.ApplyDefaultSelection();
 
@@ -112,6 +115,7 @@ public static class HeadlessRunner
             await FlushAsync(bootstrapper).ConfigureAwait(false);
 
             var finish = FinishOf(agent);
+            var failure = FailureOf(agent);
             var response = LastAssistantText(agent);
             var usage = bootstrapper.Meter?.Measure(agent);
 
@@ -129,6 +133,7 @@ public static class HeadlessRunner
                         cacheRead = usage.TotalCacheReadTokens,
                         cacheWrite = usage.TotalCacheWriteTokens,
                     },
+                    error = failure,
                 }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })).ConfigureAwait(false);
             }
 
@@ -145,6 +150,7 @@ public static class HeadlessRunner
                 Response = response,
                 Finish = finish,
                 Usage = usage is null ? null : new HeadlessUsage(usage.TotalInputTokens, usage.TotalOutputTokens, usage.TotalCacheReadTokens, usage.TotalCacheWriteTokens),
+                Error = failure,
             };
         }
         catch (Exception ex)
@@ -189,10 +195,7 @@ public static class HeadlessRunner
 
     private static string FinishOf(Agent agent)
     {
-        var reason = agent.Session.Events
-            .Where(e => e.Type == SessionEventTypes.TurnEnd)
-            .Select(SessionEventRead.TurnEndReasonOf)
-            .LastOrDefault();
+        var reason = LastReason(agent);
         if (reason is null) return "error";
         return reason switch
         {
@@ -204,6 +207,19 @@ public static class HeadlessRunner
             _ => "completed",
         };
     }
+
+    private static TurnEndReason? LastReason(Agent agent) => agent.Session.Events
+        .Where(e => e.Type == SessionEventTypes.TurnEnd)
+        .Select(SessionEventRead.TurnEndReasonOf)
+        .LastOrDefault();
+
+    /// <summary>
+    /// The provider's own words for a failed turn, so `blazorly run` says "provider balance or quota
+    /// exhausted (429: Insufficient balance…)" instead of exiting 2 in silence. Null for aborts and
+    /// interrupts: those are intentional endings, not failures.
+    /// </summary>
+    private static string? FailureOf(Agent agent)
+        => LastReason(agent) is TurnEndReason.Error error && !string.IsNullOrWhiteSpace(error.Message) ? error.Message : null;
 
     private static string LastAssistantText(Agent agent)
     {

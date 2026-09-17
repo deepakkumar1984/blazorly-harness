@@ -137,6 +137,17 @@ public class RetryServiceTests
         return TestHarness.Create(options => script(options, calls++));
     }
 
+    /// <summary>Sub-millisecond policy: the production rate-limit window (5s–30s) would make tests crawl.</summary>
+    private static RetryPolicyConfig Fast(int maxRetries = 5, string mode = "normal") => new()
+    {
+        Mode = mode,
+        MaxRetries = maxRetries,
+        InitialDelayMs = 1,
+        MaxDelayMs = 5,
+        RateLimitMinDelayMs = 0,
+        RateLimitMaxDelayMs = 5,
+    };
+
     [Fact]
     public async Task RetryableFailure_IsRetriedWithDurableTrail()
     {
@@ -144,7 +155,7 @@ public class RetryServiceTests
             calls == 0 ? Scripted.Error(LlmErrorCodes.RateLimit, "slow down") : Scripted.Text("recovered"));
         RetryService.Mount(harness.Ctx, new RetryOptions
         {
-            Default = new RetryPolicyConfig { InitialDelayMs = 1, MaxDelayMs = 5 },
+            Default = Fast(),
         });
         var agent = harness.CreateAgent();
 
@@ -169,7 +180,7 @@ public class RetryServiceTests
             calls == 0 ? Scripted.Error(LlmErrorCodes.Auth, "bad key") : Scripted.Text("unreachable"));
         RetryService.Mount(harness.Ctx, new RetryOptions
         {
-            Default = new RetryPolicyConfig { InitialDelayMs = 1, MaxDelayMs = 5 },
+            Default = Fast(),
         });
         var agent = harness.CreateAgent();
 
@@ -183,13 +194,32 @@ public class RetryServiceTests
     }
 
     [Fact]
+    public async Task QuotaExhaustion_FailsFastWithTheProvidersMessage()
+    {
+        // Z.ai answers an empty balance with 429 + code 1113; classified as QUOTA it must not be
+        // retried, and the turn-end reason must carry the provider's own words to the UI.
+        await using var harness = HarnessWithFlaky((options, calls) => Scripted.Error(LlmErrorCodes.Quota,
+            "provider balance or quota exhausted (429: Insufficient balance or no resource package. Please recharge.)"));
+        RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
+        var agent = harness.CreateAgent();
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        Assert.DoesNotContain(agent.Session.Events, e => e.Type == SessionEventTypes.LlmRetry);
+        var reason = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd).Data.GetProperty("reason");
+        Assert.Equal("QUOTA", reason.GetProperty("code").GetString());
+        Assert.Contains("Insufficient balance or no resource package. Please recharge.", reason.GetProperty("message").GetString());
+    }
+
+    [Fact]
     public async Task AlwaysMode_RetriesAnyCodeWithoutAttemptCeiling()
     {
         await using var harness = HarnessWithFlaky((options, calls) =>
             calls == 0 ? Scripted.Error(LlmErrorCodes.Auth, "transient gateway hiccup") : Scripted.Text("recovered"));
         RetryService.Mount(harness.Ctx, new RetryOptions
         {
-            Default = new RetryPolicyConfig { Mode = "always", InitialDelayMs = 1, MaxDelayMs = 5 },
+            Default = Fast(mode: "always"),
         });
         var agent = harness.CreateAgent();
 
@@ -216,6 +246,137 @@ public class RetryServiceTests
         // Attempts double the base: attempt 4 → 500 * 2^3 = 4000ms ± 10% jitter.
         var later = RetryService.ScheduleDelay(policy, null, attempts: 3);
         Assert.InRange(later, 3600, 4400);
+    }
+
+    [Fact]
+    public void ScheduleDelay_ProviderRetryAfterBeyondMaxDelayIsWaitedOutUpToTheCap()
+    {
+        // A 30s rate-limit window is longer than MaxDelayMs but shorter than the cap, so the
+        // provider's ask is honored verbatim instead of burning attempts on a 10s backoff.
+        var policy = new RetryPolicyConfig { MaxDelayMs = 10_000, MaxRetryAfterMs = 60_000 };
+        Assert.Equal(60_000, RetryService.RetryAfterCap(policy));
+        Assert.Equal(30_000, RetryService.ScheduleDelay(policy, 30_000, attempts: 4));
+        // Past the cap the ask is unschedulable and local backoff takes over:
+        // min(500 * 2^4, 10_000) = 8000ms ± 10% jitter.
+        Assert.InRange(RetryService.ScheduleDelay(policy, 120_000, attempts: 4), 7_200, 8_800);
+        // The cap never drops below MaxDelayMs.
+        Assert.Equal(10_000, RetryService.RetryAfterCap(policy with { MaxRetryAfterMs = 0 }));
+    }
+
+    [Fact]
+    public async Task RateLimitWithLongProviderRetryAfter_IsRetriedAfterTheAskAndRecorded()
+    {
+        await using var harness = HarnessWithFlaky((options, calls) =>
+            calls == 0
+                ? Scripted.Error(LlmErrorCodes.RateLimit, "rate limited (429)", providerRetryAfterMs: 20)
+                : Scripted.Text("recovered"));
+        RetryService.Mount(harness.Ctx, new RetryOptions
+        {
+            // MaxDelayMs 5 would have declined a 20ms ask before MaxRetryAfterMs existed.
+            Default = Fast() with { MaxRetryAfterMs = 60 },
+        });
+        var agent = harness.CreateAgent();
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        var retry = agent.Session.Events.Single(e => e.Type == SessionEventTypes.LlmRetry).Data;
+        Assert.Equal(20, retry.GetProperty("delayMs").GetInt64());
+        Assert.Equal(20, retry.GetProperty("retryAfterMs").GetInt64());
+        Assert.False(agent.Session.Events.Single(e => e.Type == SessionEventTypes.LlmRetryStarted)
+            .Data.TryGetProperty("retryAfterMs", out _));
+        Assert.Contains("recovered", agent.Session.Events
+            .Last(e => e.Type == SessionEventTypes.AssistantMessage).Data.GetProperty("message")
+            .GetProperty("content").EnumerateArray()
+            .First(b => b.GetProperty("type").GetString() == "text").GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task RateLimitAskingLongerThanTheCap_FallsThroughWithoutARetry()
+    {
+        await using var harness = HarnessWithFlaky((options, calls) =>
+            Scripted.Error(LlmErrorCodes.RateLimit, "rate limited (429)", providerRetryAfterMs: 600));
+        RetryService.Mount(harness.Ctx, new RetryOptions
+        {
+            Default = Fast(maxRetries: 3) with { MaxRetryAfterMs = 50 },
+        });
+        var agent = harness.CreateAgent();
+        agent.RetryLimit = 0; // the exact-provider policy declined; no downstream retry either
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        Assert.DoesNotContain(agent.Session.Events, e => e.Type == SessionEventTypes.LlmRetry);
+        var turnEnd = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd);
+        Assert.Equal("RATE_LIMIT", turnEnd.Data.GetProperty("reason").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public void ScheduleDelay_RateLimitWithoutProviderGuidanceIsSpacedAcrossTheQuotaWindow()
+    {
+        var policy = new RetryPolicyConfig { InitialDelayMs = 500, MaxDelayMs = 10_000, JitterRatio = 0 }; // no jitter: exact windows
+        // Non-rate-limit codes keep the ordinary backoff ladder.
+        Assert.Equal(500, RetryService.ScheduleDelay(policy, null, attempts: 0, code: LlmErrorCodes.Server));
+        // RATE_LIMIT starts at the floor, doubles, and stops at the rate-limit ceiling.
+        Assert.Equal(5_000, RetryService.ScheduleDelay(policy, null, attempts: 0, code: LlmErrorCodes.RateLimit));
+        Assert.Equal(10_000, RetryService.ScheduleDelay(policy, null, attempts: 1, code: LlmErrorCodes.RateLimit));
+        Assert.Equal(20_000, RetryService.ScheduleDelay(policy, null, attempts: 2, code: LlmErrorCodes.RateLimit));
+        Assert.Equal(30_000, RetryService.ScheduleDelay(policy, null, attempts: 5, code: LlmErrorCodes.RateLimit));
+        // A usable provider ask still wins over the local window.
+        Assert.Equal(7_000, RetryService.ScheduleDelay(policy, 7_000, attempts: 0, code: LlmErrorCodes.RateLimit));
+        // Opting out of the floor restores the plain ladder for rate limits.
+        Assert.Equal(1_000, RetryService.ScheduleDelay(policy with { RateLimitMinDelayMs = 0 }, null, attempts: 1,
+            code: LlmErrorCodes.RateLimit));
+    }
+
+    [Fact]
+    public async Task RateLimitStorm_WaitsOutTheWindowAndRecovers()
+    {
+        await using var harness = HarnessWithFlaky((options, calls) =>
+            calls < 3 ? Scripted.Error(LlmErrorCodes.RateLimit, "rate limited (429)") : Scripted.Text("recovered"));
+        RetryService.Mount(harness.Ctx, new RetryOptions
+        {
+            // Shrunken window (5ms floor, 12ms ceiling) so the test proves the spacing, not the wall clock.
+            Default = new RetryPolicyConfig
+            {
+                InitialDelayMs = 1,
+                MaxDelayMs = 4,
+                JitterRatio = 0,
+                RateLimitMinDelayMs = 5,
+                RateLimitMaxDelayMs = 12,
+            },
+        });
+        var agent = harness.CreateAgent();
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        var retries = agent.Session.Events.Where(e => e.Type == SessionEventTypes.LlmRetry).ToList();
+        Assert.Equal([5, 10, 12], retries.Select(e => e.Data.GetProperty("delayMs").GetInt64()).ToList()); // floor, doubling, clamped at the ceiling — never the 1ms generic ladder
+        Assert.False(retries[0].Data.TryGetProperty("retryAfterMs", out _)); // no provider ask was sent
+        Assert.Contains("recovered", agent.Session.Events
+            .Last(e => e.Type == SessionEventTypes.AssistantMessage).Data.GetProperty("message")
+            .GetProperty("content").EnumerateArray()
+            .First(b => b.GetProperty("type").GetString() == "text").GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task PolicyFor_PrefersTheProviderOverride()
+    {
+        await using var harness = HarnessWithFlaky((options, calls) => Scripted.Text("unused"));
+        var service = RetryService.Mount(harness.Ctx, new RetryOptions
+        {
+            Default = new RetryPolicyConfig { MaxRetries = 2 },
+            Providers = new Dictionary<string, RetryPolicyConfig>(StringComparer.Ordinal)
+            {
+                ["zai"] = new() { MaxRetries = 9, MaxRetryAfterMs = 300_000 },
+            },
+        });
+
+        Assert.Equal(9, service.PolicyFor("zai").MaxRetries);
+        Assert.Equal(300_000, service.PolicyFor("zai").MaxRetryAfterMs);
+        Assert.Equal(2, service.PolicyFor("deepseek").MaxRetries);
+        Assert.Equal(2, service.PolicyFor(null).MaxRetries);
     }
 }
 

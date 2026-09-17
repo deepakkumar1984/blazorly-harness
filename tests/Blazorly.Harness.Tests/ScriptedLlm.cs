@@ -95,8 +95,8 @@ public static class Scripted
         return chunks;
     }
 
-    public static IReadOnlyList<StreamChunk> Error(string code, string message)
-        => [new FinishChunk(FinishReason.Error, new LlmFailure(message, code))];
+    public static IReadOnlyList<StreamChunk> Error(string code, string message, long? providerRetryAfterMs = null)
+        => [new FinishChunk(FinishReason.Error, new LlmFailure(message, code, ProviderRetryAfterMs: providerRetryAfterMs))];
 }
 
 /// <summary>The canonical two-step scripted flow: tools first, then a summary once results return.</summary>

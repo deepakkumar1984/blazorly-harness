@@ -399,7 +399,9 @@ public static class EvalRunner
                 }).ConfigureAwait(false);
             sw.Stop();
 
-            if (run.Error is not null)
+            // A provider failure is reported with the provider's own words, unless the task expected
+            // that finish — then it is scored like any other run.
+            if (run.Error is not null && run.Finish != (task.ExpectFinish ?? "completed"))
                 return Failure(task.Id, backend, run.Error) with
                 {
                     Finish = run.Finish,
@@ -573,6 +575,9 @@ public static class EvalRunner
                     SessionId = root.TryGetProperty("sessionId", out var sid) ? sid.GetString() : null,
                     Response = root.TryGetProperty("response", out var response) ? response.GetString() ?? "" : "",
                     Finish = finish.GetString() ?? "completed",
+                    Error = root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String
+                        ? error.GetString()
+                        : null,
                 };
             }
             return null;

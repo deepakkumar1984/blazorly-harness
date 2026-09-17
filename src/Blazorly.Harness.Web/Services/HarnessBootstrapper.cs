@@ -27,6 +27,10 @@ public sealed class HarnessSettings
     /// <summary>Model ids loaded live from each provider's /models endpoint; replaces catalog seeds once present.</summary>
     public Dictionary<string, List<string>> DiscoveredModels { get; set; } = new(StringComparer.Ordinal);
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
+    /// <summary>Provider id <see cref="BaseUrl"/> was entered for; null (legacy settings) means the active provider.</summary>
+    public string? BaseUrlProvider { get; set; }
+    /// <summary>Endpoint stash per provider id, so switching routes keeps each provider's URL typed once.</summary>
+    public Dictionary<string, string> ProviderBaseUrls { get; set; } = new(StringComparer.Ordinal);
     public string WorkspaceRoot { get; set; } = Directory.GetCurrentDirectory();
     public string SandboxMode { get; set; } = SandboxPolicy.WorkspaceWrite;
     /// <summary>
@@ -39,6 +43,8 @@ public sealed class HarnessSettings
     public double CompactionThreshold { get; set; } = 0.72;
     public int CompactionPrunerChars { get; set; } = 4_000;
     public Blazorly.Harness.Core.Retry.RetryPolicyConfig Retry { get; set; } = new();
+    /// <summary>Retry policy overrides keyed by provider id (e.g. "zai"); routes without an entry use Retry.</summary>
+    public Dictionary<string, Blazorly.Harness.Core.Retry.RetryPolicyConfig> RetryProviders { get; set; } = new(StringComparer.Ordinal);
     public List<CustomProviderConfig> CustomProviders { get; set; } = [];
     public bool EnableTeams { get; set; }
     public bool EnableWorkflows { get; set; } = true;
@@ -99,6 +105,56 @@ public sealed class HarnessSettings
     /// <summary>Settings key first, then the configured environment variable.</summary>
     public string? ResolveE2bApiKey()
         => !string.IsNullOrWhiteSpace(E2bApiKey) ? E2bApiKey : Environment.GetEnvironmentVariable(E2bApiKeyEnv);
+
+    /// <summary>
+    /// Switches the active route: the typed key is stashed for the provider being left and the
+    /// entering provider's stashed key restored, and a base URL that is blank or still at another
+    /// catalog provider's default follows the new provider (custom proxy URLs are kept). Without
+    /// this, an override such as `blazorly run --provider zai` would keep the previous host's URL
+    /// and typed key while labelling every request as the new provider — the exact cross-route
+    /// leak <see cref="ApiKeyFor"/> promises never to make.
+    /// </summary>
+    /// <param name="previousProvider">The provider the typed key and base URL belong to.</param>
+    /// <param name="keepCustomBaseUrl">true for the Settings page, where a gateway URL is meant to
+    /// serve whichever provider is selected; false for an explicit override (`run --provider zai`),
+    /// which must reach that provider's own endpoint rather than the previous route's gateway.</param>
+    public void SelectProvider(string previousProvider, string provider, string? model = null, bool keepCustomBaseUrl = true)
+    {
+        if (string.IsNullOrWhiteSpace(provider) || provider == previousProvider)
+        {
+            Provider = string.IsNullOrWhiteSpace(provider) ? Provider : provider;
+            if (!string.IsNullOrWhiteSpace(model)) Model = model!;
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(ApiKey) && !string.IsNullOrWhiteSpace(previousProvider))
+            ProviderKeys[previousProvider] = ApiKey;
+        ApiKey = ProviderKeys.TryGetValue(provider, out var stashed) ? stashed : null;
+
+        // Same stashing for endpoints: leave the old route's URL behind, restore the new route's.
+        if (!string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(previousProvider)
+            && (BaseUrlProvider is null || BaseUrlProvider == previousProvider))
+            ProviderBaseUrls[previousProvider] = BaseUrl;
+        BaseUrl = ProviderBaseUrls.TryGetValue(provider, out var stashedUrl) && stashedUrl.Length > 0
+            ? stashedUrl
+            : keepCustomBaseUrl && BaseUrl.Length > 0 && !IsCatalogDefaultUrl(BaseUrl)
+                ? BaseUrl // a gateway/proxy URL follows the selection, as the Settings page has always done
+                : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? BaseUrl;
+        BaseUrlProvider = provider;
+        Provider = provider;
+        Model = !string.IsNullOrWhiteSpace(model) ? model! : ProviderCatalog.DefaultModel(provider);
+    }
+
+    private static bool IsCatalogDefaultUrl(string url)
+    {
+        var trimmed = url.TrimEnd('/');
+        return ProviderCatalog.All.Any(p => p.DefaultBaseUrl.TrimEnd('/') == trimmed);
+    }
+
+    /// <summary>Endpoint for the active route: the configured URL when it belongs to this provider, else the catalog default.</summary>
+    public string BaseUrlFor(string provider)
+        => string.IsNullOrWhiteSpace(BaseUrlProvider) || BaseUrlProvider == provider
+            ? BaseUrl
+            : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? BaseUrl;
 
     /// <summary>Resolved per request, never persisted; never sends one provider's key to another provider's route.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -271,7 +327,11 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                 PrunerChars = Settings.CompactionPrunerChars,
             })));
         plugins.Add(MountPlugin.Sync("llmRetry", [], ctx =>
-            Retry = Core.Retry.RetryService.Mount(ctx, new Core.Retry.RetryOptions { Default = Settings.Retry })));
+            Retry = Core.Retry.RetryService.Mount(ctx, new Core.Retry.RetryOptions
+            {
+                Default = Settings.Retry,
+                Providers = Settings.RetryProviders,
+            })));
         plugins.Add(MountPlugin.Sync("credentials", [], ctx =>
             Credentials = Core.Credentials.CredentialsService.Mount(ctx, Path.Combine(_home, "credentials.json"))));
         plugins.Add(MountPlugin.Sync("attachments", [], ctx =>
@@ -650,7 +710,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         var desired = new HashSet<string>(StringComparer.Ordinal);
         if (!string.IsNullOrWhiteSpace(Settings.Provider))
         {
-            RegisterRoute(BuildRoute(Settings.Provider, Settings.BaseUrl, Settings.ApiKeyFor(Settings.Provider),
+            RegisterRoute(BuildRoute(Settings.Provider, Settings.BaseUrlFor(Settings.Provider), Settings.ApiKeyFor(Settings.Provider),
                 RuntimeModels(Settings.Provider)));
             desired.Add(Settings.Provider);
         }
@@ -703,6 +763,16 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         if (Meter is not null)
         {
             Meter.ContextWindowTokens = Settings.ContextWindowTokens;
+        }
+        // Retry policy is live-editable: a longer rate-limit wait applies to the next failure,
+        // not the next restart.
+        if (Retry is not null)
+        {
+            Retry.Options = new Core.Retry.RetryOptions
+            {
+                Default = Settings.Retry,
+                Providers = Settings.RetryProviders,
+            };
         }
         Workspaces = new WorkspaceRegistry(_home).EnsureDefault(Settings.WorkspaceRoot);
     }

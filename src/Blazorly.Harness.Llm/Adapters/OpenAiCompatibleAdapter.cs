@@ -72,9 +72,10 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
         {
             throw new LlmException(LlmErrorCodes.Aborted, "request cancelled");
         }
-        catch (TaskCanceledException)
+        catch (TaskCanceledException ex)
         {
-            throw new LlmException(LlmErrorCodes.Timeout, "request timed out");
+            // Reached only when the caller did not cancel: the HTTP client's own timeout fired.
+            throw new LlmException(LlmErrorCodes.Timeout, TransportErrors.DescribeTimeout($"{_baseUrl}/chat/completions", ex));
         }
         catch (HttpRequestException ex)
         {
@@ -253,13 +254,70 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     public static LlmException ClassifyHttp(int status, string body)
     {
         var text = $"{body}".ToLowerInvariant();
-        if (status == 401 || status == 403) return new LlmException(LlmErrorCodes.Auth, $"provider rejected credentials ({status})");
-        if (status == 429) return new LlmException(LlmErrorCodes.RateLimit, $"rate limited ({status})");
+        // The provider's own words travel with the failure: "rate limited (429)" is a dead end when
+        // the body says the account has no balance, and every status below is only a category.
+        var (errorCode, errorMessage) = ProviderError(body);
+        var detail = string.IsNullOrWhiteSpace(errorMessage) ? $"{status}" : $"{status}: {Truncate(errorMessage, 300)}";
+        if (status == 401 || status == 403) return Failure(LlmErrorCodes.Auth, $"provider rejected credentials ({detail})", status);
+        if (status == 429) return ClassifyTooManyRequests(status, errorCode, errorMessage, detail);
         if (status is 400 or 413 && (text.Contains("context length") || text.Contains("maximum context") || text.Contains("too long")))
-            return new LlmException(LlmErrorCodes.ContextWindowExceeded, $"request exceeds context window ({status})");
-        if (status >= 500) return new LlmException(LlmErrorCodes.Server, $"provider server error ({status})");
-        return new LlmException(LlmErrorCodes.InvalidRequest, $"provider rejected request ({status}): {Truncate(body, 400)}");
+            return Failure(LlmErrorCodes.ContextWindowExceeded, $"request exceeds context window ({detail})", status);
+        if (status >= 500) return Failure(LlmErrorCodes.Server, $"provider server error ({detail})", status);
+        return Failure(LlmErrorCodes.InvalidRequest, $"provider rejected request ({status}): {Truncate(body, 400)}", status);
     }
+
+    /// <summary>
+    /// 429 covers two unrelated failures: a transient request window, which retrying outlasts, and an
+    /// exhausted balance or resource package, which retrying cannot fix and only delays by minutes.
+    /// Providers signal the latter in the body rather than the status — OpenAI as
+    /// <c>insufficient_quota</c>, Z.ai as code <c>1113</c> "Insufficient balance or no resource
+    /// package" on a plain 429 — so the body decides the code. QUOTA is not retryable.
+    /// </summary>
+    internal static LlmException ClassifyTooManyRequests(int status, string errorCode, string errorMessage, string detail)
+    {
+        var haystack = $"{errorCode} {errorMessage}".ToLowerInvariant();
+        var exhausted = errorCode is "1113"
+            || haystack.Contains("insufficient balance") || haystack.Contains("insufficient_balance")
+            || haystack.Contains("insufficient quota") || haystack.Contains("insufficient_quota")
+            || haystack.Contains("exceeded your current quota") || haystack.Contains("resource package")
+            || haystack.Contains("recharge") || haystack.Contains("top up") || haystack.Contains("top-up")
+            || haystack.Contains("out of credit") || haystack.Contains("no remaining quota")
+            || haystack.Contains("billing") || haystack.Contains("arrears") || haystack.Contains("subscription expired");
+        return exhausted
+            ? Failure(LlmErrorCodes.Quota, $"provider balance or quota exhausted ({detail})", status)
+            : Failure(LlmErrorCodes.RateLimit, $"rate limited ({detail})", status);
+    }
+
+    /// <summary>Best-effort {code, message} from a provider error body; empty strings when absent, HTML, or unparseable.</summary>
+    internal static (string Code, string Message) ProviderError(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body) || body[0] is not ('{' or '[')) return ("", "");
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return ("", "");
+            // Providers nest under "error" (OpenAI, Z.ai, Anthropic) or put code/message at the root.
+            var error = doc.RootElement.TryGetProperty("error", out var nested) && nested.ValueKind == JsonValueKind.Object
+                ? nested
+                : doc.RootElement;
+            return (ReadText(error, "code"), ReadText(error, "message"));
+        }
+        catch (JsonException)
+        {
+            return ("", ""); // an HTML error page from a proxy: the raw body still reaches the message
+        }
+    }
+
+    /// <summary>Reads a string or numeric field as text; codes arrive as either depending on the provider.</summary>
+    private static string ReadText(JsonElement element, string name)
+        => element.TryGetProperty(name, out var value) ? value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString() ?? "",
+            JsonValueKind.Number => value.GetRawText(),
+            _ => "",
+        } : "";
+
+    private static LlmException Failure(string code, string message, int status) => new(new LlmFailure(message, code, status));
 
     private static string Truncate(string value, int max) => value.Length <= max ? value : value[..max] + "…";
 
