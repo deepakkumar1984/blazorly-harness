@@ -683,8 +683,8 @@
     private string? _loadedSessionId;
     private bool _pendingScroll;
     private bool _pendingScrollForce;
-    private const int TranscriptInitialTake = 25;
-    private const int TranscriptGrowTake = 50;
+    private const int TranscriptInitialTake = 200;
+    private const int TranscriptGrowTake = 100;
     private int _transcriptTake = TranscriptInitialTake;
     private Microsoft.JSInterop.DotNetObjectReference<Session>? _topGrowRef;
 

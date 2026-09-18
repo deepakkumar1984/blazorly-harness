@@ -2,16 +2,17 @@ function blazorlyTrackPin(element) {
     if (element.dataset.pinBound) return;
     element.dataset.pinBound = "1";
     element.dataset.pinned = "1";
-    // Sticky follow state, direction-aware: only an actual upward scroll unpins.
-    // Content growth below never moves scrollTop, so near-bottom checks would
-    // wrongly unpin when a big block (or a Virtualize window) lands at once —
-    // and layout-induced scroll events must not read as "user took over".
+    // Sticky follow state: unpin only on a genuine upward scroll — scrollTop moved
+    // up AND the view is still far from the bottom. A bare upward move also happens
+    // when the list shrinks (tail-window eviction drops a tall top node) and the
+    // browser clamps scrollTop: that lands at the bottom and must re-pin, not unpin.
     let lastTop = element.scrollTop;
     element.addEventListener("scroll", () => {
         const top = element.scrollTop;
-        if (top < lastTop - 2) {
+        const distFromBottom = element.scrollHeight - top - element.clientHeight;
+        if (top < lastTop - 2 && distFromBottom > 160) {
             element.dataset.pinned = "0";
-        } else if (element.scrollHeight - top - element.clientHeight < 160) {
+        } else if (distFromBottom < 160) {
             element.dataset.pinned = "1";
         }
         lastTop = top;
