@@ -30,7 +30,15 @@ public sealed class SqliteSessionPersistence : ISessionPersistence, IDisposable,
         using (var pragma = _connection.CreateCommand())
         {
             // FK enforcement is per-connection in SQLite; the cascade in the schema depends on it.
-            pragma.CommandText = "PRAGMA foreign_keys = ON";
+            // WAL keeps concurrent readers unblocked while the write transaction commits, and
+            // busy_timeout lets a second harness process (CLI vs. web host) queue instead of
+            // failing with SQLITE_BUSY.
+            pragma.CommandText = """
+                PRAGMA foreign_keys = ON;
+                PRAGMA journal_mode = WAL;
+                PRAGMA busy_timeout = 5000;
+                PRAGMA synchronous = NORMAL
+                """;
             pragma.ExecuteNonQuery();
         }
         using (var schema = _connection.CreateCommand())

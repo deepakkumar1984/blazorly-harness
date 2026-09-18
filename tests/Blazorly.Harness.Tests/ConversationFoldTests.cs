@@ -170,6 +170,30 @@ public class ConversationFoldTests
         Assert.Equal(1, snapshot.Nodes.Count(n => n.CommandName == "ui"));
     }
 
+    /// <summary>Regression: the compaction pruner re-splices each oversized tool result as a
+    /// user/message carrying a ToolResultBlock (Source kind "tool"). Those used to render as
+    /// blank "You" bubbles — one per pruned result — right where compaction ran.</summary>
+    [Fact]
+    public void PrunerSurfaceReplacement_DoesNotRenderAsBlankUserBubble()
+    {
+        var (harness, session) = Create();
+        session.Append(SessionEventTypes.UserMessage, Blazorly.Harness.Llm.Message.CreateUserText("real user text"),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+
+        // Exactly what CompactionService.PruneAsync appends per pruned result.
+        var replacement = Blazorly.Harness.Llm.Message.CreateToolResult("call-1",
+            [new Blazorly.Harness.Llm.TextBlock("[tool output pruned: 9001 chars from 'read' to reduce context; re-run the tool if you need it]")]);
+        session.Append(SessionEventTypes.UserMessage, replacement, new Session.AppendOptions(
+            SourceEventSeqs: [0],
+            SurfaceOp: new SurfaceOp.Replace(0, 0)));
+
+        var snapshot = new ConversationAssembler(harness.Tools).Fold(session, agent: null);
+
+        var users = snapshot.Nodes.Where(n => n.Kind == "user").ToList();
+        var node = Assert.Single(users);
+        Assert.Equal("real user text", node.Message?.FlattenText());
+    }
+
     /// <summary>Appends an event with a raw JSON payload, including shapes no writer would produce.</summary>
     private static void AppendRaw(Session session, string type, string payloadJson)
     {

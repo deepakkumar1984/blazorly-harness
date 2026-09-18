@@ -18,6 +18,14 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
         public string? SeenAuthorization;
 
         public FakeModelsServer(params string[] modelIds)
+            : this(modelIds.Select(id => $$"""{"id":"{{id}}"}""").ToArray(), rawItems: true)
+        {
+        }
+
+        /// <summary>Serves full per-model JSON objects (for endpoints that publish sizes).</summary>
+        public static FakeModelsServer WithItems(params string[] itemJson) => new(itemJson, rawItems: true);
+
+        private FakeModelsServer(string[] items, bool rawItems)
         {
             // Same port range as the other test fakes — retry on collision instead of failing.
             for (var attempt = 0; ; attempt++)
@@ -44,8 +52,8 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
                     {
                         var context = await _listener.GetContextAsync();
                         SeenAuthorization = context.Request.Headers["Authorization"];
-                        var ids = string.Join(",", modelIds.Select(id => $$"""{"id":"{{id}}"}"""));
-                        var body = Encoding.UTF8.GetBytes($$"""{"object":"list","data":[{{ids}}]}""");
+                        var joined = string.Join(",", items);
+                        var body = Encoding.UTF8.GetBytes($$"""{"object":"list","data":[{{joined}}]}""");
                         context.Response.ContentType = "application/json";
                         context.Response.OutputStream.Write(body);
                         context.Response.Close();
@@ -133,6 +141,45 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
             var runtime = second.RuntimeModels("deepseek");
             Assert.Equal(["only-from-api"], [.. runtime.Select(m => m.Id)]);
             Assert.Equal("deepseek", runtime[0].Provider);
+        }
+        finally
+        {
+            await second.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Discover_ApiSizesFlowToUnknownModelsAndPersist()
+    {
+        using var server = FakeModelsServer.WithItems(
+            """{"id":"mystery-1m","context_length":1048576,"max_completion_tokens":65536}""",
+            """{"id":"plain-model"}""");
+        var boot = Boot("deepseek", server.BaseUrl, "sk-test");
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var (ids, error) = await boot.DiscoverModelsAsync("deepseek");
+            Assert.Null(error);
+            Assert.Equal(["mystery-1m", "plain-model"], [.. ids]);
+            var runtime = boot.RuntimeModels("deepseek");
+            var mystery = runtime.Single(m => m.Id == "mystery-1m");
+            Assert.Equal(1_048_576, mystery.ContextWindowTokens);
+            Assert.Equal(65_536, mystery.MaxOutputTokens);
+            Assert.Null(runtime.Single(m => m.Id == "plain-model").ContextWindowTokens);
+            Assert.Equal("high", mystery.EffectiveDefaultEffort);
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+
+        var second = new HarnessBootstrapper();
+        await second.StartAsync(CancellationToken.None);
+        try
+        {
+            var mystery = second.RuntimeModels("deepseek").Single(m => m.Id == "mystery-1m");
+            Assert.Equal(1_048_576, mystery.ContextWindowTokens);
+            Assert.Equal(65_536, mystery.MaxOutputTokens);
         }
         finally
         {

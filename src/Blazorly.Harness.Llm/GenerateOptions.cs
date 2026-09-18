@@ -66,4 +66,23 @@ public sealed record LlmModelInfo(
     int? MaxOutputTokens = null,
     bool? SupportsReasoning = null,
     string[]? ReasoningEfforts = null,
-    string? DefaultEffort = null);
+    string? DefaultEffort = null)
+{
+    /// <summary>
+    /// Levels offered when a model advertises none: provider /models endpoints only return
+    /// ids, so discovered-only models would otherwise have a disabled effort picker even
+    /// when the route passes reasoning_effort through.
+    /// </summary>
+    public static readonly string[] FallbackReasoningEfforts = ["low", "medium", "high", "xhigh", "max"];
+
+    public const string FallbackDefaultEffort = "high";
+
+    /// <summary>Catalog levels when present, otherwise the generic fallback (never empty).</summary>
+    public string[] EffectiveReasoningEfforts
+        => ReasoningEfforts is { Length: > 0 } efforts ? efforts : FallbackReasoningEfforts;
+
+    /// <summary>Catalog default when set, otherwise "high" when the effective list offers it.</summary>
+    public string? EffectiveDefaultEffort
+        => DefaultEffort
+            ?? (EffectiveReasoningEfforts.Contains(FallbackDefaultEffort, StringComparer.Ordinal) ? FallbackDefaultEffort : null);
+}

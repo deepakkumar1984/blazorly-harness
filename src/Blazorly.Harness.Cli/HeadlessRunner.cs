@@ -63,7 +63,9 @@ public static class HeadlessRunner
 
             var root = options.WorkspacePath ?? Environment.CurrentDirectory;
             var workspace = bootstrapper.Workspaces.Ensure(root);
-            var route = new AgentOptions(bootstrapper.Settings.Provider, bootstrapper.Settings.Model, null);
+            var route = new AgentOptions(bootstrapper.Settings.Provider, bootstrapper.Settings.Model,
+                HarnessBootstrapper.ResolveMaxOutputTokens(bootstrapper.Settings,
+                    bootstrapper.RuntimeModels(bootstrapper.Settings.Provider), bootstrapper.Settings.Model));
 
             var agent = options.ResumeSessionId is { } resume
                 ? await bootstrapper.Loop.ResumeAsync(resume, route).ConfigureAwait(false)

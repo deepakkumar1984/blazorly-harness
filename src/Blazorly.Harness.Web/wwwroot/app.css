@@ -622,8 +622,25 @@ button.icon:disabled { opacity: 0.35; }
     min-height: 0;
     overflow-y: auto;
     padding: 14px 0 10px;
-    scroll-behavior: smooth;
+    /* Instant programmatic jumps: smooth retargets every follow tick and never
+       catches up during streaming or settle loops (wheel/touch unaffected). */
+    scroll-behavior: auto;
 }
+
+.transcript-more {
+    display: block;
+    margin: 0 auto 12px;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-overlay);
+    color: inherit;
+    font: inherit;
+    font-size: 0.85em;
+    cursor: pointer;
+}
+
+.transcript-more:hover { border-color: var(--accent, #7aa2f7); }
 
 .bubble {
     max-width: 860px;
@@ -995,6 +1012,52 @@ button.link:hover { text-decoration: underline; }
 }
 
 .question .option:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+/* ---- multi-question ask: chips inline, body bounded, actions pinned ---- */
+.interaction-card .ask-progress { margin-left: 10px; font-weight: 400; font-size: 12px; color: var(--text-dim); }
+.interaction-card .ask-body {
+    max-height: 46vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    scrollbar-gutter: stable;
+}
+.interaction-card .question-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.question .option.chip { display: inline-block; width: auto; }
+.question .option.chip.selected { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.question .question-number {
+    display: inline-block;
+    min-width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 11px;
+    margin-right: 6px;
+}
+.question .question-hint { margin-left: 6px; font-size: 11px; color: var(--text-dim); }
+.interaction-card .ask-input {
+    width: 100%;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font: inherit;
+}
+.interaction-card .ask-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+}
+.interaction-card .ask-hint { font-size: 12px; color: var(--text-dim); }
 
 /* ---- session body: chat column + optional tasks column. nothing overlays. ---- */
 .session-body {

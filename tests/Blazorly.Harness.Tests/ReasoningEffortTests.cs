@@ -75,6 +75,37 @@ public class ReasoningEffortTests
     }
 
     [Fact]
+    public void EffectiveLevels_FallsBackWhenModelAdvertisesNone()
+    {
+        var bare = new LlmModelInfo("openai-compatible", "mystery-model", "mystery-model");
+        Assert.Equal(["low", "medium", "high", "xhigh", "max"], bare.EffectiveReasoningEfforts);
+        Assert.Equal("high", bare.EffectiveDefaultEffort);
+    }
+
+    [Fact]
+    public void EffectiveLevels_PrefersCatalogLevelsAndDefault()
+    {
+        var known = new LlmModelInfo("deepseek", "deepseek-v4-pro", "Pro",
+            ReasoningEfforts: ["off", "low", "high", "max"], DefaultEffort: "low");
+        Assert.Equal(["off", "low", "high", "max"], known.EffectiveReasoningEfforts);
+        Assert.Equal("low", known.EffectiveDefaultEffort);
+    }
+
+    [Fact]
+    public void EffectiveDefault_UsesHighWhenCatalogListLacksADefault()
+    {
+        var known = new LlmModelInfo("x", "y", "y", ReasoningEfforts: ["low", "medium", "high"]);
+        Assert.Equal("high", known.EffectiveDefaultEffort);
+    }
+
+    [Fact]
+    public void EffectiveDefault_StaysNullWhenHighIsNotOffered()
+    {
+        var known = new LlmModelInfo("x", "y", "y", ReasoningEfforts: ["low"]);
+        Assert.Null(known.EffectiveDefaultEffort);
+    }
+
+    [Fact]
     public void ResponsesApi_WrapsEffortInReasoningObject()
     {
         var adapter = new ResponsesApiAdapter("xai", "https://api.x.ai/v1", "k", [], new HttpClient());

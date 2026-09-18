@@ -209,13 +209,45 @@ public sealed class Session
         // can leave a tool result whose assistant call was shadowed away. Providers answer that
         // with a hard 400 ("role 'tool' must respond to a preceding message with 'tool_calls'"),
         // so the derivation drops what cannot be sent instead of shipping a guaranteed rejection.
-        lock (_gate) return MessagePairing.Repair(_surface.DeriveMessages(seq => _log[seq]));
+        lock (_gate) return DropSupersededSnapshots(MessagePairing.Repair(_surface.DeriveMessages(seq => _log[seq])));
     }
+
+    /// <summary>
+    /// Each runtime-context snapshot is a full replacement ("this snapshot supersedes earlier
+    /// runtime-context snapshots"), but every one stayed on the surface and was re-sent on each
+    /// later request. Only the newest carries information, so earlier ones leave the derived
+    /// history. The durable log is untouched: transcripts keep every snapshot.
+    /// </summary>
+    internal static IReadOnlyList<Message> DropSupersededSnapshots(IReadOnlyList<Message> messages)
+    {
+        var last = -1;
+        for (var i = 0; i < messages.Count; i++)
+            if (IsContextSnapshot(messages[i])) last = i;
+        if (last < 0) return messages;
+        var kept = new List<Message>(messages.Count);
+        for (var i = 0; i < messages.Count; i++)
+            if (i == last || !IsContextSnapshot(messages[i])) kept.Add(messages[i]);
+        return kept;
+    }
+
+    private static bool IsContextSnapshot(Message message)
+        => message.Role == "user"
+            && message.Source.Kind == "plugin"
+            && message.Source.Plugin == "system-prompt"
+            && message.Source.Form == "snapshot";
+
 
     /// <summary>Seqs of the current surface, in model-visible order (compaction plans ranges over these).</summary>
     public IReadOnlyList<int> SurfaceSeqs
     {
         get { lock (_gate) return _surface.Surface; }
+    }
+
+    /// <summary>Cheap change-detection digest of the surface: size + compaction generation.
+    /// Lets UI-side consumers (token meter cache) notice surface changes without copying the seq list.</summary>
+    public (int Count, int Generation) SurfaceDigest
+    {
+        get { lock (_gate) return (_surface.Count, _surface.ReplaceGeneration); }
     }
 
     /// <summary>Latest request header payload, or null.</summary>

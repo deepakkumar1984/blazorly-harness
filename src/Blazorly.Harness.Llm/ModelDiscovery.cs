@@ -36,28 +36,40 @@ public static class LlmModelDiscovery
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
         var root = doc.RootElement;
-        var ids = new List<string>();
+        var found = new List<LlmModelInfo>();
         if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
         {
-            foreach (var item in data.EnumerateArray())
-            {
-                if (item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String && id.GetString() is { Length: > 0 } modelId)
-                {
-                    ids.Add(modelId);
-                }
-            }
+            foreach (var item in data.EnumerateArray()) AddItem(item, found);
         }
         else if (root.ValueKind == JsonValueKind.Array)
         {
-            foreach (var item in root.EnumerateArray())
-            {
-                if (item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String && id.GetString() is { Length: > 0 } modelId)
-                {
-                    ids.Add(modelId);
-                }
-            }
+            foreach (var item in root.EnumerateArray()) AddItem(item, found);
         }
-        return Merge(provider, ids, []);
+        return found;
+
+        void AddItem(JsonElement item, List<LlmModelInfo> into)
+        {
+            if (item.ValueKind != JsonValueKind.Object) return;
+            if (!item.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String || id.GetString() is not { Length: > 0 } modelId) return;
+            // Stock OpenAI /models is id-only, but some gateways publish sizes alongside
+            // (OpenRouter-style); take them when present so unknown ids still resolve windows.
+            var window = ReadLong(item, "context_window", "context_length", "max_context_length", "contextWindow", "contextLength");
+            var output = ReadLong(item, "max_output_tokens", "max_completion_tokens", "maxOutputTokens", "maxCompletionTokens");
+            into.Add(new LlmModelInfo(provider, modelId, modelId,
+                ContextWindowTokens: window,
+                MaxOutputTokens: output is > 0 and <= int.MaxValue ? (int)output : null));
+        }
+    }
+
+    private static long? ReadLong(JsonElement item, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (!item.TryGetProperty(name, out var value)) continue;
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number) && number > 0) return number;
+            if (value.ValueKind == JsonValueKind.String && long.TryParse(value.GetString(), out var parsed) && parsed > 0) return parsed;
+        }
+        return null;
     }
 
     /// <summary>Discovered ids merged over known metadata; known ids keep their catalog entry.</summary>

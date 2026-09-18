@@ -12,10 +12,10 @@ namespace Blazorly.Harness.Core.Compaction;
 public sealed record CompactionOptions
 {
     /// <summary>Context window used for pressure math (fallback when the model catalog has none).</summary>
-    public long ContextWindowTokens { get; init; } = 65_536;
+    public long ContextWindowTokens { get; init; } = 262_144;
 
     /// <summary>Fraction of the window that triggers compaction.</summary>
-    public double Threshold { get; init; } = 0.72;
+    public double Threshold { get; init; } = 0.9;
 
     /// <summary>Fraction of the window kept unshadowed (recent messages stay verbatim).</summary>
     public double KeepRatio { get; init; } = 0.25;

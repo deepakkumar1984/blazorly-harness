@@ -139,6 +139,61 @@ public class SessionTests
         Assert.Empty(session.DeriveMessages()); // the event hosts usage but never enters the transcript
     }
 
+    private static void AppendSnapshot(Session session, string text)
+    {
+        var snapshot = new Message(Ids.NewMessageId(), "user", [new TextBlock(text)],
+            MessageSource.FromPlugin("system-prompt", "snapshot"));
+        session.Append(SessionEventTypes.UserMessage, snapshot,
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+    }
+
+    [Fact]
+    public void DeriveMessages_KeepsOnlyLatestContextSnapshot()
+    {
+        var (session, _) = NewSession();
+        OpenTurn(session);
+        session.Append(SessionEventTypes.UserMessage, Message.CreateUserText("do it"),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        AppendSnapshot(session, "snapshot one");
+        session.Append(SessionEventTypes.StepStart, new SessionPayloads.StepStart(1, 1));
+        session.Append(SessionEventTypes.AssistantMessage,
+            new SessionPayloads.AssistantMessage(1, 1,
+                Message.CreateAssistant("scripted", "demo", [new TextBlock("working")])),
+            new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        session.Append(SessionEventTypes.StepEnd, new SessionPayloads.StepEnd(1, 1));
+        AppendSnapshot(session, "snapshot two");
+
+        var derived = session.DeriveMessages();
+
+        Assert.Equal(3, derived.Count);
+        Assert.Equal("do it", derived[0].FlattenText());
+        Assert.Equal("working", derived[1].FlattenText());
+        Assert.Equal("snapshot two", derived[2].FlattenText());
+        // the durable log still holds both snapshots; only the derived history drops the stale one
+        Assert.Equal(2, session.Events.Count(e => e.Type == SessionEventTypes.UserMessage
+            && SessionEventRead.MessageOf(e).Source is { Kind: "plugin", Form: "snapshot" }));
+    }
+
+    [Fact]
+    public void DeriveMessages_PreservesNonSnapshotPluginMessages()
+    {
+        var (session, _) = NewSession();
+        OpenTurn(session);
+        foreach (var text in new[] { "summary one", "summary two" })
+        {
+            var summary = new Message(Ids.NewMessageId(), "user", [new TextBlock(text)],
+                MessageSource.FromPlugin("compaction", "summary"));
+            session.Append(SessionEventTypes.UserMessage, summary,
+                new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        }
+
+        var derived = session.DeriveMessages();
+
+        Assert.Equal(2, derived.Count);
+        Assert.Equal("summary one", derived[0].FlattenText());
+        Assert.Equal("summary two", derived[1].FlattenText());
+    }
+
     [Fact]
     public void SurfaceReplace_SplicesHistory()
     {

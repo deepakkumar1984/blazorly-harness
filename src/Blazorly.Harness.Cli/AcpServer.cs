@@ -235,7 +235,9 @@ public static class AcpServer
                             if (tracked.Inflight is not null)
                                 throw new AcpFault(-32602, "cannot change the route while a prompt is in flight");
                         }
-                        tracked.Agent.Options = new AgentOptions(provider, model, tracked.Agent.Options.MaxTokens);
+                        tracked.Agent.Options = new AgentOptions(provider, model,
+                            HarnessBootstrapper.ResolveMaxOutputTokens(bootstrapper.Settings,
+                                bootstrapper.RuntimeModels(provider), model));
                         if (HasContinuableDescriptor(tracked.Agent.Session))
                         {
                             // Refresh the log-only descriptor so a cold resume keeps this route.

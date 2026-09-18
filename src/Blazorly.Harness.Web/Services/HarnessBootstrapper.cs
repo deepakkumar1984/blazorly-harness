@@ -24,8 +24,9 @@ public sealed class HarnessSettings
     public string? ApiKey { get; set; }
     /// <summary>API key stash per provider id so switching providers keeps each key typed once.</summary>
     public Dictionary<string, string> ProviderKeys { get; set; } = new(StringComparer.Ordinal);
-    /// <summary>Model ids loaded live from each provider's /models endpoint; replaces catalog seeds once present.</summary>
-    public Dictionary<string, List<string>> DiscoveredModels { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>Models loaded live from each provider's /models endpoint (ids plus any sizes the
+    /// endpoint publishes); replaces catalog seeds once present. Legacy id-only lists still load.</summary>
+    public Dictionary<string, List<DiscoveredModelInfo>> DiscoveredModels { get; set; } = new(StringComparer.Ordinal);
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
     /// <summary>Provider id <see cref="BaseUrl"/> was entered for; null (legacy settings) means the active provider.</summary>
     public string? BaseUrlProvider { get; set; }
@@ -38,9 +39,10 @@ public sealed class HarnessSettings
     /// unconfigured sandbox to danger-full-access.
     /// </summary>
     public bool SandboxFailClosedWhenUnsupported { get; set; }
-    public string Persistence { get; set; } = "jsonl"; // jsonl | sqlite
-    public long ContextWindowTokens { get; set; } = 65_536;
-    public double CompactionThreshold { get; set; } = 0.72;
+    public string Persistence { get; set; } = "sqlite"; // sqlite (default; jsonl sessions auto-import) | jsonl
+    public long ContextWindowTokens { get; set; } = 262_144;
+    public int MaxOutputTokens { get; set; } = 65_536;
+    public double CompactionThreshold { get; set; } = 0.9;
     public int CompactionPrunerChars { get; set; } = 4_000;
     public Blazorly.Harness.Core.Retry.RetryPolicyConfig Retry { get; set; } = new();
     /// <summary>Retry policy overrides keyed by provider id (e.g. "zai"); routes without an entry use Retry.</summary>
@@ -229,6 +231,68 @@ public sealed class HarnessSettings
     }
 }
 
+/// <summary>A model id from a provider's /models endpoint plus any sizes it published
+/// (most endpoints are id-only; OpenRouter-style ones include context/output sizes).</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(DiscoveredModelInfoConverter))]
+public sealed record DiscoveredModelInfo(string Id, long? ContextWindowTokens = null, int? MaxOutputTokens = null)
+{
+    public static implicit operator DiscoveredModelInfo(string id) => new(id);
+}
+
+/// <summary>Reads legacy plain-string ids and full objects; writes strings when id-only
+/// so settings files stay tidy unless the endpoint actually published sizes.</summary>
+public sealed class DiscoveredModelInfoConverter : System.Text.Json.Serialization.JsonConverter<DiscoveredModelInfo>
+{
+    public override DiscoveredModelInfo Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String) return new DiscoveredModelInfo(reader.GetString() ?? "");
+        if (reader.TokenType != JsonTokenType.StartObject)
+            throw new JsonException($"unexpected token {reader.TokenType} for a discovered model");
+        string id = "";
+        long? window = null;
+        int? output = null;
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            if (reader.TokenType != JsonTokenType.PropertyName) continue;
+            var name = reader.GetString();
+            if (!reader.Read()) break;
+            if (string.Equals(name, "id", StringComparison.OrdinalIgnoreCase))
+            {
+                id = reader.TokenType == JsonTokenType.String ? reader.GetString() ?? "" : "";
+            }
+            else if (string.Equals(name, "contextWindowTokens", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "context_window_tokens", StringComparison.OrdinalIgnoreCase))
+            {
+                if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt64(out var number) && number > 0) window = number;
+            }
+            else if (string.Equals(name, "maxOutputTokens", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "max_output_tokens", StringComparison.OrdinalIgnoreCase))
+            {
+                if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out var number) && number > 0) output = number;
+            }
+            else
+            {
+                reader.Skip();
+            }
+        }
+        return new DiscoveredModelInfo(id, window, output);
+    }
+
+    public override void Write(Utf8JsonWriter writer, DiscoveredModelInfo value, JsonSerializerOptions options)
+    {
+        if (value.ContextWindowTokens is null && value.MaxOutputTokens is null)
+        {
+            writer.WriteStringValue(value.Id);
+            return;
+        }
+        writer.WriteStartObject();
+        writer.WriteString("id", value.Id);
+        if (value.ContextWindowTokens is { } window) writer.WriteNumber("contextWindowTokens", window);
+        if (value.MaxOutputTokens is { } output) writer.WriteNumber("maxOutputTokens", output);
+        writer.WriteEndObject();
+    }
+}
+
 /// <summary>An extra OpenAI-compatible provider route configured from the Settings UI.</summary>
 public sealed class CustomProviderConfig
 {
@@ -316,9 +380,12 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     /// </summary>
     public List<IHarnessPlugin> BuildPluginList()
     {
-        Core.Sessions.ISessionPersistence persistence = Settings.Persistence == "sqlite"
-            ? new SqliteSessionPersistence(Path.Combine(_home, "sessions.db"))
-            : new JsonlSessionPersistence(Path.Combine(_home, "sessions"));
+        Core.Sessions.ISessionPersistence persistence = Settings.Persistence == "jsonl"
+            ? new JsonlSessionPersistence(Path.Combine(_home, "sessions"))
+            : PersistenceMigrator.EnsureSqliteAsync(
+                    Path.Combine(_home, "sessions.db"), Path.Combine(_home, "sessions"),
+                    message => Console.Out.WriteLine(message))
+                .GetAwaiter().GetResult().Store;
         var tracker = new FsObservationTracker();
         Sandbox = new SandboxPolicy
         {
@@ -588,17 +655,33 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     }
 
     /// <summary>The selectable model list for a route: the live API list once discovered (known ids
-    /// keep their catalog metadata — names, windows, effort levels), otherwise the catalog seeds.</summary>
+    /// keep their catalog metadata — names, windows, effort levels; unknown ids take any sizes
+    /// the endpoint published), otherwise the catalog seeds.</summary>
     public IReadOnlyList<LlmModelInfo> RuntimeModels(string provider)
     {
         var catalog = ProviderCatalog.For(provider, Settings.BaseUrl);
-        if (Settings.DiscoveredModels.TryGetValue(provider, out var ids) && ids.Count > 0)
+        if (Settings.DiscoveredModels.TryGetValue(provider, out var found) && found.Count > 0)
         {
             var byId = catalog.GroupBy(m => m.Id, StringComparer.Ordinal)
                 .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-            return [.. ids.Select(id => byId.TryGetValue(id, out var known) ? known : new LlmModelInfo(provider, id, id))];
+            return [.. found.Select(entry => byId.TryGetValue(entry.Id, out var known)
+                ? known
+                : new LlmModelInfo(provider, entry.Id, entry.Id,
+                    ContextWindowTokens: entry.ContextWindowTokens,
+                    MaxOutputTokens: entry.MaxOutputTokens))];
         }
         return catalog;
+    }
+
+    /// <summary>Output cap for a model: the settings default, clamped to the model's own
+    /// ceiling when the catalog or API metadata states one (an over-large max_tokens 400s).</summary>
+    public static int ResolveMaxOutputTokens(HarnessSettings settings, IReadOnlyList<LlmModelInfo> models, string? modelId)
+    {
+        var cap = settings.MaxOutputTokens;
+        var known = string.IsNullOrEmpty(modelId)
+            ? null
+            : models.FirstOrDefault(m => m.Id == modelId)?.MaxOutputTokens;
+        return known is > 0 ? Math.Min(cap, known.Value) : cap;
     }
 
     /// <summary>Loads third-party plugins (minus disabled ones) for the boot list.</summary>
@@ -747,6 +830,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         {
             var models = await LlmModelDiscovery.DiscoverAsync(provider, baseUrl, apiKey, StreamingHttp, configure).ConfigureAwait(false);
             var ids = models.Select(m => m.Id).ToList();
+            var entries = models.Select(m => new DiscoveredModelInfo(m.Id, m.ContextWindowTokens, m.MaxOutputTokens)).ToList();
             if (custom is not null)
             {
                 foreach (var id in ids)
@@ -756,7 +840,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             }
             else
             {
-                Settings.DiscoveredModels[provider] = ids;
+                Settings.DiscoveredModels[provider] = entries;
             }
             SaveSettings();
             ApplyProviderSelection();

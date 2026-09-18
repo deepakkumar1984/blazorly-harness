@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Blazorly.Harness.Llm;
 using Blazorly.Harness.Web.Services;
 using Xunit;
 
@@ -160,7 +161,7 @@ public class ProviderCatalogTests
         Assert.Equal("zai", settings.Provider);
         Assert.Equal("https://api.z.ai/api/paas/v4", settings.BaseUrl);
         Assert.Equal("sk-zhipu", settings.ProviderKeys["zai"]);
-        Assert.Equal(["glm-4.6"], settings.DiscoveredModels["zai"]);
+        Assert.Equal(["glm-4.6"], settings.DiscoveredModels["zai"].Select(m => m.Id));
         Assert.False(settings.ProviderKeys.ContainsKey("zhipu"));
     }
 
@@ -179,6 +180,55 @@ public class ProviderCatalogTests
 
         Assert.Equal("zai", settings.Provider);
         Assert.Equal("https://open.bigmodel.cn/api/paas/v4", settings.BaseUrl);
+    }
+
+    private static readonly JsonSerializerOptions CamelCase = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    [Fact]
+    public void DiscoveredModels_LegacyStringListsStillLoad()
+    {
+        var settings = JsonSerializer.Deserialize<HarnessSettings>(
+            """{"provider":"deepseek","discoveredModels":{"deepseek":["a","b"]}}""", CamelCase)!;
+        Assert.Equal(["a", "b"], settings.DiscoveredModels["deepseek"].Select(m => m.Id));
+        Assert.All(settings.DiscoveredModels["deepseek"], m => Assert.Null(m.ContextWindowTokens));
+    }
+
+    [Fact]
+    public void DiscoveredModels_IdOnlyEntriesSerializeBackAsStrings()
+    {
+        var settings = new HarnessSettings();
+        settings.DiscoveredModels["deepseek"] = ["a", "b"];
+        var json = JsonSerializer.Serialize(settings, CamelCase);
+        Assert.Contains("\"discoveredModels\":{\"deepseek\":[\"a\",\"b\"]}", json);
+    }
+
+    [Fact]
+    public void DiscoveredModels_SizedEntriesRoundTripAsObjects()
+    {
+        var settings = new HarnessSettings();
+        settings.DiscoveredModels["deepseek"] = [new DiscoveredModelInfo("m", 1_000_000, 32_768)];
+        var reloaded = JsonSerializer.Deserialize<HarnessSettings>(JsonSerializer.Serialize(settings, CamelCase), CamelCase)!;
+        var entry = Assert.Single(reloaded.DiscoveredModels["deepseek"]);
+        Assert.Equal("m", entry.Id);
+        Assert.Equal(1_000_000, entry.ContextWindowTokens);
+        Assert.Equal(32_768, entry.MaxOutputTokens);
+    }
+
+    [Fact]
+    public void ResolveMaxOutputTokens_UsesSettingWhenModelIsUnknown()
+    {
+        var settings = new HarnessSettings { MaxOutputTokens = 65_536 };
+        Assert.Equal(65_536, HarnessBootstrapper.ResolveMaxOutputTokens(settings, [], "mystery"));
+        Assert.Equal(65_536, HarnessBootstrapper.ResolveMaxOutputTokens(settings, [], null));
+    }
+
+    [Fact]
+    public void ResolveMaxOutputTokens_ClampsToKnownModelCeiling()
+    {
+        var settings = new HarnessSettings { MaxOutputTokens = 65_536 };
+        var models = new[] { new LlmModelInfo("p", "small", "small", MaxOutputTokens: 8_192) };
+        Assert.Equal(8_192, HarnessBootstrapper.ResolveMaxOutputTokens(settings, models, "small"));
+        Assert.Equal(65_536, HarnessBootstrapper.ResolveMaxOutputTokens(settings, models, "other"));
     }
 
     [Fact]

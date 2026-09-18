@@ -1,11 +1,94 @@
+function blazorlyTrackPin(element) {
+    if (element.dataset.pinBound) return;
+    element.dataset.pinBound = "1";
+    element.dataset.pinned = "1";
+    // Sticky follow state, direction-aware: only an actual upward scroll unpins.
+    // Content growth below never moves scrollTop, so near-bottom checks would
+    // wrongly unpin when a big block (or a Virtualize window) lands at once —
+    // and layout-induced scroll events must not read as "user took over".
+    let lastTop = element.scrollTop;
+    element.addEventListener("scroll", () => {
+        const top = element.scrollTop;
+        if (top < lastTop - 2) {
+            element.dataset.pinned = "0";
+        } else if (element.scrollHeight - top - element.clientHeight < 160) {
+            element.dataset.pinned = "1";
+        }
+        lastTop = top;
+    });
+}
+
 window.blazorly = {
     scrollBottom: function (element, force) {
         if (!element) return;
-        // Pin when the user is near the bottom already, or when force (fresh session load).
-        const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 160;
-        if (force || nearBottom) {
+        blazorlyTrackPin(element);
+        if (force || element.dataset.pinned !== "0") {
             element.scrollTop = element.scrollHeight;
         }
+    },
+    // Tail-windowed transcript: only the newest nodes render. Near the top, ask
+    // Blazor to prepend the next chunk, then hold the reading position against the
+    // growth. The "show earlier" button grows via Blazor directly; this only holds.
+    attachTopGrow: function (element, dotNetRef) {
+        if (!element || element.dataset.growBound) return;
+        element.dataset.growBound = "1";
+        let growing = false;
+        const holdAfterGrow = async () => {
+            if (growing) return;
+            growing = true;
+            try {
+                const oldHeight = element.scrollHeight, oldTop = element.scrollTop;
+                for (let i = 0; i < 20; i++) {
+                    await new Promise(r => setTimeout(r, 50));
+                    if (!element.isConnected) return;
+                    const height = element.scrollHeight;
+                    if (height > oldHeight + 10) {
+                        element.scrollTop = oldTop + (height - oldHeight);
+                        return;
+                    }
+                }
+            } finally {
+                growing = false;
+            }
+        };
+        element.addEventListener("scroll", async () => {
+            if (growing || element.scrollTop > 400) return;
+            let grew = false;
+            try {
+                grew = await dotNetRef.invokeMethodAsync("GrowTranscriptTop");
+            } catch { return; }
+            if (grew) await holdAfterGrow();
+        });
+        element.addEventListener("click", (e) => {
+            if (!e.target.closest(".transcript-more")) return;
+            holdAfterGrow();
+        });
+    },
+    // Refresh-safe scroll: rows still stream in after first paint, so a single jump
+    // can land above the final bottom. Re-jump while the height is still settling;
+    // abort if the user scrolls up mid-settle or the element leaves the DOM.
+    settleBottom: function (element) {
+        if (!element) return;
+        blazorlyTrackPin(element);
+        element.dataset.pinned = "1";
+        element.scrollTop = element.scrollHeight;
+        let stable = 0, last = element.scrollHeight, ticks = 0;
+        const timer = setInterval(() => {
+            ticks++;
+            if (!element.isConnected || element.dataset.pinned === "0" || ticks > 40) {
+                clearInterval(timer);
+                return;
+            }
+            const height = element.scrollHeight;
+            if (height !== last) {
+                stable = 0;
+                last = height;
+            } else {
+                stable++;
+            }
+            element.scrollTop = element.scrollHeight;
+            if (stable >= 4) clearInterval(timer);
+        }, 150);
     },
     // Shift any open chip dropdown left so it stays inside the viewport.
     clampMenu: function () {

@@ -147,8 +147,12 @@
                     </select>
                 </label>
                 <label>
-                    <span>Context window tokens — fallback only; the model catalog's window takes priority</span>
+                    <span>Context window tokens — fallback only; per-model info (API/catalog) takes priority</span>
                     <input type="number" @bind="_settings.ContextWindowTokens" />
+                </label>
+                <label>
+                    <span>Max output tokens per request — clamped to the model's own ceiling when known</span>
+                    <input type="number" @bind="_settings.MaxOutputTokens" />
                 </label>
                 <label>
                     <span>Compaction threshold (fraction of the window)</span>

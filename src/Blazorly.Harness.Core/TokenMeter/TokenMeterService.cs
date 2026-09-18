@@ -40,7 +40,7 @@ public sealed class TokenMeterService
     public TokenMeterService(SystemPromptService systemPrompt) => _systemPrompt = systemPrompt;
 
     /// <summary>Default window when neither the host nor the newest request/context declares one.</summary>
-    public long ContextWindowTokens { get; set; } = 65_536;
+    public long ContextWindowTokens { get; set; } = 262_144;
 
     /// <summary>Host-supplied lookup for the current route's real context window (model catalog).
     /// When set, it wins over historical request declarations, which may be stale.</summary>

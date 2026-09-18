@@ -45,7 +45,7 @@ public sealed record ConversationNode
 
 public sealed class ConversationSnapshot
 {
-    public required IReadOnlyList<ConversationNode> Nodes { get; init; }
+    public required ICollection<ConversationNode> Nodes { get; init; }
     public required IReadOnlyList<TodoItem> Todos { get; init; }
     public required string Status { get; init; }
     public int LastSeq { get; init; }
@@ -128,6 +128,13 @@ public sealed class ConversationFolder
     private readonly List<(int Turn, int Step)> _liveKeys = [];
 
     private int _processed;
+    private int _lastSeq = -1;
+
+    // Context-chip cache: Measure() is O(surface) and ran on every UI tick before this.
+    private (long In, long Out, long CacheRead, long CacheWrite) _contextTotals;
+    private (int Count, int Generation) _contextDigest;
+    private long _contextComputedAt;
+    private Blazorly.Harness.Core.TokenMeter.ContextMeterReading? _contextReading;
 
     /// <summary>Events that could not be folded; each one is rendered as a visible error chip.</summary>
     public int FoldFailures { get; private set; }
@@ -148,33 +155,39 @@ public sealed class ConversationFolder
 
     public ConversationSnapshot Update(Agent? agent)
     {
-        var events = _session.Events;
+        // Read only the new events: Session.Events copies the whole log on every access,
+        // which a 20K-event session pays on every 120ms tick.
         var fresh = false;
-        while (_processed < events.Count)
+        var total = _session.Seq;
+        if (_processed < total)
         {
-            var e = events[_processed];
-            try
+            var batch = _session.ReadEvents(_processed, total - _processed);
+            foreach (var e in batch)
             {
-                ProcessEvent(e, agent);
-            }
-            catch (Exception exception)
-            {
-                // One unreadable event must not blank the session: degrade it to a visible chip and
-                // keep folding. The page re-renders on a timer, so a throw here would repeat forever.
-                FoldFailures++;
-                _nodes.Add(new ConversationNode
+                try
                 {
-                    Key = $"fold-error-{e.Seq}",
-                    Kind = "command",
-                    CommandName = "ui",
-                    CommandArgs = e.Type,
-                    CommandText = $"[ui] this {e.Type} event could not be rendered "
-                        + $"({exception.GetType().Name}: {exception.Message})",
-                    CommandOk = false,
-                });
+                    ProcessEvent(e, agent);
+                }
+                catch (Exception exception)
+                {
+                    // One unreadable event must not blank the session: degrade it to a visible chip and
+                    // keep folding. The page re-renders on a timer, so a throw here would repeat forever.
+                    FoldFailures++;
+                    _nodes.Add(new ConversationNode
+                    {
+                        Key = $"fold-error-{e.Seq}",
+                        Kind = "command",
+                        CommandName = "ui",
+                        CommandArgs = e.Type,
+                        CommandText = $"[ui] this {e.Type} event could not be rendered "
+                            + $"({exception.GetType().Name}: {exception.Message})",
+                        CommandOk = false,
+                    });
+                }
+                _processed++;
+                _lastSeq = e.Seq;
+                fresh = true;
             }
-            _processed++;
-            fresh = true;
         }
         if (fresh) _todos = _session.LatestTodos() ?? [];
 
@@ -210,9 +223,22 @@ public sealed class ConversationFolder
             });
         }
 
-        var context = _meter is not null && agent is not null
-            ? _meter.Measure(agent, (_usageIn, _usageOut, _usageCacheRead, _usageCacheWrite), _declaredWindow)
-            : null;
+        // The context reading is expensive (system-prompt assembly + full surface derivation +
+        // token estimation). Recompute only when something it depends on changed: a new surface
+        // message, a compaction replace, or new usage totals — with a staleness bound for prompt
+        // drift (title/todo changes alter the system prompt without touching the surface).
+        var totals = (_usageIn, _usageOut, _usageCacheRead, _usageCacheWrite);
+        var digest = _session.SurfaceDigest;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (_meter is not null && agent is not null
+            && (_contextReading is null || digest != _contextDigest || totals != _contextTotals || now - _contextComputedAt > 2000))
+        {
+            _contextReading = _meter.Measure(agent, totals, _declaredWindow);
+            _contextDigest = digest;
+            _contextTotals = totals;
+            _contextComputedAt = now;
+        }
+        var context = _meter is not null && agent is not null ? _contextReading : null;
 
         var plan = new Blazorly.Harness.Tools.PlanModeService().Latest(_session);
         _last = new ConversationSnapshot
@@ -220,7 +246,7 @@ public sealed class ConversationFolder
             Nodes = [.. _nodes.OrderBy(ConversationAssemblerSort.Key)],
             Todos = _todos,
             Status = agent?.Status ?? "idle",
-            LastSeq = events.Count > 0 ? events[^1].Seq : -1,
+            LastSeq = _lastSeq,
             Title = _session.LatestTitle(),
             SandboxMode = _session.LatestSandboxMode(),
             PlanMode = plan is { Active: true } ? (plan.Auto == true ? "auto" : "on") : null,
@@ -243,7 +269,11 @@ public sealed class ConversationFolder
             case SessionEventTypes.UserMessage:
             {
                 var message = SessionEventRead.MessageOf(e);
-                if (message.Source.Kind == "plugin") break; // runtime-context snapshots stay hidden
+                // plugin = runtime-context snapshots; tool = compaction-pruner surface replacements
+                // (ToolResultBlock-only content — FlattenText is "", which used to render as a
+                // blank "You" bubble per pruned result). Both are mechanical, never human input:
+                // the UI already shows the original tool cards and the real conversation.
+                if (message.Source.Kind is "plugin" or "tool") break;
                 _nodes.Add(new ConversationNode
                 {
                     Key = $"u-{e.Seq}",

@@ -73,13 +73,17 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
             harness.Tools,
             harness.Context.Get<Core.SystemPrompt.SystemPromptService>("systemPrompt"),
             session,
-            new AgentOptions(harness.Settings.Provider, harness.Settings.Model));
+            new AgentOptions(harness.Settings.Provider, harness.Settings.Model,
+                HarnessBootstrapper.ResolveMaxOutputTokens(harness.Settings,
+                    harness.RuntimeModels(harness.Settings.Provider), harness.Settings.Model)));
         agent.RetryLimit = harness.Loop.RetryLimit;
         agent.Driver.MaxParallelToolCalls = harness.Loop.MaxParallelToolCalls;
         var header = session.LatestRequestHeader();
         if (header is not null)
         {
-            agent.Options = new AgentOptions(header.Header.Provider, header.Header.Model, header.Header.MaxTokens);
+            agent.Options = new AgentOptions(header.Header.Provider, header.Header.Model,
+                header.Header.MaxTokens ?? HarnessBootstrapper.ResolveMaxOutputTokens(harness.Settings,
+                    harness.RuntimeModels(header.Header.Provider), header.Header.Model));
         }
         harness.Agents.Publish(agent);
         _ = harness.Context.Events.EmitAsync("agent/session-start", new SessionStartEvent(agent, "startup"), agent);
@@ -219,7 +223,8 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     public void SetSessionModel(string sessionId, string provider, string model)
     {
         var agent = harness.Agents.Get(sessionId) ?? throw new InvalidOperationException("unknown session");
-        agent.Options = new AgentOptions(provider, model, agent.Options.MaxTokens);
+        agent.Options = new AgentOptions(provider, model,
+            HarnessBootstrapper.ResolveMaxOutputTokens(harness.Settings, harness.RuntimeModels(provider), model));
     }
 
     public bool IsArchived(string sessionId) => harness.Workspaces.IsArchived(sessionId);
@@ -284,19 +289,20 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         if (agent is null) return ("no active agent for this session", false);
         var model = harness.RuntimeModels(agent.Options.Provider ?? "")
             .FirstOrDefault(m => m.Id == agent.Options.Model);
-        if (model is null || model.ReasoningEfforts is not { Length: > 0 } efforts)
-            return ($"model '{agent.Options.Model}' offers no reasoning effort levels", false);
+        if (model is null)
+            return ($"model '{agent.Options.Model}' is unknown on route '{agent.Options.Provider}'", false);
+        var efforts = model.EffectiveReasoningEfforts;
 
         if (args.Length == 0)
         {
-            var current = agent.Options.ReasoningEffort ?? model.DefaultEffort ?? "model default";
+            var current = agent.Options.ReasoningEffort ?? model.EffectiveDefaultEffort ?? "model default";
             return ($"reasoning effort: {current} — choose one of: {string.Join(", ", efforts)} (or 'default')", true);
         }
         var requested = args.Trim().ToLowerInvariant();
         if (requested is "default" or "reset")
         {
             agent.Options = agent.Options with { ReasoningEffort = null };
-            return ($"reasoning effort reset to the model default ({model.DefaultEffort ?? "provider default"})", true);
+            return ($"reasoning effort reset to the model default ({model.EffectiveDefaultEffort ?? "provider default"})", true);
         }
         if (!efforts.Contains(requested, StringComparer.Ordinal))
             return ($"unknown effort '{requested}' for {agent.Options.Model} — choose one of: {string.Join(", ", efforts)}", false);

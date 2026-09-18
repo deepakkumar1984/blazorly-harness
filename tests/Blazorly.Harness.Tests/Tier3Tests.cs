@@ -71,7 +71,7 @@ public class HeadlessRunnerTests : BootstrapperTestBase
         var envelope = JsonDocument.Parse(output.ToString()).RootElement;
         Assert.Equal(result.SessionId, envelope.GetProperty("sessionId").GetString());
         Assert.Contains("scripted run completed", envelope.GetProperty("response").GetString());
-        Assert.True(Directory.Exists(Path.Combine(Home, "sessions")));
+        Assert.True(File.Exists(Path.Combine(Home, "sessions.db"))); // sqlite default persists the session
         Assert.True(Directory.Exists(Path.Combine(Home, "spills"))); // the full composition booted
     }
 
@@ -369,6 +369,47 @@ public class CompactCommandTests : BootstrapperTestBase
         finally
         {
             await bootstrapper.DisposeAsync();
+        }
+    }
+}
+
+/// <summary>The multi-question ask contract: the UI drafts every answer locally and submits
+/// one concatenated payload ("id=text\u0001id=text…"), which must resolve the pending interaction
+/// with an answer per pair — including several pairs for one multi-select question.</summary>
+[Collection("BlazorlyHome")]
+public class UserQuestionsTests : BootstrapperTestBase
+{
+    [Fact]
+    public async Task MultiAnswerPayload_DeliversEveryAnswer()
+    {
+        var boot = new HarnessBootstrapper();
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var interactions = new UiInteractions(new UiEventBroker());
+            interactions.Mount(boot);
+
+            var ask = boot.UserQuestions.AskAsync(
+            [
+                new Core.AskQuestion("q1", "Color?", Options: [new Core.AskOption("red"), new Core.AskOption("blue")]),
+                new Core.AskQuestion("q2", "Sizes?", MultiSelect: true),
+            ], CancellationToken.None);
+
+            var pending = Assert.Single(interactions.Pending, p => p.Kind == "question");
+            Assert.Equal(2, pending.Questions!.Count);
+
+            interactions.TryAnswer(pending.Id, "q1=red\u0001q2=large\u0001q2=compact");
+
+            var answers = await ask;
+            Assert.Equal(3, answers.Count);
+            Assert.Equal(("q1", "red"), (answers[0].Id, answers[0].Text));
+            Assert.Equal(("q2", "large"), (answers[1].Id, answers[1].Text));
+            Assert.Equal(("q2", "compact"), (answers[2].Id, answers[2].Text));
+            Assert.Empty(interactions.Pending);
+        }
+        finally
+        {
+            await boot.DisposeAsync();
         }
     }
 }

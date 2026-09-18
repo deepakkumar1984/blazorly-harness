@@ -71,7 +71,7 @@
                     {
                         <div class="io-card">
                             <div class="io-label">result</div>
-                            <pre class="result @Node.ToolStatus">@Node.ResultText</pre>
+                            <pre class="result @Node.ToolStatus">@DisplayResult</pre>
                         </div>
                     }
                     else
@@ -86,7 +86,7 @@
                 {
                     <div class="io-card">
                         <div class="io-label">result</div>
-                        <pre class="result @Node.ToolStatus">@Node.ResultText</pre>
+                        <pre class="result @Node.ToolStatus">@DisplayResult</pre>
                     </div>
                 }
             }
@@ -105,6 +105,12 @@
     private bool _rawArgs;
     private System.Text.Json.JsonElement? _resultJson;
     private bool _resultParsed;
+
+    /// <summary>Result text clamped for the DOM: a 30KB tool dump in an expanded card
+    /// bloats the circuit diff and the layout; the full text lives in the session log.</summary>
+    private string DisplayResult => Node.ResultText is { Length: > 4000 } text
+        ? text[..4000] + $"\n… ({text.Length / 1024} KB total — truncated in UI; full text in the session log)"
+        : Node.ResultText ?? "";
 
     /// <summary>First meaningful line of the result, for the collapsed row.</summary>
     private string ResultPreview

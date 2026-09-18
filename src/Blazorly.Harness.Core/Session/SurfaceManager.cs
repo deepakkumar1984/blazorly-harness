@@ -13,6 +13,7 @@ public sealed class SurfaceManager
     private int _replaceGeneration;
 
     public IReadOnlyList<int> Surface => _surface;
+    public int Count => _surface.Count;
     public int ReplaceGeneration => _replaceGeneration;
 
     public void ValidateNext(SessionEvent upcoming, Func<int, SessionEvent> at)

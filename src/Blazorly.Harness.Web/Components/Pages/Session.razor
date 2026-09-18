@@ -155,6 +155,11 @@
         <div class="empty">
             <p style="color:var(--danger);margin-bottom:12px">@_loadError</p>
             <button class="ghost" @onclick="ReloadPage">Retry</button>
+            @if (_sessionMissing)
+            {
+                <p style="margin:12px 0 0;color:var(--muted)">This session no longer exists on disk (its harness home was moved or deleted). Retry will not restore it.</p>
+            }
+            <a href="/" style="display:inline-block;margin-top:12px">Go to latest session →</a>
         </div>
     }
     else if (_view == "trajectory" && _session is not null)
@@ -257,18 +262,29 @@
                     <p class="hero-hint">Describe a task below. Type <code>/</code> for commands — <code>/permission</code>, <code>/model</code>, <code>/title</code>.</p>
                 </div>
             }
-            @foreach (var node in _snapshot?.Nodes ?? [])
+            else
             {
-                switch (node.Kind)
+                // Windowed from the tail: only the newest nodes render, so refresh lands
+                // instantly at the bottom with no virtualization walk; scrolling up (or the
+                // button) prepends older nodes while holding scroll position.
+                @if (TranscriptHiddenCount > 0)
+                {
+                    <button class="transcript-more" @onclick="GrowTranscriptTopUi">
+                        Show earlier messages (@TranscriptHiddenCount more)
+                    </button>
+                }
+                @foreach (var node in TranscriptWindow)
+                {
+                @switch (node.Kind)
                 {
                     case "user":
-                        <div class="bubble user" data-source="@node.Source">
+                        <div class="bubble user" data-source="@node.Source" @key="node.Key">
                             <div class="bubble-role">You</div>
                             <div class="bubble-body">@(node.Message?.FlattenText())</div>
                         </div>
                         break;
                     case "assistant":
-                        <div class="bubble assistant">
+                        <div class="bubble assistant" @key="node.Key">
                             <div class="bubble-head">
                                 <span class="bubble-role">Assistant @(node.StepStatus == "streaming" ? "· typing…" : "")</span>
                                 @if (node.StepStatus != "streaming")
@@ -301,16 +317,16 @@
                         </div>
                         break;
                     case "tool":
-                        <ToolNode Node="node" />
+                        <ToolNode Node="node" @key="node.Key" />
                         break;
                     case "command":
-                        <div class="command-row @(node.CommandOk ? "" : "error")">
+                        <div class="command-row @(node.CommandOk ? "" : "error")" @key="node.Key">
                             <span class="command-name">@node.CommandName @(node.CommandArgs is { Length: > 0 } ? node.CommandArgs : "")</span>
                             <span class="command-text">@node.CommandText</span>
                         </div>
                         break;
                     case "turn-ok":
-                        <div class="turn-footer">
+                        <div class="turn-footer" @key="node.Key">
                             <span>turn @node.Turn complete</span>
                             @if (node.DurationMs is { } ms)
                             {
@@ -324,10 +340,11 @@
                         </div>
                         break;
                     case "turn-end":
-                        <div class="turn-error">
+                        <div class="turn-error" @key="node.Key">
                             turn @node.Turn ended — @DescribeReason(node.Reason)
                         </div>
                         break;
+                }
                 }
             }
             @if (_pendingApproval is not null)
@@ -346,18 +363,59 @@
             }
             @if (_pendingQuestion is not null)
             {
-                <div class="interaction-card">
-                    <div class="interaction-title">The assistant has a question</div>
-                    @foreach (var question in _pendingQuestion.Questions ?? [])
-                    {
-                        <div class="question">
-                            <div class="question-text">@(question.Header is { Length: > 0 } ? question.Header + " — " : "")@question.Question</div>
-                            @foreach (var option in question.Options ?? [])
-                            {
-                                <button class="option" @onclick="() => AnswerQuestion(_pendingQuestion.Id, question.Id, option.Label)">@option.Label</button>
-                            }
-                        </div>
-                    }
+                var questions = _pendingQuestion.Questions ?? [];
+                <div class="interaction-card ask">
+                    <div class="interaction-title">
+                        @(questions.Count == 1 ? "The assistant has a question" : $"The assistant has {questions.Count} questions")
+                        @if (questions.Count > 1)
+                        {
+                            <span class="ask-progress">@AnsweredCount(questions) of @questions.Count answered</span>
+                        }
+                    </div>
+                    <div class="ask-body">
+                        @{ var number = 0; }
+                        @foreach (var question in questions)
+                        {
+                            number++;
+                            <div class="question">
+                                <div class="question-text">
+                                    @if (questions.Count > 1)
+                                    {
+                                        <span class="question-number">@number</span>
+                                    }
+                                    @(question.Header is { Length: > 0 } ? question.Header + " — " : "")@question.Question
+                                    @if (question.MultiSelect)
+                                    {
+                                        <span class="question-hint">pick any</span>
+                                    }
+                                </div>
+                                @if (question.Options is { Count: > 0 } options)
+                                {
+                                    <div class="question-options">
+                                        @foreach (var option in options)
+                                        {
+                                            <button class="option chip @(IsSelected(question, option.Label) ? "selected" : "")"
+                                                    title="@(option.Description ?? option.Label)"
+                                                    @onclick="() => ToggleAnswer(question, option.Label)">
+                                                @option.Label
+                                            </button>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    <input class="ask-input" type="text" placeholder="Type your answer…"
+                                           value="@FreeText(question)"
+                                           @oninput='args => SetFreeText(question, args.Value?.ToString() ?? "")' />
+                                }
+                            </div>
+                        }
+                    </div>
+                    <div class="ask-actions">
+                        <span class="ask-hint">Answers submit together</span>
+                        <button class="primary" disabled="@(AnsweredCount(questions) < questions.Count || questions.Count == 0)"
+                                @onclick="SubmitAnswers">Submit answers</button>
+                    </div>
                 </div>
             }
         </div>
@@ -519,17 +577,17 @@
             <div class="model-config-selection">Selected: @_draftProvider/@_draftModel</div>
             <label class="modal-field">
                 <span>Reasoning effort</span>
-                <select @bind="_draftEffort" disabled="@(selectedModel?.ReasoningEfforts is not { Length: > 0 })">
-                    <option value="">Model default@(selectedModel?.DefaultEffort is { } defaultEffort ? $" ({defaultEffort})" : "")</option>
-                    @foreach (var effort in selectedModel?.ReasoningEfforts ?? [])
+                <select @bind="_draftEffort" disabled="@(selectedModel is null)">
+                    <option value="">Model default@(selectedModel?.EffectiveDefaultEffort is { } defaultEffort ? $" ({defaultEffort})" : "")</option>
+                    @foreach (var effort in selectedModel?.EffectiveReasoningEfforts ?? [])
                     {
                         <option value="@effort">@effort</option>
                     }
                 </select>
             </label>
-            @if (selectedModel?.ReasoningEfforts is not { Length: > 0 })
+            @if (selectedModel is not null && selectedModel.ReasoningEfforts is not { Length: > 0 })
             {
-                <div class="popover-empty">This model does not advertise configurable reasoning effort.</div>
+                <div class="popover-empty">This model advertises no levels; showing the default set (low/medium/high/xhigh/max).</div>
             }
             <div class="modal-actions">
                 <button class="ghost" @onclick="CloseMenus">Cancel</button>
@@ -546,6 +604,7 @@
     private Agent? _agent;
     private ConversationSnapshot? _snapshot;
     private string? _loadError;
+    private bool _sessionMissing;
     private string _draft = "";
     private bool _running;
     private volatile bool _dirty;
@@ -623,6 +682,28 @@
 
     private string? _loadedSessionId;
     private bool _pendingScroll;
+    private bool _pendingScrollForce;
+    private const int TranscriptInitialTake = 25;
+    private const int TranscriptGrowTake = 50;
+    private int _transcriptTake = TranscriptInitialTake;
+    private Microsoft.JSInterop.DotNetObjectReference<Session>? _topGrowRef;
+
+    private IReadOnlyList<ConversationNode> TranscriptWindow =>
+        _snapshot is null ? [] : [.. _snapshot.Nodes.TakeLast(_transcriptTake)];
+
+    private int TranscriptHiddenCount =>
+        _snapshot is null ? 0 : Math.Max(0, _snapshot.Nodes.Count - TranscriptWindow.Count);
+
+    [JSInvokable]
+    public Task<bool> GrowTranscriptTop()
+    {
+        if (TranscriptHiddenCount == 0) return Task.FromResult(false);
+        _transcriptTake = Math.Min(_snapshot!.Nodes.Count, _transcriptTake + TranscriptGrowTake);
+        StateHasChanged();
+        return Task.FromResult(true);
+    }
+
+    private void GrowTranscriptTopUi() => _ = GrowTranscriptTop();
     private Blazorly.Harness.Web.Services.ConversationFolder? _folder;
 
     protected override Task OnInitializedAsync()
@@ -645,8 +726,13 @@
                     StateHasChanged();
                     if (_pinned && _view == "chat")
                     {
-                        if (hasNewPending) _pendingScroll = true;
-                        else await ScrollToBottom();
+                        // Defer past the render: scrolling here would measure the
+                        // pre-render DOM and land above the new bottom. The pending
+                        // path in OnAfterRenderAsync scrolls once the DOM is current.
+                        // New approval/question popups force; steady streaming keeps
+                        // the near-bottom check so scrolled-up readers are not yanked.
+                        _pendingScroll = true;
+                        _pendingScrollForce = hasNewPending;
                     }
                 }
                 catch (Exception ex) when (ex is not TaskCanceledException)
@@ -678,10 +764,22 @@
         _subscription?.Dispose();
         _subscription = null;
         _loadError = null;
+        _sessionMissing = false;
         try
         {
             _session = await Facade.OpenSessionAsync(sessionId);
             _agent = Facade.EnsureAgent(_session);
+        }
+        catch (Blazorly.Harness.Kernel.HarnessException ex) when (ex.Code == "SESSION_NOT_FOUND")
+        {
+            _session = null;
+            _agent = null;
+            _snapshot = null;
+            _sessionMissing = true;
+            _loadError = $"Session not found: {sessionId} no longer exists on this machine.";
+            Console.Error.WriteLine($"[ui] LoadSessionAsync: session {sessionId} not found on disk; showing fallback UI");
+            StateHasChanged();
+            return;
         }
         catch (Exception ex)
         {
@@ -709,6 +807,7 @@
         _rawEvents = new RawTrajectoryPage();
         _pendingApproval = null;
         _pendingQuestion = null;
+        _transcriptTake = TranscriptInitialTake;
         _dirty = false;
         // The drawer is per-session: stop polling the previous shell and reset the view
         // (the shell itself stays alive in the service and is re-attached on reopen).
@@ -732,7 +831,7 @@
                     RefreshPending();
                     var hasNewPending = (_pendingApproval is not null || _pendingQuestion is not null) && !hadPending;
                     StateHasChanged();
-                    if (hasNewPending && _pinned && _view == "chat") _pendingScroll = true;
+                    if (hasNewPending && _pinned && _view == "chat") { _pendingScroll = true; _pendingScrollForce = true; }
                 });
                 return Task.CompletedTask;
             }
@@ -742,6 +841,7 @@
 
         RefreshPending();
         _pendingScroll = true;
+        _pendingScrollForce = true;
         StateHasChanged();
     }
 
@@ -754,6 +854,8 @@
                 SlashCommands.Select(c => new { name = c.Name, args = c.Args, description = c.Description }),
                 _slashRef);
             await TryJs("blazorly.mention.attach", _composerTa, _mentionMenu, SessionId);
+            _topGrowRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
+            await TryJs("blazorly.attachTopGrow", _transcript, _topGrowRef);
             // Phones: keep the transcript as the primary surface. Tasks stay one tap away.
             try
             {
@@ -770,7 +872,8 @@
         if (_pendingScroll)
         {
             _pendingScroll = false;
-            await ScrollToBottom(force: true);
+            if (_pendingScrollForce) await TryJs("blazorly.settleBottom", _transcript);
+            else await ScrollToBottom();
         }
         if (_permissionMenu || _ctxMenu)
         {
@@ -833,6 +936,7 @@
         {
             _pendingApproval = approval;
             _pendingQuestion = question;
+            _questionAnswers.Clear();
             _pendingChanged = true;
         }
     }
@@ -1201,7 +1305,7 @@
 
     private void NormalizeDraftEffort()
     {
-        if (DraftModelInfo?.ReasoningEfforts?.Contains(_draftEffort, StringComparer.Ordinal) != true)
+        if (DraftModelInfo?.EffectiveReasoningEfforts.Contains(_draftEffort, StringComparer.Ordinal) != true)
             _draftEffort = "";
     }
 
@@ -1214,6 +1318,8 @@
             Provider = _draftProvider,
             Model = _draftModel,
             ReasoningEffort = _draftEffort.Length == 0 ? null : _draftEffort,
+            MaxTokens = HarnessBootstrapper.ResolveMaxOutputTokens(Facade.Harness.Settings,
+                Facade.Harness.RuntimeModels(_draftProvider), _draftModel),
         };
         _dirty = true;
         CloseMenus();
@@ -1258,9 +1364,53 @@
         _pendingChanged = true;
     }
 
-    private void AnswerQuestion(string interactionId, string questionId, string text)
+    // ---- multi-question ask: answers draft locally and submit as one payload ---------------
+    // ("id=text\u0001id=text…") so an N-question ask resolves atomically. Clicking an option
+    // used to complete the whole interaction with a single answer, dropping the rest.
+    private readonly Dictionary<string, string> _questionAnswers = new(StringComparer.Ordinal);
+
+    private IReadOnlyList<string> Selections(Blazorly.Harness.Core.AskQuestion question)
+        => _questionAnswers.TryGetValue(question.Id, out var value) && value.Length > 0
+            ? value.Split('\u0001').ToList()
+            : [];
+
+    private bool IsSelected(Blazorly.Harness.Core.AskQuestion question, string label)
+        => Selections(question).Contains(label);
+
+    private void ToggleAnswer(Blazorly.Harness.Core.AskQuestion question, string label)
     {
-        Interactions.TryAnswer(interactionId, $"{questionId}={text}");
+        var current = Selections(question);
+        List<string> next;
+        if (question.MultiSelect)
+        {
+            next = current.Contains(label) ? [.. current.Where(v => v != label)] : [.. current, label];
+        }
+        else
+        {
+            next = current.Count == 1 && current[0] == label ? [] : [label];
+        }
+        if (next.Count == 0) _questionAnswers.Remove(question.Id);
+        else _questionAnswers[question.Id] = string.Join('\u0001', next);
+    }
+
+    private string FreeText(Blazorly.Harness.Core.AskQuestion question)
+        => _questionAnswers.TryGetValue(question.Id, out var value) ? value : "";
+
+    private void SetFreeText(Blazorly.Harness.Core.AskQuestion question, string text)
+        => _questionAnswers[question.Id] = text;
+
+    private int AnsweredCount(IReadOnlyList<Blazorly.Harness.Core.AskQuestion> questions)
+        => questions.Count(q => Selections(q).Count > 0);
+
+    private void SubmitAnswers()
+    {
+        if (_pendingQuestion is not { } pending) return;
+        var parts = (pending.Questions ?? [])
+            .SelectMany(q => Selections(q).Select(value => $"{q.Id}={value}"))
+            .ToList();
+        if (parts.Count == 0) return;
+        Interactions.TryAnswer(pending.Id, string.Join('\u0001', parts));
+        _questionAnswers.Clear();
         _pendingChanged = true;
     }
 
@@ -1337,5 +1487,6 @@
         _subscription?.Dispose();
         _terminalPoll?.Dispose();
         _slashRef?.Dispose();
+        _topGrowRef?.Dispose();
     }
 }

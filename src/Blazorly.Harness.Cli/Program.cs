@@ -5,7 +5,7 @@ using Blazorly.Harness.Web;
 //   blazorly                   the UI (same as `serve`)
 //   blazorly serve             the UI, explicitly (--port N, --no-open)
 //   blazorly run "job"         one headless task over the invoking directory
-//   blazorly sessions          list persisted sessions
+//   blazorly sessions          list persisted sessions (also: sessions import / sessions seed)
 //
 // Exit codes for `run`: 0 completed/max-tokens · 2 turn error/blocked · 3 aborted · 1 failure.
 
@@ -54,7 +54,11 @@ static int Help()
                              --timeout <seconds>  cancel the run after N seconds (exit 3)
                              --json               print one JSON envelope instead of the stream
                              --quiet              suppress streamed output
-           sessions         List persisted sessions (newest last). Flag:
+           sessions         List persisted sessions (newest last). Subcommands:
+                            sessions import [--home PATH]   migrate jsonl sessions → sessions.db
+                            sessions seed [--turns N] [--persistence sqlite|jsonl] [--home PATH]
+                                                           synthetic long-session load test
+                            Flag:
                               --workspace <path>   only sessions for this root
            eval             Run a task benchmark: each <tasks>/<id>/task.json runs
                             headless in an isolated workspace + fresh pinned home,
@@ -172,6 +176,10 @@ static async Task<int> RunAsync(string[] args)
 
 static async Task<int> SessionsAsync(string[] args)
 {
+    if (args.Length > 0 && args[0] == "import")
+        return await Blazorly.Harness.Cli.SessionCommands.ImportAsync(args[1..]);
+    if (args.Length > 0 && args[0] == "seed")
+        return await Blazorly.Harness.Cli.SessionSeeder.RunAsync(args[1..]);
     var (options, positional) = Parse(args);
     return await HeadlessRunner.ListSessionsAsync(options);
 }
