@@ -210,6 +210,91 @@
                     }
                     <p class="settings-note">Search backend changes apply after the app restarts.</p>
                 }
+                <label>
+                    <span>Decision model (System One)</span>
+                    <div class="settings-toggles">
+                        <label class="toggle">
+                            <input type="checkbox" checked="@_settings.EnableSystemOne" @onchange="e => _settings.EnableSystemOne = e.Value is true" />
+                            <span>Ask a calibrated decision model instead of the built-in heuristics</span>
+                        </label>
+                    </div>
+                </label>
+                @if (_settings.EnableSystemOne)
+                {
+                    <label>
+                        <span>System One API key</span>
+                        <input type="password" @bind="_settings.SystemOneApiKey" @bind:event="oninput" placeholder="tsk-…" />
+                    </label>
+                    <div class="discover-row"><span class="provider-meta-hint">or env <code>@_settings.SystemOneApiKeyEnv</code></span></div>
+                    <label>
+                        <span>Base URL</span>
+                        <input type="text" @bind="_settings.SystemOneBaseUrl" @bind:event="oninput" />
+                    </label>
+                    <label>
+                        <span>Endpoint path</span>
+                        <input type="text" @bind="_settings.SystemOnePath" @bind:event="oninput" />
+                    </label>
+                    <label>
+                        <span>Model (blank = service default)</span>
+                        <input type="text" @bind="_settings.SystemOneModel" @bind:event="oninput" placeholder="jev-1" />
+                    </label>
+                    <label>
+                        <span>Auth header</span>
+                        <select @bind="_settings.SystemOneAuthStyle">
+                            <option value="bearer">Authorization: Bearer</option>
+                            <option value="apikey">X-API-Key</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>Timeout (ms)</span>
+                        <input type="number" min="100" max="10000" step="100" @bind="_settings.SystemOneTimeoutMs" />
+                    </label>
+                    <label>
+                        <span>Seams</span>
+                        <div class="settings-toggles">
+                            @foreach (var (key, label) in DecisionSeams)
+                            {
+                                <label class="toggle">
+                                    <input type="checkbox" checked="@(SeamOn(key))" @onchange="e => SetSeam(key, e.Value is true)" />
+                                    <span>@label</span>
+                                </label>
+                            }
+                        </div>
+                    </label>
+                    @if (SeamOn("auto-plan"))
+                    {
+                        <label>
+                            <span>Auto-plan: engage at P ≥</span>
+                            <input type="number" min="0.5" max="1" step="0.05" @bind="_settings.AutoPlanEngageAt" />
+                        </label>
+                        <label>
+                            <span>Auto-plan: skip at P ≤</span>
+                            <input type="number" min="0" max="0.5" step="0.05" @bind="_settings.AutoPlanSkipAt" />
+                        </label>
+                        <p class="settings-note">Between the two bands the model abstains and the @_settings.AutoPlanThreshold/100 heuristic scorer decides.</p>
+                    }
+                    @if (SeamOn("risk-gate"))
+                    {
+                        <label>
+                            <span>Risk gate</span>
+                            <div class="settings-toggles">
+                                <label class="toggle">
+                                    <input type="checkbox" checked="@_settings.EnableRiskGate" @onchange="e => _settings.EnableRiskGate = e.Value is true" />
+                                    <span>Park risky tool calls for approval</span>
+                                </label>
+                            </div>
+                        </label>
+                        @if (_settings.EnableRiskGate)
+                        {
+                            <label>
+                                <span>Park at P(risky) ≥</span>
+                                <input type="number" min="0" max="1" step="0.05" @bind="_settings.RiskGateThreshold" />
+                            </label>
+                        }
+                        <p class="settings-note">Escalate-only: the model can turn an allowed call into an approval prompt, never the reverse. It stands down on timeout, on error, and in headless runs where nobody could answer.</p>
+                    }
+                    <p class="settings-note">Every decision is recorded as an ignorable <code>decision/result</code> event on the session. Verify the endpoint with <code>blazorly decisions probe</code>; changes apply after the app restarts.</p>
+                }
                 break;
 
             case "sandbox":
@@ -314,6 +399,33 @@
 
     private HarnessSettings _settings = new();
     private string _tab = "provider";
+
+    /// <summary>The decision seams the settings expose; the service also accepts "*".</summary>
+    private static readonly (string Key, string Label)[] DecisionSeams =
+    [
+        ("auto-plan", "Auto-plan engagement (does this brief need a plan?)"),
+        ("risk-gate", "Risk gate (should this tool call be approved?)"),
+    ];
+
+    private bool SeamOn(string key)
+        => _settings.SystemOneSeams.Count == 0
+           || _settings.SystemOneSeams.Contains("*")
+           || _settings.SystemOneSeams.Contains(key);
+
+    private void SetSeam(string key, bool on)
+    {
+        // Materialise the implicit "all" default before removing one, so the toggle means what it says.
+        if (_settings.SystemOneSeams.Count == 0 || _settings.SystemOneSeams.Contains("*"))
+            _settings.SystemOneSeams = [.. DecisionSeams.Select(s => s.Key)];
+        if (on)
+        {
+            if (!_settings.SystemOneSeams.Contains(key)) _settings.SystemOneSeams.Add(key);
+        }
+        else
+        {
+            _settings.SystemOneSeams.Remove(key);
+        }
+    }
     private string _lastProvider = "";
     private IReadOnlyList<Blazorly.Harness.Llm.LlmModelInfo> _models = [];
     private List<string>? _discovered;

@@ -126,28 +126,29 @@ public static class ComplexityScorer
 /// </summary>
 public static class AutoPlanPolicy
 {
-    /// <summary>True when this turn's brief looks complex enough to plan first.</summary>
-    public static bool ShouldEngage(Session session, IReadOnlyList<Message> messages, int threshold, out ComplexityScore score)
+    /// <summary>
+    /// The human brief for this turn when auto-plan is structurally allowed to consider it, or
+    /// null when the turn is exempt. These guards are structural, not semantic, so a decision
+    /// model replaces only the complexity judgment below — never this.
+    /// </summary>
+    public static string? EligibleBrief(Session session, IReadOnlyList<Message> messages)
     {
-        score = new ComplexityScore(0, []);
-        if (session.Events.Any(e => e.Type == SessionEventTypes.SubagentDescriptor)) return false; // subagent briefs are orchestrator-authored
-        if (GoalService.Active(session) is not null) return false; // goal rounds drive their own continuation turns
+        if (session.Events.Any(e => e.Type == SessionEventTypes.SubagentDescriptor)) return null; // subagent briefs are orchestrator-authored
+        if (GoalService.Active(session) is not null) return null; // goal rounds drive their own continuation turns
 
         var text = string.Join("\n", messages
             .Where(m => m.Role == "user" && m.Source.Kind == "user")
             .Select(m => m.FlattenText())).Trim();
-        if (text.Length == 0) return false;
+        return text.Length == 0 ? null : text;
+    }
 
-        var candidate = ComplexityScorer.Score(text);
-        if (candidate.Total < threshold)
-        {
-            score = candidate;
-            return false;
-        }
-
-        // Fresh-arc rule: if plan mode was lifted during the previous user turn (an
-        // approval or a manual /plan off), this prompt is a follow-up in that arc —
-        // let it run; re-engage only for a brief sent after that turn ended.
+    /// <summary>
+    /// Fresh-arc rule: true when plan mode was lifted during the previous user turn (an approval
+    /// or a manual /plan off), which makes this prompt a follow-up in that arc — it should run
+    /// without re-engaging. Re-engagement waits for a brief sent after that turn ended.
+    /// </summary>
+    public static bool FollowsApprovedPlan(Session session)
+    {
         var lastUserSeq = (int?)null;
         var lastLiftSeq = (int?)null;
         var events = session.Events;
@@ -159,13 +160,19 @@ public static class AutoPlanPolicy
                 lastLiftSeq = e.Seq;
             if (lastUserSeq is not null && lastLiftSeq is not null) break;
         }
-        if (lastLiftSeq is not null && lastUserSeq is not null && lastLiftSeq > lastUserSeq)
-        {
-            score = candidate;
-            return false;
-        }
+        return lastLiftSeq is not null && lastUserSeq is not null && lastLiftSeq > lastUserSeq;
+    }
 
+    /// <summary>True when this turn's brief looks complex enough to plan first.</summary>
+    public static bool ShouldEngage(Session session, IReadOnlyList<Message> messages, int threshold, out ComplexityScore score)
+    {
+        score = new ComplexityScore(0, []);
+        if (EligibleBrief(session, messages) is not { } text) return false;
+
+        var candidate = ComplexityScorer.Score(text);
         score = candidate;
+        if (candidate.Total < threshold) return false;
+        if (FollowsApprovedPlan(session)) return false;
         return true;
     }
 }
@@ -175,12 +182,20 @@ public static class AutoPlanPolicy
 /// and engage plan mode before the model runs. Reuses the plan-mode machinery (mutation
 /// guard, exit_plan_mode approval) — this plugin only decides *when* planning starts.
 /// </summary>
-public sealed class AutoPlanPlugin(int threshold = AutoPlanPlugin.DefaultThreshold) : HarnessPlugin
+public sealed class AutoPlanPlugin(
+    int threshold = AutoPlanPlugin.DefaultThreshold,
+    Core.Decisions.DecisionService? decisions = null,
+    AutoPlanDecisionOptions? decision = null) : HarnessPlugin
 {
     public const int DefaultThreshold = 55;
 
+    /// <summary>The question key the decision model answers.</summary>
+    public const string PlanKey = "needs_plan";
+
     public override string Name => "auto-plan";
     public override string[] Inject { get; } = [PlanModeService.ServiceKey, "systemPrompt"];
+
+    private readonly AutoPlanDecisionOptions _decision = decision ?? new AutoPlanDecisionOptions();
 
     protected override Task ApplyAsync(HarnessContext ctx)
     {
@@ -192,7 +207,7 @@ public sealed class AutoPlanPlugin(int threshold = AutoPlanPlugin.DefaultThresho
             // later steps and must never flip the mode mid-turn.
             if (payload.Step == 1 && value is { Count: > 0 }
                 && !planMode.IsActive(payload.Agent.Session)
-                && AutoPlanPolicy.ShouldEngage(payload.Agent.Session, value, threshold, out var score))
+                && await ShouldEngageAsync(payload.Agent.Session, value, ct).ConfigureAwait(false) is { } score)
             {
                 PlanModeService.Toggle(payload.Agent.Session, active: true, auto: true, score: score.Total, reasons: score.Reasons);
             }
@@ -214,4 +229,54 @@ public sealed class AutoPlanPlugin(int threshold = AutoPlanPlugin.DefaultThresho
         ctx.Effect(section.Dispose);
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// The engagement decision. A decision model answers first when its seam is enabled and it is
+    /// confident in either direction; an uncertain, unavailable or failed call falls through to the
+    /// deterministic heuristic, so disabling System One restores exactly the previous behaviour.
+    /// Returns the score to display when plan mode should engage, else null.
+    /// </summary>
+    public async Task<ComplexityScore?> ShouldEngageAsync(
+        Session session, IReadOnlyList<Message> messages, CancellationToken ct)
+    {
+        // Structural guards first: exempt turns never reach the model, so they cost nothing.
+        if (AutoPlanPolicy.EligibleBrief(session, messages) is not { } brief) return null;
+        if (AutoPlanPolicy.FollowsApprovedPlan(session)) return null;
+
+        if (decisions is not null && decisions.IsEnabled(Core.Decisions.DecisionSeams.AutoPlan))
+        {
+            var state = new Core.Decisions.DecisionState()
+                .Add("brief", brief, _decision.MaxBriefChars)
+                .Add("cwd", session.Header.Cwd ?? "", 260);
+            var result = await decisions.AskAsync(Core.Decisions.DecisionSeams.AutoPlan, state,
+                new Core.Decisions.Noul(PlanKey,
+                    "Does this request need investigation and an approved plan before anything is changed? "
+                    + "Answer yes for multi-file, multi-step or design-shaped work; no for a question, "
+                    + "a lookup, or a single small edit whose scope is already obvious."),
+                session, ct).ConfigureAwait(false);
+
+            if (result?.ProbabilityOf(PlanKey) is { } p)
+            {
+                if (p >= _decision.EngageAt)
+                    return new ComplexityScore((int)Math.Round(p * 100), [$"decision model: P(needs plan) = {p:P0}"]);
+                if (p <= _decision.SkipAt) return null;
+                // Inside the uncertain band: the model abstains, the heuristic decides.
+            }
+        }
+
+        return AutoPlanPolicy.ShouldEngage(session, messages, threshold, out var score) ? score : null;
+    }
+}
+
+/// <summary>
+/// Calibration bands for the auto-plan decision. Two thresholds rather than one: below
+/// <see cref="SkipAt"/> the brief certainly runs, at or above <see cref="EngageAt"/> it certainly
+/// plans, and the band between is where the model abstains and the deterministic scorer decides.
+/// A calibrated model is only worth trusting where it is actually confident.
+/// </summary>
+public sealed record AutoPlanDecisionOptions
+{
+    public double EngageAt { get; init; } = 0.60;
+    public double SkipAt { get; init; } = 0.25;
+    public int MaxBriefChars { get; init; } = 8_000;
 }

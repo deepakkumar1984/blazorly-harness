@@ -28,6 +28,17 @@ public sealed class ApprovalService
 
     public ApprovalService(HarnessContext ctx) => _ctx = ctx;
 
+    /// <summary>
+    /// True when some front end is currently able to answer. A caller that would escalate to
+    /// <c>Ask</c> must check this first: with no answerer the seam fails closed to
+    /// <see cref="ApprovalOutcome.Unavailable"/>, which the tool pipeline turns into a denial —
+    /// so an advisory escalation would silently break headless runs.
+    /// </summary>
+    public bool CanAsk
+    {
+        get { lock (_gate) return _answerers.Count > 0; }
+    }
+
     public static ApprovalService Mount(HarnessContext ctx)
     {
         var service = new ApprovalService(ctx);

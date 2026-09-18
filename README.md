@@ -118,6 +118,9 @@ dotnet run --project src/Blazorly.Harness.Cli -- run "summarize this repo's stru
 
 ```bash
 ... -- sessions                      # list persisted sessions (newest last)
+... -- decisions doctor              # System One config + which seams are live
+... -- decisions probe               # one real decision call; raw request/reply + parsed result
+                                     #   flags: --seam auto-plan|risk-gate|loop, --text, --json
 ... -- serve-stdio                   # JSON-RPC automation protocol on stdin/stdout
 ... -- serve-acp                     # Agent Client Protocol for editors
                                      #   flags: --workspace, --permission auto|ask
@@ -292,6 +295,9 @@ dotnet run --project src/Blazorly.Harness.Web
 | `autoPlanThreshold` | `55` | Complexity score (0–100) at which auto-plan engages a fresh turn's brief (settings file only) |
 | `telemetryEnabled` | `true` | Local-only usage aggregates; nothing leaves the machine |
 | `enableE2b`, `e2bApiKey`, `e2bTemplate`, `e2bBaseUrl` | off | Remote E2B sandbox execution (key resolves from settings, else the `E2B_API_KEY` env var) |
+| `enableSystemOne`, `systemOneApiKey`, `systemOneBaseUrl`, `systemOnePath`, `systemOneModel`, `systemOneAuthStyle`, `systemOneTimeoutMs`, `systemOneSeams` | off | System One decision model (see below); the key also resolves from `SYSTEMONE_API_KEY` |
+| `enableRiskGate`, `riskGateThreshold` | off / `0.5` | Park risky tool calls for approval at or above this P(risky) |
+| `autoPlanEngageAt` / `autoPlanSkipAt` | `0.60` / `0.25` | Decision-model calibration bands for auto-plan; between them the heuristic scorer decides |
 | `webSearchBackend` | `duckduckgo` | `web_search` backend: `duckduckgo` (keyless), `tavily`, or `brave` (change applies after restart) |
 | `tavilyApiKey` / `braveApiKey` | — | Search API keys (or `TAVILY_API_KEY` / `BRAVE_API_KEY` env vars); without a key the backend falls back to DuckDuckGo |
 | `pluginDirs` | `<home>/plugins` | Third-party plugin directories (each `*.dll` with `IHarnessPlugin` impls loads at boot) |
@@ -383,6 +389,53 @@ The agent picks up instruction files — `AGENTS.md`, `CLAUDE.md`, and their `.l
 Plan mode (manual: `/plan`) restricts a session to read-only work until the model presents a plan via `exit_plan_mode` and you approve it in a modal. **Auto plan mode** extends this: at the start of each fresh user turn, a deterministic complexity scorer (length, sequencing words, scope verbs, multi-entity targets, `@file` references, numbered steps; questions are capped) rates the brief, and scores at or above `autoPlanThreshold` engage plan mode *before* the first model call. The header shows a `📋 plan · auto` chip, the mutation guard blocks writes, and the system prompt tells the model why planning was engaged.
 
 Guard rails: steers mid-turn never flip the mode; subagent and goal-driven turns are exempt; a brief that follows a plan you just approved runs without re-engaging (each approved plan covers its follow-up arc); `/plan` stays authoritative in both directions. Headless runs without an interactive reviewer fail closed — the model presents the plan as its final message instead of mutating. Disable with the Settings toggle, `{"disable":["auto-plan"]}` in `patches.json`, or `enableAutoPlan: false`.
+
+### Decision model (System One)
+
+Some places in the harness have to make a *judgment*, not a generation: does this brief need a plan, is this tool call dangerous, is the agent going in circles. Those are currently answered by regexes and counters. The decision seam lets a calibrated [System One](https://typesafe.ai) style model answer them instead — unstructured state in, typed decisions out (`Choice` / `Score` / `Noul`), one parallel pass, no generated text.
+
+It is **off by default**, and off means exactly the previous behaviour: no network call, no added latency, nothing new in the session log. Turn it on with `enableSystemOne` plus a key (`systemOneApiKey`, or the `SYSTEMONE_API_KEY` env var) in Settings → Capabilities. Turn it back off the same way, or with `{"disable":["system-one"]}` in `patches.json` — disabling `system-one` also drops the risk gate rather than leaving it inert.
+
+```jsonc
+{
+  "enableSystemOne": true,
+  "systemOneApiKey": "tsk-…",
+  "systemOneBaseUrl": "https://api.typesafe.ai",
+  "systemOnePath": "/v1/systemone",
+  "systemOneSeams": ["auto-plan", "risk-gate"],
+  "enableRiskGate": true,
+  "riskGateThreshold": 0.5
+}
+```
+
+Verify the endpoint and wire format before trusting a seam:
+
+```bash
+blazorly decisions doctor   # what resolved, which seams are live
+blazorly decisions probe    # one real call: raw request, raw reply, parsed result
+blazorly decisions probe --seam risk-gate --json
+```
+
+Live seams:
+
+| Seam | Question | Effect |
+|---|---|---|
+| `auto-plan` | *Does this brief need a plan before anything changes?* | Engages plan mode at P ≥ `autoPlanEngageAt`, skips at P ≤ `autoPlanSkipAt`, and abstains to the `autoPlanThreshold` heuristic in between |
+| `risk-gate` | *Could this call destroy data or leak secrets irreversibly?* | Parks the call for your approval at P ≥ `riskGateThreshold` |
+
+Two more seams are named in the settings vocabulary — `loop` (semantic thrash detection, where `RepeatCallGuard` only catches byte-identical calls) and `compaction` (ranking which context blocks to prune) — but nothing consumes them yet. `GET /api/decisions` reports them under `plannedSeams` rather than `seams` so an "enabled" flag never implies behaviour that isn't there; `decisions probe --seam loop` still works, to exercise the wire shape ahead of the consumer.
+
+Evals pin both flags off (`EvalSandbox.PinnedSettings`) so scores stay reproducible and comparable.
+
+Three rules make this safe to leave enabled:
+
+- **No opinion is a first-class result.** Disabled, unconfigured, timed out, errored, or uncertain all fall back to the deterministic logic that was already there. A decision model can never be the reason a turn fails.
+- **Escalate-only.** The risk gate can turn an *allow* into an *ask*. It can never turn an *ask* into an *allow*, never softens a *deny*, and stands down entirely in headless runs where nobody could answer the prompt. Reads, searches and fetches never reach the model at all, so it stays off the hot path.
+- **Every decision is durable.** An ignorable `decision/result` event records the seam, the implementation, the state hash, the probabilities and the latency — so a behaviour change is attributable, and `blazorly eval` can pin the heuristic path to stay comparable with older runs.
+
+Inspect what it has cost at `GET /api/decisions` (calls, answered, degraded, mean/max latency, per-seam counts). A climbing `degraded` count with no `answered` calls means the endpoint or reply shape needs adjusting in `SystemOneClient`.
+
+> The public System One request/response schema is not pinned. The adapter sends a self-describing payload and parses several common reply shapes; `blazorly decisions probe` prints the raw exchange so a mismatch is a two-line fix in `SystemOneClient.BuildRequest` / `TryReadAnswer` rather than a mystery.
 
 ### Plugins
 

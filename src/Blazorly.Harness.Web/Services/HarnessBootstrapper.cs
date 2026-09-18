@@ -107,6 +107,46 @@ public sealed class HarnessSettings
         => !string.IsNullOrWhiteSpace(E2bApiKey) ? E2bApiKey : Environment.GetEnvironmentVariable(E2bApiKeyEnv);
 
     /// <summary>
+    /// System One decision model (TypeSafe): unstructured state in, calibrated typed decisions out.
+    /// Off by default, and off means *exactly* the previous behaviour — every seam falls through to
+    /// the deterministic heuristic it already used, with no network call and nothing new logged.
+    /// </summary>
+    public bool EnableSystemOne { get; set; } = false;
+    public string? SystemOneApiKey { get; set; }
+    public string SystemOneApiKeyEnv { get; set; } = "SYSTEMONE_API_KEY";
+    public string SystemOneBaseUrl { get; set; } = "https://api.typesafe.ai";
+    public string SystemOnePath { get; set; } = "/v1/systemone";
+    /// <summary>Model id requested; blank means the service default.</summary>
+    public string? SystemOneModel { get; set; }
+    /// <summary>Auth header style: "bearer" (Authorization: Bearer …) or "apikey" (X-API-Key: …).</summary>
+    public string SystemOneAuthStyle { get; set; } = "bearer";
+    /// <summary>
+    /// Hard cap for one decision call. These sit before a model call, inside the measured cancel
+    /// path, so the default is deliberately tighter than the hook timeout.
+    /// </summary>
+    public int SystemOneTimeoutMs { get; set; } = 1_500;
+    /// <summary>
+    /// Seams allowed to consult the model. Empty or ["*"] means every implemented seam.
+    /// Known seams: auto-plan, risk-gate, loop, compaction.
+    /// </summary>
+    public List<string> SystemOneSeams { get; set; } = ["auto-plan", "risk-gate"];
+
+    /// <summary>Park an allowed tool call for human approval at or above this P(risky).</summary>
+    public bool EnableRiskGate { get; set; } = false;
+    public double RiskGateThreshold { get; set; } = 0.5;
+
+    /// <summary>Auto-plan calibration bands; between them the model abstains and the heuristic decides.</summary>
+    public double AutoPlanEngageAt { get; set; } = 0.60;
+    public double AutoPlanSkipAt { get; set; } = 0.25;
+
+    /// <summary>Settings key first, then the configured environment variable.</summary>
+    public string? ResolveSystemOneApiKey()
+        => !string.IsNullOrWhiteSpace(SystemOneApiKey) ? SystemOneApiKey : Environment.GetEnvironmentVariable(SystemOneApiKeyEnv);
+
+    /// <summary>True only when the decision layer is on *and* a key resolved.</summary>
+    public bool SystemOneReady => EnableSystemOne && ResolveSystemOneApiKey() is { Length: > 0 };
+
+    /// <summary>
     /// Switches the active route: the typed key is stashed for the provider being left and the
     /// entering provider's stashed key restored, and a base URL that is blank or still at another
     /// catalog provider's default follows the new provider (custom proxy URLs are kept). Without
@@ -375,6 +415,27 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                     new Core.Mcp.McpOptions { ConfigPath = Path.Combine(_home, "mcp.json") })));
         }
 
+        // Decision seam (System One). Built eagerly so the same service instance can be handed to
+        // the plugins that consume it, independent of boot order. With the feature off — or on but
+        // keyless — this mounts the no-op model and every seam behaves exactly as before.
+        var skipAtBoot = new HashSet<string>(Settings.DisabledPlugins, StringComparer.OrdinalIgnoreCase);
+        var decisionsEnabled = !skipAtBoot.Contains(Core.Decisions.DecisionPlugin.PluginName);
+        var decisions = new Core.Decisions.DecisionPlugin(
+            BuildDecisionModel(Settings),
+            new Core.Decisions.DecisionOptions
+            {
+                Enabled = Settings.SystemOneReady,
+                Seams = Settings.SystemOneSeams is { Count: 0 } ? ["*"] : Settings.SystemOneSeams,
+            });
+        if (decisionsEnabled) plugins.Add(decisions);
+        // The gate is meaningless without the seam, and mounting it anyway would leave an inert
+        // plugin in the composition — drop both together.
+        if (Settings.EnableRiskGate && decisionsEnabled)
+        {
+            plugins.Add(new Core.Decisions.RiskGatePlugin(decisions.Service,
+                new Core.Decisions.RiskGateOptions { Threshold = Settings.RiskGateThreshold }));
+        }
+
         plugins.Add(new JobsPlugin());
         if (Settings.EnableAskUser) plugins.Add(new AskUserPlugin());
         plugins.Add(new SubagentToolsPlugin());
@@ -384,7 +445,12 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         if (Settings.EnableGoals) plugins.Add(new GoalPlugin());
         if (Settings.EnablePlanMode) plugins.Add(new PlanModePlugin());
         if (Settings.EnablePlanMode && Settings.EnableAutoPlan)
-            plugins.Add(new AutoPlanPlugin(Settings.AutoPlanThreshold));
+            plugins.Add(new AutoPlanPlugin(Settings.AutoPlanThreshold, decisions.Service,
+                new AutoPlanDecisionOptions
+                {
+                    EngageAt = Settings.AutoPlanEngageAt,
+                    SkipAt = Settings.AutoPlanSkipAt,
+                }));
         if (Settings.EnableCodeMode) plugins.Add(new CodeModePlugin());
         if (Settings.EnableTerminals) plugins.Add(new TerminalPlugin());
         if (Settings.EnableLsp) plugins.Add(new LspPlugin());
@@ -484,6 +550,29 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 
     /// <summary>Selects the web_search backend from settings; a keyed backend without a key
     /// falls back to keyless DuckDuckGo (noted on stderr) so web_search keeps working.</summary>
+    /// <summary>
+    /// The decision model for this configuration: a System One client when the feature is on and a
+    /// key resolved, otherwise the no-op model. Returning the no-op rather than null is what makes
+    /// "disabled" and "never existed" the same code path for every consumer.
+    /// </summary>
+    public static Core.Decisions.IDecisionModel BuildDecisionModel(HarnessSettings settings)
+        => settings.SystemOneReady
+            ? new Core.Decisions.SystemOneClient(SystemOneOptionsOf(settings, settings.ResolveSystemOneApiKey()!))
+            : Core.Decisions.NoOpDecisionModel.Instance;
+
+    /// <summary>Wire options from settings; shared by the boot composition and <c>decisions probe</c>.</summary>
+    public static Core.Decisions.SystemOneOptions SystemOneOptionsOf(HarnessSettings settings, string apiKey) => new()
+    {
+        ApiKey = apiKey,
+        BaseUrl = string.IsNullOrWhiteSpace(settings.SystemOneBaseUrl)
+            ? "https://api.typesafe.ai"
+            : settings.SystemOneBaseUrl,
+        Path = string.IsNullOrWhiteSpace(settings.SystemOnePath) ? "/v1/systemone" : settings.SystemOnePath,
+        Model = string.IsNullOrWhiteSpace(settings.SystemOneModel) ? null : settings.SystemOneModel,
+        AuthStyle = settings.SystemOneAuthStyle,
+        TimeoutMs = settings.SystemOneTimeoutMs > 0 ? settings.SystemOneTimeoutMs : 1_500,
+    };
+
     public static Blazorly.Harness.Tools.IWebProvider BuildWebProvider(HarnessSettings settings)
     {
         if (string.Equals(settings.WebSearchBackend, "tavily", StringComparison.OrdinalIgnoreCase)

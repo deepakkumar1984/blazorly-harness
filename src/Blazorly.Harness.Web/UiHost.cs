@@ -281,6 +281,45 @@ public static class UiHost
     app.MapGet("/api/telemetry", (HarnessBootstrapper harness) => Results.Json(
         harness.Telemetry is { } telemetry ? telemetry.Snapshot() : new { generatedAt = 0L, enabled = false, days = Array.Empty<object>() }));
 
+    // Decision-seam health: what is configured, whether it is live, and what it has cost so far.
+    // A degraded count climbing with no answered calls means the endpoint or wire format is wrong.
+    app.MapGet("/api/decisions", (HarnessBootstrapper harness) =>
+    {
+        var service = harness.Context.TryGet<Core.Decisions.DecisionService>(Core.Decisions.DecisionService.ServiceKey);
+        var stats = service?.Stats();
+        return Results.Json(new
+        {
+            enabled = harness.Settings.SystemOneReady,
+            featureFlag = harness.Settings.EnableSystemOne,
+            keyPresent = harness.Settings.ResolveSystemOneApiKey() is { Length: > 0 },
+            impl = service?.Impl ?? "none",
+            endpoint = harness.Settings.SystemOneBaseUrl.TrimEnd('/') + harness.Settings.SystemOnePath,
+            model = string.IsNullOrWhiteSpace(harness.Settings.SystemOneModel) ? null : harness.Settings.SystemOneModel,
+            timeoutMs = harness.Settings.SystemOneTimeoutMs,
+            seams = Core.Decisions.DecisionSeams.Wired
+                .Select(seam => new { seam, enabled = service?.IsEnabled(seam) ?? false })
+                .ToArray(),
+            // Named so the settings vocabulary is stable, but nothing consumes them yet: reporting
+            // them as seams would imply an "enabled" flag does something.
+            plannedSeams = Core.Decisions.DecisionSeams.Planned,
+            riskGate = harness.Settings.EnableRiskGate,
+            riskGateThreshold = harness.Settings.RiskGateThreshold,
+            autoPlanEngageAt = harness.Settings.AutoPlanEngageAt,
+            autoPlanSkipAt = harness.Settings.AutoPlanSkipAt,
+            stats = stats is null ? null : new
+            {
+                calls = stats.Calls,
+                answered = stats.Answered,
+                degraded = stats.Degraded,
+                cacheHits = stats.CacheHits,
+                meanLatencyMs = Math.Round(stats.MeanLatencyMs, 1),
+                maxLatencyMs = stats.MaxLatencyMs,
+                stateChars = stats.StateChars,
+                perSeam = stats.PerSeam,
+            },
+        });
+    });
+
     app.MapGet("/api/llm.providers", (HarnessBootstrapper harness) => Results.Json(new
     {
         providers = harness.Llm.ListProviders().Select(p => new { id = p, models = harness.Llm.ListModels(p) }),
