@@ -263,7 +263,9 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
         if (status is 400 or 413 && (text.Contains("context length") || text.Contains("maximum context") || text.Contains("too long")))
             return Failure(LlmErrorCodes.ContextWindowExceeded, $"request exceeds context window ({detail})", status);
         if (status >= 500) return Failure(LlmErrorCodes.Server, $"provider server error ({detail})", status);
-        return Failure(LlmErrorCodes.InvalidRequest, $"provider rejected request ({status}): {Truncate(body, 400)}", status);
+        if (string.IsNullOrWhiteSpace(errorMessage))
+            return Failure(LlmErrorCodes.InvalidRequest, $"provider rejected request ({status}): {Truncate(body.Trim(), 400)}", status);
+        return Failure(LlmErrorCodes.InvalidRequest, $"provider rejected request ({detail})", status);
     }
 
     /// <summary>
@@ -291,10 +293,13 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     /// <summary>Best-effort {code, message} from a provider error body; empty strings when absent, HTML, or unparseable.</summary>
     internal static (string Code, string Message) ProviderError(string body)
     {
-        if (string.IsNullOrWhiteSpace(body) || body[0] is not ('{' or '[')) return ("", "");
+        var text = body.TrimStart();
+        // Streaming endpoints frame errors as SSE ("data: {...}"): unwrap before parsing.
+        if (text.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) text = text["data:".Length..].TrimStart();
+        if (string.IsNullOrWhiteSpace(text) || text[0] is not ('{' or '[')) return ("", "");
         try
         {
-            using var doc = JsonDocument.Parse(body);
+            using var doc = JsonDocument.Parse(text);
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return ("", "");
             // Providers nest under "error" (OpenAI, Z.ai, Anthropic) or put code/message at the root.
             var error = doc.RootElement.TryGetProperty("error", out var nested) && nested.ValueKind == JsonValueKind.Object

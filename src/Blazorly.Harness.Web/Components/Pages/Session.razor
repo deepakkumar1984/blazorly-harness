@@ -32,19 +32,31 @@
             </div>
             <div class="session-header-actions">
                 <div class="view-tabs" role="tablist" aria-label="Session view">
-                    <button class="@TabClass("chat")" role="tab" aria-selected="@(_view == "chat")" @onclick='() => SwitchView("chat")'>Chat</button>
-                    <button class="@TabClass("trajectory")" role="tab" aria-selected="@(_view == "trajectory")" @onclick='() => SwitchView("trajectory")'>Trajectory</button>
+                    <button class="@TabClass("chat")" role="tab" aria-selected="@(_view == "chat")" aria-label="Chat" data-tip="Chat view" @onclick='() => SwitchView("chat")'>
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3h11v7H9L5.5 13v-3H2.5V3z" /></svg>
+                    </button>
+                    <button class="@TabClass("trajectory")" role="tab" aria-selected="@(_view == "trajectory")" aria-label="Trajectory" data-tip="Trajectory view" @onclick='() => SwitchView("trajectory")'>
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="3.5" cy="12.5" r="1.6" /><circle cx="12.5" cy="3.5" r="1.6" /><path d="M4.9 11.3 8 8.4h3.4V4.6" /></svg>
+                    </button>
                 </div>
                 <div class="session-toolbar">
-                    <button class="ghost dock-toggle @(_terminalOpen ? "on" : "")" title="Run commands in a persistent shell for this session" @onclick="ToggleTerminal">Terminal</button>
-                    <button class="ghost dock-toggle @(_statsOpen ? "on" : "")" title="Session statistics: turns, tokens, duration, tool usage" @onclick='() => _statsOpen = !_statsOpen'>Stats</button>
-                    <button class="ghost" @onclick="ForkHere" title="Fork this session at the last completed turn">Fork</button>
+                    <button class="ghost dock-toggle @(_terminalOpen ? "on" : "")" aria-label="Terminal" data-tip="Run commands in a persistent shell for this session" @onclick="ToggleTerminal">
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v9h-11z" /><path d="m5 6.2 2.2 2.2L5 10.6" /><path d="M9.3 10.6H12" /></svg>
+                    </button>
+                    <button class="ghost dock-toggle @(_statsOpen ? "on" : "")" aria-label="Stats" data-tip="Session statistics: turns, tokens, duration, tool usage" @onclick='() => _statsOpen = !_statsOpen'>
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12.5V8" /><path d="M8 12.5V4.5" /><path d="M12.5 12.5V6.5" /><path d="M2.5 13.5h11" /></svg>
+                    </button>
+                    <button class="ghost" @onclick="ForkHere" aria-label="Fork" data-tip="Fork this session at the last completed turn">
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="4.5" cy="12.5" r="1.5" /><circle cx="11.5" cy="8" r="1.5" /><path d="M4.5 5.2v5.6M4.5 8h5.3" /></svg>
+                    </button>
                     @if (_snapshot?.Todos is { Count: > 0 } toolbarTodos && _view == "chat")
                     {
                         <button class="ghost dock-toggle @(!_todosCollapsed ? "on" : "")"
-                                title="@(_todosCollapsed ? "Show task list" : "Hide task list")"
+                                aria-label="Tasks"
+                                data-tip="@(_todosCollapsed ? "Show task list" : "Hide task list")"
                                 @onclick="() => _todosCollapsed = !_todosCollapsed">
-                            Tasks<span class="toolbar-count"> @(toolbarTodos.Count(t => t.Status == TodoItem.Completed))/@toolbarTodos.Count</span>
+                            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 7.6l1.7 1.7 3-3.4" /><path d="M6.5 4.5h7" /><path d="M6.5 8h7" /><path d="M6.5 11.5h7" /></svg>
+                            <span class="toolbar-count">@toolbarTodos.Count(t => t.Status == TodoItem.Completed)/@toolbarTodos.Count</span>
                         </button>
                     }
                 </div>
@@ -683,6 +695,7 @@
     private string? _loadedSessionId;
     private bool _pendingScroll;
     private bool _pendingScrollForce;
+    private int? _lastSurfacedFailedTurn;
     private const int TranscriptInitialTake = 200;
     private const int TranscriptGrowTake = 100;
     private int _transcriptTake = TranscriptInitialTake;
@@ -729,10 +742,14 @@
                         // Defer past the render: scrolling here would measure the
                         // pre-render DOM and land above the new bottom. The pending
                         // path in OnAfterRenderAsync scrolls once the DOM is current.
-                        // New approval/question popups force; steady streaming keeps
-                        // the near-bottom check so scrolled-up readers are not yanked.
+                        // New approval/question popups and newly failed turns force;
+                        // steady streaming keeps the near-bottom check so scrolled-up
+                        // readers are not yanked.
+                        var failedTurn = _session is null ? null : ConversationAssembler.LatestFailedTurn(_session);
+                        var hasNewFailure = failedTurn is { } failed && failed != _lastSurfacedFailedTurn;
+                        if (failedTurn is { } surfaced) _lastSurfacedFailedTurn = surfaced;
                         _pendingScroll = true;
-                        _pendingScrollForce = hasNewPending;
+                        _pendingScrollForce = hasNewPending || hasNewFailure;
                     }
                 }
                 catch (Exception ex) when (ex is not TaskCanceledException)
@@ -808,6 +825,7 @@
         _pendingApproval = null;
         _pendingQuestion = null;
         _transcriptTake = TranscriptInitialTake;
+        _lastSurfacedFailedTurn = _session is null ? null : ConversationAssembler.LatestFailedTurn(_session);
         _dirty = false;
         // The drawer is per-session: stop polling the previous shell and reset the view
         // (the shell itself stays alive in the service and is re-attached on reopen).

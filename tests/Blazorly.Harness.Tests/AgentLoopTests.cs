@@ -307,3 +307,45 @@ public class ToolSchedulerTests
         Assert.Equal(3, started.Count);
     }
 }
+
+/// <summary>Provider 400s name our own fields back at the user with the way out.</summary>
+public class InvalidRequestHintTests
+{
+    [Fact]
+    public void EffortNamedByProvider_PointsAtEffortReset()
+    {
+        var text = AgentDriver.WithInvalidRequestHint(
+            "provider rejected request (400: reasoning_effort 'max' is not supported)",
+            new AgentOptions("p", "m", 1024, "max"));
+        Assert.Contains("reasoning effort 'max'", text);
+        Assert.Contains("/effort default", text);
+    }
+
+    [Fact]
+    public void MaxTokensNamedByProvider_PointsAtSettings()
+    {
+        var text = AgentDriver.WithInvalidRequestHint(
+            "provider rejected request (400: max_tokens 65536 exceeds the limit)",
+            new AgentOptions("p", "m", 65536));
+        Assert.Contains("max_tokens 65536", text);
+        Assert.Contains("Settings", text);
+    }
+
+    [Fact]
+    public void UnnamedCause_ListsBothSuspectsWithValues()
+    {
+        var text = AgentDriver.WithInvalidRequestHint(
+            "provider rejected request (400: Invalid request parameters)",
+            new AgentOptions("p", "m", 65536, "max"));
+        Assert.Contains("reasoning effort 'max'", text);
+        Assert.Contains("max_tokens 65536", text);
+        Assert.Contains("/effort default", text);
+    }
+
+    [Fact]
+    public void NothingOursSent_MessagePassesThrough()
+    {
+        const string message = "provider rejected request (400: Invalid request parameters)";
+        Assert.Equal(message, AgentDriver.WithInvalidRequestHint(message, new AgentOptions("p", "m")));
+    }
+}

@@ -15,8 +15,9 @@ namespace Blazorly.Harness.Web;
 
 /// <summary>The UI host, callable from the product launcher (`blazorly serve`) and the
 /// standalone web project alike. Binds http://localhost:5080 unless ASPNETCORE_URLS
-/// says otherwise; an explicit --port always overrides both. --no-open suppresses the
-/// welcome browser tab.</summary>
+/// says otherwise; an explicit --port/--host always overrides both. --no-open suppresses
+/// the welcome browser tab. --host 0.0.0.0 listens on all interfaces — the console has
+/// no login, so that bind prints a warning and should sit behind auth or a firewall.</summary>
 public static class UiHost
 {
     public static async Task<int> RunAsync(string[] args)
@@ -32,13 +33,13 @@ public static class UiHost
 
         // Published binaries have no launchSettings.json: bind :5080 explicitly unless
         // the environment (ASPNETCORE_URLS / --urls) already chose something. An explicit
-        // --port/-p always wins — `dotnet run` injects ASPNETCORE_URLS from launchSettings,
-        // which would otherwise silently bury the flag.
-        if (uiArgs.PortExplicit
+        // --port/-p or --host/-h always wins — `dotnet run` injects ASPNETCORE_URLS from
+        // launchSettings, which would otherwise silently bury the flags.
+        if (uiArgs.PortExplicit || uiArgs.HostExplicit
             || (Environment.GetEnvironmentVariable("ASPNETCORE_URLS") is not { Length: > 0 }
                 && args.All(a => !a.StartsWith("--urls", StringComparison.Ordinal))))
         {
-            builder.WebHost.UseUrls($"http://localhost:{uiArgs.Port}");
+            builder.WebHost.UseUrls(uiArgs.ListenUrl);
         }
 
         // The packaged product talks to humans on stdout, not through ASP.NET's info
@@ -80,6 +81,22 @@ public static class UiHost
     }
     app.UseStatusCodePagesWithReExecute("/not-found");app.UseWebSockets();
     app.UseAntiforgery();
+
+    // Token gate ahead of static files, the API, and Blazor: loopback passes, the
+    // network must show the boot token once (then the cookie carries refreshes).
+    var gate = new UiAccessGate(uiArgs.Token);
+    app.Use(async (context, next) =>
+    {
+        if (!gate.IsAuthorized(context))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.ContentType = "text/html; charset=utf-8";
+            await context.Response.WriteAsync(UiAccessGate.LockedPage);
+            return;
+        }
+        if (context.Request.Query.ContainsKey(UiAccessGate.QueryParameter)) gate.IssueCookie(context);
+        await next();
+    });
 
         // Static assets: when the Web project is the host (dev / its own publish) the
         // optimized manifest pipeline applies. The packaged launcher (entry = blazorly)
@@ -416,8 +433,19 @@ public static class UiHost
     app.MapRazorComponents<App>()
         .AddInteractiveServerRenderMode();
 
-        var url = $"http://localhost:{uiArgs.Port}";
+        var url = $"{uiArgs.OpenUrl}?token={Uri.EscapeDataString(gate.Token)}";
         Console.WriteLine($"blazorly {UiVersion.Text} — UI at {url} (Ctrl+C to stop)");
+        Console.WriteLine(gate.Pinned
+            ? "blazorly access token: pinned via --token"
+            : "blazorly access token: fresh this boot (restart rotates it)");
+        if (!uiArgs.IsLoopbackOnly)
+        {
+            Console.Error.WriteLine(
+                $"blazorly: WARNING — UI bound to {uiArgs.ListenUrl}, reachable beyond this machine. "
+                + "The console has no login: anyone who can reach it can run shells and read your API keys. "
+                + "Prefer localhost behind an SSH tunnel (ssh -L 5080:localhost:5080 <host>), a reverse proxy "
+                + "with auth, or at minimum a firewall rule on the port.");
+        }
         if (!uiArgs.NoOpen)
         {
             _ = Task.Run(async () =>

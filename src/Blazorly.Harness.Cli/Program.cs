@@ -3,7 +3,7 @@ using Blazorly.Harness.Web;
 
 // blazorly — the product launcher (dsh apps/cli parity).
 //   blazorly                   the UI (same as `serve`)
-//   blazorly serve             the UI, explicitly (--port N, --no-open)
+//   blazorly serve             the UI, explicitly (--port N, --host IP, --no-open)
 //   blazorly run "job"         one headless task over the invoking directory
 //   blazorly sessions          list persisted sessions (also: sessions import / sessions seed)
 //
@@ -40,6 +40,11 @@ static int Help()
         Commands:
           (no command)     Start the local UI (alias: `serve`). Flags:
                              --port <n>           bind this port (default 5080)
+                             --host <ip|name>     bind address (default localhost;
+                                                  0.0.0.0 = all interfaces)
+                             --token <secret>     pin the console access token
+                                                  (default: fresh random token each boot,
+                                                  printed in the startup URL)
                              --no-open            do not open a browser tab
                            The UI is also how settings, sessions, and workspaces are managed.
 

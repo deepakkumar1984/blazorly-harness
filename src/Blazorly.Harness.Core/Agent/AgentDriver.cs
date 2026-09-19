@@ -114,7 +114,9 @@ public sealed class AgentDriver
         }
         catch (LlmException ex)
         {
-            turnEnds = new TurnEndReason.Error(ex.Message, ex.Code);
+            turnEnds = new TurnEndReason.Error(
+                ex.Code == LlmErrorCodes.InvalidRequest ? WithInvalidRequestHint(ex.Message, _agent.Options) : ex.Message,
+                ex.Code);
             throw;
         }
         catch (Exception ex)
@@ -136,6 +138,32 @@ public sealed class AgentDriver
             if (events[i].Type == SessionEventTypes.TurnStart) return events[i].Data.GetProperty("turn").GetInt32();
         }
         return 0;
+    }
+
+    /// <summary>
+    /// A provider 400 rarely names the offending field, and two of the fields are ours: the
+    /// chosen reasoning effort and the resolved max_tokens cap. When either was sent, name the
+    /// actual values and the way back so the chat shows a diagnosis instead of a riddle.
+    /// </summary>
+    public static string WithInvalidRequestHint(string message, AgentOptions options)
+    {
+        var effort = options.ReasoningEffort;
+        var maxTokens = options.MaxTokens;
+        if (effort is null && maxTokens is null) return message;
+        var lower = message.ToLowerInvariant();
+        string hint;
+        if (effort is not null && (lower.Contains("reasoning") || lower.Contains("thinking") || lower.Contains("effort")))
+            hint = $"The route rejected reasoning effort '{effort}': the model may not support it. Reset with /effort default or pick another level in the model dialog.";
+        else if (maxTokens is not null && (lower.Contains("max_tokens") || lower.Contains("max output") || lower.Contains("max_output")))
+            hint = $"max_tokens {maxTokens} exceeds what this route allows. Lower Max output tokens in Settings → Context.";
+        else
+        {
+            var suspects = new List<string>();
+            if (effort is not null) suspects.Add($"reasoning effort '{effort}'");
+            if (maxTokens is not null) suspects.Add($"max_tokens {maxTokens}");
+            hint = $"The request included {string.Join(" and ", suspects)} — this route may not accept them. Try Model default effort (/effort default) or a lower max output (Settings → Context).";
+        }
+        return $"{message} {hint}";
     }
 
     // ---- pre-step ----

@@ -237,7 +237,8 @@ public static class AcpServer
                         }
                         tracked.Agent.Options = new AgentOptions(provider, model,
                             HarnessBootstrapper.ResolveMaxOutputTokens(bootstrapper.Settings,
-                                bootstrapper.RuntimeModels(provider), model));
+                                bootstrapper.RuntimeModels(provider), model),
+                            tracked.Agent.Options.ReasoningEffort);
                         if (HasContinuableDescriptor(tracked.Agent.Session))
                         {
                             // Refresh the log-only descriptor so a cold resume keeps this route.

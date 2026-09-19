@@ -718,3 +718,55 @@ public class SessionSearchIndexTests : IDisposable
         Assert.Contains("needle", match.GetProperty("snippet").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 }
+
+/// <summary>Agent reattach across an app restart: route selections recorded in the
+/// durable request header (provider, model, output cap, reasoning effort) come back.</summary>
+[Collection("BlazorlyHome")]
+public class SessionReattachTests : BootstrapperTestBase
+{
+    [Fact]
+    public async Task Reattach_RestoresReasoningEffortFromRequestHeader()
+    {
+        File.WriteAllText(Path.Combine(Home, "settings.json"), JsonSerializer.Serialize(new
+        {
+            provider = "deepseek",
+            model = "deepseek-v4-pro",
+            workspaceRoot = Path.Combine(Path.GetTempPath(), "ws-" + Guid.NewGuid().ToString("N")[..8]),
+        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+        string sessionId;
+        var first = new HarnessBootstrapper();
+        await first.StartAsync(CancellationToken.None);
+        try
+        {
+            var facade = new SessionFacade(first, new UiEventBroker());
+            var session = facade.CreateSession();
+            sessionId = session.Id;
+            facade.EnsureAgent(session).Options = facade.EnsureAgent(session).Options with { ReasoningEffort = "max" };
+            session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+            session.Append(SessionEventTypes.RequestHeader,
+                new SessionPayloads.RequestHeaderPayload(
+                    new LlmCallConfig { Provider = "deepseek", Model = "deepseek-v4-pro", MaxTokens = 1024, ReasoningEffort = "max" },
+                    "test"));
+            session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(1, new TurnEndReason.Completed()));
+            await first.Sessions.Persistence!.FlushAsync(sessionId);
+        }
+        finally
+        {
+            await first.DisposeAsync();
+        }
+
+        var second = new HarnessBootstrapper();
+        await second.StartAsync(CancellationToken.None);
+        try
+        {
+            var facade = new SessionFacade(second, new UiEventBroker());
+            var session = await facade.OpenSessionAsync(sessionId);
+            Assert.Equal("max", facade.EnsureAgent(session).Options.ReasoningEffort);
+        }
+        finally
+        {
+            await second.DisposeAsync();
+        }
+    }
+}

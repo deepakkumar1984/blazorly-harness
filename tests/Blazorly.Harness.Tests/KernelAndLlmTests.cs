@@ -216,6 +216,26 @@ public class OpenAiAdapterWireTests
         Assert.Equal(LlmErrorCodes.Server, html.Failure.Code); // unparseable body still classifies
     }
 
+    [Fact]
+    public void ClassifyHttp_SseFramedErrorBody_ParsesToCleanMessage()
+    {
+        // Streaming endpoints frame the error as an SSE data line; the chat must show the
+        // provider's message, not the raw "data:{...}" payload.
+        var failure = OpenAiCompatibleAdapter.ClassifyHttp(400,
+            """data:{"error":{"code":"400","message":"Invalid request parameters","param":"","type":"BadRequestError"}}""").Failure;
+        Assert.Equal(LlmErrorCodes.InvalidRequest, failure.Code);
+        Assert.Equal("provider rejected request (400: Invalid request parameters)", failure.Message);
+    }
+
+    [Fact]
+    public void ClassifyHttp_InvalidRequest_UsesParsedMessageNotRawBody()
+    {
+        var failure = OpenAiCompatibleAdapter.ClassifyHttp(400,
+            """{"error":{"code":"400","message":"Invalid request parameters"}}""").Failure;
+        Assert.Equal(LlmErrorCodes.InvalidRequest, failure.Code);
+        Assert.Equal("provider rejected request (400: Invalid request parameters)", failure.Message);
+    }
+
     [Theory]
     // Z.ai reports an empty balance as a plain 429 with code 1113; OpenAI uses insufficient_quota.
     [InlineData("""{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}""")]

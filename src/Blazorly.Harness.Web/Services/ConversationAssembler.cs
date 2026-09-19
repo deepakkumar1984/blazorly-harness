@@ -102,6 +102,27 @@ public sealed class ConversationAssembler(ToolRuntime tools, Blazorly.Harness.Co
     /// so a 100K-event session costs the same per tick as a fresh one.</summary>
     public ConversationFolder CreateFolder(Core.Sessions.Session session) => new(this, session, tools, meter);
 
+    /// <summary>Newest turn that ended in error, if any: failures land out of view when the
+    /// reader scrolled up, so the page force-scrolls to newly failed turns like approvals.</summary>
+    public static int? LatestFailedTurn(Core.Sessions.Session session)
+    {
+        int? failed = null;
+        foreach (var e in session.Events)
+        {
+            if (e.Type != SessionEventTypes.TurnEnd) continue;
+            if (!e.Data.TryGetProperty("turn", out var turnValue)
+                || turnValue.ValueKind != System.Text.Json.JsonValueKind.Number) continue;
+            var kind = e.Data.TryGetProperty("reason", out var reason)
+                && reason.ValueKind == System.Text.Json.JsonValueKind.Object
+                && reason.TryGetProperty("kind", out var kindValue)
+                && kindValue.ValueKind == System.Text.Json.JsonValueKind.String
+                ? kindValue.GetString()
+                : null;
+            if (kind == "error") failed = failed is null ? turnValue.GetInt32() : Math.Max(failed.Value, turnValue.GetInt32());
+        }
+        return failed;
+    }
+
     private static int SortKey(ConversationNode node)
     {
         // Nodes carry their originating seq in the key: u-{seq}, a-{seq}, t-{seq}, te-{seq}, live-*

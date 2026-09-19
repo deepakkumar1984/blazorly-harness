@@ -200,4 +200,26 @@ public class ConversationFoldTests
         using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
         session.Append(type, doc.RootElement.Clone());
     }
+
+    [Fact]
+    public void LatestFailedTurn_NoneFailed_ReturnsNull()
+    {
+        var session = new Session(new SessionHeader { Id = "s", CreatedAt = 1, Cwd = "/tmp" });
+        session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+        session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(1, new TurnEndReason.Completed()));
+        Assert.Null(ConversationAssembler.LatestFailedTurn(session));
+    }
+
+    [Fact]
+    public void LatestFailedTurn_ReturnsNewestErrorTurn()
+    {
+        var session = new Session(new SessionHeader { Id = "s", CreatedAt = 1, Cwd = "/tmp" });
+        session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+        session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(1, new TurnEndReason.Error("boom", "INVALID_REQUEST")));
+        session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(2));
+        session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(2, new TurnEndReason.Completed()));
+        session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(3));
+        session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(3, new TurnEndReason.Error("again", "INVALID_REQUEST")));
+        Assert.Equal(3, ConversationAssembler.LatestFailedTurn(session));
+    }
 }

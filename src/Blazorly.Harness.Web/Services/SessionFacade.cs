@@ -83,7 +83,8 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         {
             agent.Options = new AgentOptions(header.Header.Provider, header.Header.Model,
                 header.Header.MaxTokens ?? HarnessBootstrapper.ResolveMaxOutputTokens(harness.Settings,
-                    harness.RuntimeModels(header.Header.Provider), header.Header.Model));
+                    harness.RuntimeModels(header.Header.Provider), header.Header.Model),
+                header.Header.ReasoningEffort);
         }
         harness.Agents.Publish(agent);
         _ = harness.Context.Events.EmitAsync("agent/session-start", new SessionStartEvent(agent, "startup"), agent);

@@ -491,6 +491,53 @@ button.icon:disabled { opacity: 0.35; }
     font-size: 12.5px;
     font-weight: 550;
     padding: 4px 13px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.session-toolbar button.ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+/* ---- CSS tooltips (anchored below; header buttons sit at the viewport top) ---- */
+[data-tip] { position: relative; }
+[data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 240px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--bg-raised);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.4;
+    text-align: center;
+    white-space: normal;
+    pointer-events: none;
+    z-index: 60;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.1s ease, visibility 0s linear 0.1s;
+}
+[data-tip]:hover::after, [data-tip]:focus-visible::after {
+    opacity: 1;
+    visibility: visible;
+    transition-delay: 0.25s, 0.25s;
+}
+/* the right-aligned toolbar would push centered tips off-screen */
+.session-toolbar [data-tip]::after {
+    left: auto;
+    right: 0;
+    transform: none;
 }
 .view-tabs .tab:hover { color: var(--text); }
 .view-tabs .tab.active { background: var(--bg-overlay); color: var(--text); }
