@@ -182,12 +182,8 @@ public sealed class SubagentService
     /// </summary>
     private static Session ForkParentSession(Session parentSession, SessionStore sessions)
     {
-        var lastTurnEnd = -1;
-        foreach (var @event in parentSession.Events)
-        {
-            if (@event.Type == SessionEventTypes.TurnEnd) lastTurnEnd = @event.Seq;
-        }
-        if (lastTurnEnd < 0)
+        var lastTurnEnd = parentSession.LatestTurnEndSeq();
+        if (lastTurnEnd is null)
             throw new Kernel.HarnessException("INVALID_FORK", "fork requires a parent with at least one settled turn");
         return sessions.Fork(parentSession.Id, lastTurnEnd);
     }

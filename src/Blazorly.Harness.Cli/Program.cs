@@ -6,12 +6,14 @@ using Blazorly.Harness.Web;
 //   blazorly serve             the UI, explicitly (--port N, --host IP, --no-open)
 //   blazorly run "job"         one headless task over the invoking directory
 //   blazorly sessions          list persisted sessions (also: sessions import / sessions seed)
+//   blazorly init              AI-drafted AGENTS.md docs for a workspace (dry run; --write to create)
 //
 // Exit codes for `run`: 0 completed/max-tokens · 2 turn error/blocked · 3 aborted · 1 failure.
 
 return args.Length == 0 ? await ServeAsync([]) : args[0] switch
 {
     "serve" => await ServeAsync(args[1..]),
+    "init" => await Blazorly.Harness.Cli.InitCommand.RunAsync(args[1..]),
     "run" => await RunAsync(args[1..]),
     "sessions" => await SessionsAsync(args[1..]),
     "eval" => await EvalAsync(args[1..]),
@@ -91,6 +93,15 @@ static int Help()
                            --text "<…>", --json. With the feature off (or on but
                            keyless) every seam falls back to its deterministic
                            logic and nothing changes.
+          init            AI-drafted AGENTS.md docs for a workspace (grounded
+                           repo brief, drafts path-verified). Dry run by
+                           default; --write creates the files. Flags:
+                             --root <path>      workspace (default: current dir)
+                             --depth <n>        subdir depth (default: 0, root only)
+                             --provider/--model route override
+                             --write            create/refresh the files
+                             --force            replace instead of merge
+                             --deterministic    offline template, no model calls
           update          Self-update from GitHub Releases (checksum-verified, swaps
                            ~/.blazorly/app/current in place). Env:
                              BLAZORLY_INSTALL_BASE  install from a local dist/ folder

@@ -5,6 +5,7 @@ using Microsoft.Extensions.FileProviders;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Blazorly.Harness.Core.Instructions;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Kernel;
 using Blazorly.Harness.Llm;
@@ -197,6 +198,33 @@ public static class UiHost
         var child = facade.Fork(body.SessionId, body.AtSeq);
         await facade.FlushAsync(child.Id);
         return Results.Json(new { id = child.Id });
+    });
+
+    app.MapPost("/api/session.docs-preview", async (HttpContext http, SessionFacade facade) =>
+    {
+        var body = await http.Request.ReadFromJsonAsync<DocsRequest>();
+        if (body is null || string.IsNullOrWhiteSpace(body.SessionId)) return Results.BadRequest();
+        var preview = facade.PreviewSessionDocs(body.SessionId, Math.Clamp(body.Depth ?? DocsInitService.DefaultDepth, 0, 5));
+        return Results.Json(new
+        {
+            root = preview.Root,
+            files = preview.Files.Select(f => new { path = f.RelativePath, chars = f.Content.Length, exists = f.Exists, changed = f.Changed }),
+            stale = preview.StaleReferences.Select(s => new { doc = s.DocPath, line = s.Line, reference = s.Reference }),
+        });
+    });
+
+    app.MapPost("/api/session.docs-apply", async (HttpContext http, SessionFacade facade) =>
+    {
+        var body = await http.Request.ReadFromJsonAsync<DocsRequest>();
+        if (body is null || string.IsNullOrWhiteSpace(body.SessionId)) return Results.BadRequest();
+        var result = facade.ApplySessionDocs(body.SessionId, Math.Clamp(body.Depth ?? DocsInitService.DefaultDepth, 0, 5), body.Force ?? false);
+        return Results.Json(new
+        {
+            root = result.Root,
+            written = result.Written,
+            unchanged = result.Unchanged,
+            stale = result.StaleReferences.Select(s => new { doc = s.DocPath, line = s.Line, reference = s.Reference }),
+        });
     });
 
     app.MapPost("/api/interaction.answer", async (HttpContext http, UiInteractions ui) =>
@@ -504,6 +532,7 @@ public static class UiHost
 
 public sealed record PromptRequest(string? SessionId, string? Content, string? Mode);
 public sealed record ForkRequest(string? SessionId, int? AtSeq);
+public sealed record DocsRequest(string? SessionId, int? Depth, bool? Force);
 public sealed record AnswerRequest(string? Id, string? Answer);
 public sealed record WorkspaceRequest(string? Id, string? Name, string? Root);
 public sealed record ArchiveRequest(string? SessionId, bool Archived);

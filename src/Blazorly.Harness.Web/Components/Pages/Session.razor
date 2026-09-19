@@ -46,8 +46,13 @@
                     <button class="ghost dock-toggle @(_statsOpen ? "on" : "")" aria-label="Stats" data-tip="Session statistics: turns, tokens, duration, tool usage" @onclick='() => _statsOpen = !_statsOpen'>
                         <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12.5V8" /><path d="M8 12.5V4.5" /><path d="M12.5 12.5V6.5" /><path d="M2.5 13.5h11" /></svg>
                     </button>
-                    <button class="ghost" @onclick="ForkHere" aria-label="Fork" data-tip="Fork this session at the last completed turn">
+                    <button class="ghost" @onclick="ForkHere" aria-label="Fork" disabled="@(!CanFork)"
+                            data-tip="@(_running ? "Session is running — forking resumes when the turn settles" : _session?.LatestTurnEndSeq() is null ? "Nothing to fork yet — the first turn has not settled" : "Fork this session at the last completed turn")">
                         <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="4.5" cy="12.5" r="1.5" /><circle cx="11.5" cy="8" r="1.5" /><path d="M4.5 5.2v5.6M4.5 8h5.3" /></svg>
+                    </button>
+                    <button class="ghost" @onclick="OpenDocsModal" aria-label="Generate docs" disabled="@(DocsRoot is null)"
+                            data-tip="@(DocsRoot is null ? "No workspace for this session" : "Generate AGENTS.md docs for this workspace with AI — grounded in a repo scan, preview before writing")">
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.8h5.5L13 5.3V14.2H4V1.8z" /><path d="M9.3 1.8v3.7H13" /><path d="M6 8.5h4M6 11h4" /></svg>
                     </button>
                     @if (_snapshot?.Todos is { Count: > 0 } toolbarTodos && _view == "chat")
                     {
@@ -609,6 +614,63 @@
     </div>
 }
 
+@if (_docsOpen)
+{
+    <div class="modal-overlay" @onclick="CloseMenus">
+        <div class="modal model-config" role="dialog" aria-modal="true" aria-labelledby="docs-init-title"
+             @onclick:stopPropagation="true" @onkeydown="OnSearchKey">
+            <div class="modal-head">
+                <h3 id="docs-init-title">Generate workspace docs</h3>
+                <button class="ghost" aria-label="Close docs generator" @onclick="CloseMenus">Close</button>
+            </div>
+            <div class="model-config-selection">Workspace: @(DocsRoot ?? "(none)")</div>
+            <label class="modal-field">
+                <span>Subdirectory depth</span>
+                <select @bind="_docsDepth" @bind:after="RefreshDocsPreview">
+                    <option value="0">Root file only</option>
+                    <option value="1">1 level</option>
+                    <option value="2">2 levels</option>
+                    <option value="3">3 levels</option>
+                </select>
+            </label>
+            <div class="model-config-list" aria-label="Planned docs">
+                <div class="popover-group">Planned files <span class="group-count">@(_docsPreview?.Files.Count ?? 0)</span></div>
+                @if (_docsPreview is not null)
+                {
+                    @foreach (var file in _docsPreview.Files)
+                    {
+                        <div class="popover-item">@(file.Exists ? "refresh" : "create") — @file.RelativePath <span class="model-config-id">@file.Content.Length chars</span></div>
+                    }
+                }
+                <div class="popover-group">Unresolved path references <span class="group-count">@(_docsPreview?.StaleReferences.Count ?? 0)</span></div>
+                @if (_docsPreview?.StaleReferences.Count > 0)
+                {
+                    @foreach (var stale in _docsPreview.StaleReferences.Take(20))
+                    {
+                        <div class="popover-item">@System.IO.Path.GetFileName(stale.DocPath):@stale.Line — <span class="model-config-id">@stale.Reference</span></div>
+                    }
+                    @if (_docsPreview.StaleReferences.Count > 20)
+                    {
+                        <div class="popover-empty">… and @(_docsPreview.StaleReferences.Count - 20) more</div>
+                    }
+                }
+                else
+                {
+                    <div class="popover-empty">All path references resolve.</div>
+                }
+            </div>
+            @if (_docsResult is not null)
+            {
+                <div class="model-config-selection">@_docsResult</div>
+            }
+            <div class="modal-actions">
+                <button class="ghost" @onclick="CloseMenus">Cancel</button>
+                <button class="primary" disabled="@(_docsPreview is null || DocsRoot is null || _docsGenerating)" @onclick="ApplyDocsInit">@(_docsGenerating ? "Drafting…" : "Generate files")</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter] public string SessionId { get; set; } = "";
 
@@ -625,6 +687,12 @@
     private bool _modelMenu;
     private bool _permissionMenu;
     private bool _ctxMenu;
+    private bool _docsOpen;
+    private int _docsDepth;
+    private Core.Instructions.DocsInitService.InitPreview? _docsPreview;
+    private string? _docsResult;
+    private bool _docsGenerating;
+    private string? DocsRoot => string.IsNullOrWhiteSpace(_session?.Header.Cwd) ? null : _session.Header.Cwd;
     private string _modelSearch = "";
     private bool _focusModelSearch;
     private ElementReference _modelSearchInput;
@@ -1312,6 +1380,7 @@
         _modelMenu = false;
         _permissionMenu = false;
         _ctxMenu = false;
+        _docsOpen = false;
     }
 
     private void SelectModel(string provider, string model)
@@ -1432,7 +1501,75 @@
         _pendingChanged = true;
     }
 
-    private void ForkHere() => ForkAt(null);
+    private bool CanFork => !_running && _session?.LatestTurnEndSeq() is not null;
+
+    private void OpenDocsModal()
+    {
+        if (DocsRoot is null) return;
+        _modelMenu = false;
+        _permissionMenu = false;
+        _ctxMenu = false;
+        _docsResult = null;
+        _docsOpen = true;
+        RefreshDocsPreview();
+    }
+
+    private void RefreshDocsPreview()
+    {
+        _docsResult = null;
+        try
+        {
+            _docsPreview = Facade.PreviewSessionDocs(SessionId, _docsDepth);
+        }
+        catch (Exception ex)
+        {
+            _docsPreview = null;
+            _docsResult = $"Preview failed: {ex.Message}";
+        }
+    }
+
+    private async Task ApplyDocsInit()
+    {
+        if (DocsRoot is null || _docsGenerating) return;
+        var provider = _agent?.Options.Provider;
+        var model = _agent?.Options.Model;
+        if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(model))
+        {
+            _docsResult = "Pick a provider and model first (model menu above) — drafting is AI-generated.";
+            return;
+        }
+        _docsGenerating = true;
+        _docsResult = $"Drafting with {provider}/{model}…";
+        try
+        {
+            var result = await Facade.GenerateSessionDocsAsync(
+                SessionId, _docsDepth, provider, model, _agent?.Options.ReasoningEffort);
+            _docsResult = result.Written.Count == 0
+                ? "Everything is already up to date."
+                : $"Wrote {result.Written.Count} file(s) with {result.Model}: {string.Join(", ", result.Written)}";
+            if (result.Unresolved.Count > 0)
+                _docsResult += $" Warning: {result.Unresolved.Count} invented path(s) survived correction: " +
+                    string.Join(", ", result.Unresolved.Take(5).Select(u => u.Reference));
+            _docsPreview = Facade.PreviewSessionDocs(SessionId, _docsDepth);
+        }
+        catch (Exception ex)
+        {
+            _docsResult = $"Generate failed: {ex.Message}";
+        }
+        finally
+        {
+            _docsGenerating = false;
+        }
+    }
+
+    private void ForkHere()
+    {
+        // Honor the tooltip: branch at the last settled turn, never the live tip
+        // (a tip cut inside an open turn is what used to crash the circuit).
+        if (!CanFork || _session?.LatestTurnEndSeq() is not { } boundary) return;
+        var child = Facade.Fork(SessionId, boundary);
+        Navigation.NavigateTo($"/session/{child.Id}", forceLoad: true);
+    }
 
     private void ForkAt(string? key)
     {

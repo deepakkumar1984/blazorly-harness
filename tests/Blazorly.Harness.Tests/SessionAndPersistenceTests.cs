@@ -175,6 +175,21 @@ public class SessionTests
     }
 
     [Fact]
+    public void LatestTurnEndSeq_TracksSettledTurns()
+    {
+        var (session, _) = NewSession();
+        Assert.Null(session.LatestTurnEndSeq());
+        session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+        Assert.Null(session.LatestTurnEndSeq());
+        session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(1, new TurnEndReason.Completed()));
+        Assert.Equal(1, session.LatestTurnEndSeq());
+        session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(2));
+        Assert.Equal(1, session.LatestTurnEndSeq()); // an open turn never moves the fork boundary
+        session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(2, new TurnEndReason.Error("boom", "X")));
+        Assert.Equal(3, session.LatestTurnEndSeq()); // any outcome settles the boundary
+    }
+
+    [Fact]
     public void DeriveMessages_PreservesNonSnapshotPluginMessages()
     {
         var (session, _) = NewSession();
@@ -768,5 +783,37 @@ public class SessionReattachTests : BootstrapperTestBase
         {
             await second.DisposeAsync();
         }
+    }
+}
+
+/// <summary>Fork boundaries: the store refuses cuts inside an open turn, and branching
+/// at the last settled turn stays legal even while a newer turn is open.</summary>
+public class SessionForkBoundaryTests : IDisposable
+{
+    private readonly TestHarness _harness = TestHarness.Create();
+
+    public void Dispose() => _harness.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    [Fact]
+    public void Fork_AtLiveTipInsideOpenTurn_IsRejected()
+    {
+        var agent = _harness.CreateAgent();
+        agent.Session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+        var ex = Assert.Throws<HarnessException>(() => _harness.Sessions.Fork(agent.Session.Id));
+        Assert.Equal("OPEN_TURN", ex.Code);
+    }
+
+    [Fact]
+    public void Fork_AtLastSettledTurn_SucceedsDespiteNewerOpenTurn()
+    {
+        var agent = _harness.CreateAgent();
+        agent.Session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+        agent.Session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(1, new TurnEndReason.Completed()));
+        agent.Session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(2));
+        var boundary = agent.Session.LatestTurnEndSeq();
+        Assert.NotNull(boundary);
+        var child = _harness.Sessions.Fork(agent.Session.Id, boundary);
+        Assert.Equal(agent.Session.Id, child.Header.ParentSession);
+        Assert.Equal(boundary + 1, child.Header.SeedLength);
     }
 }

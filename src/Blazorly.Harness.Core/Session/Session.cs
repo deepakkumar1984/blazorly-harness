@@ -278,6 +278,20 @@ public sealed class Session
         }
     }
 
+    /// <summary>Seq of the newest turn/end (any outcome), or null before the first settled turn.
+    /// Fork boundaries use this: the child seed runs through a closed turn, never a live one.</summary>
+    public int? LatestTurnEndSeq()
+    {
+        lock (_gate)
+        {
+            for (var i = _log.Count - 1; i >= 0; i--)
+            {
+                if (_log[i].Type == SessionEventTypes.TurnEnd) return _log[i].Seq;
+            }
+            return null;
+        }
+    }
+
     /// <summary>Latest user/provider title (latest wins), or null when untitled.</summary>
     public string? LatestTitle()
     {

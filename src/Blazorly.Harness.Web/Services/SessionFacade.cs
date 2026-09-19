@@ -195,6 +195,32 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     public Core.Sessions.Session Fork(string sessionId, int? atSeq)
         => harness.Sessions.Fork(sessionId, atSeq);
 
+    // ---- workspace docs (blazorly init) ----
+
+    public Core.Instructions.DocsInitService.InitPreview PreviewSessionDocs(string sessionId, int depth)
+        => Core.Instructions.DocsInitService.Preview(SessionRoot(sessionId), depth);
+
+    public Core.Instructions.DocsInitService.InitApplyResult ApplySessionDocs(string sessionId, int depth, bool force)
+        => Core.Instructions.DocsInitService.Apply(SessionRoot(sessionId), depth, force);
+
+    /// <summary>AI-drafted docs with the session's route: draft, verify, correct, write.</summary>
+    public async Task<Core.Instructions.AiDocsDrafter.AiApplyResult> GenerateSessionDocsAsync(
+        string sessionId, int depth, string provider, string model, string? reasoningEffort,
+        CancellationToken ct = default)
+    {
+        var complete = Core.Instructions.AiDocsDrafter.CompleteWith(harness.Llm, provider, model, reasoningEffort);
+        return await Core.Instructions.AiDocsDrafter.DraftAndApplyAsync(
+            SessionRoot(sessionId), depth, $"{provider}/{model}", complete, force: false, ct).ConfigureAwait(false);
+    }
+
+    private string SessionRoot(string sessionId)
+    {
+        var cwd = harness.Sessions.Get(sessionId)?.Header.Cwd;
+        if (string.IsNullOrWhiteSpace(cwd))
+            throw new Kernel.HarnessException("NO_WORKSPACE", $"session '{sessionId}' has no workspace directory");
+        return cwd;
+    }
+
     public IReadOnlyList<Core.Sessions.Session> LiveSessions() => harness.Sessions.LiveSessions();
 
     public async Task<IReadOnlyList<SessionHeader>> ListPersistedAsync()
