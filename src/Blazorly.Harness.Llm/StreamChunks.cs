@@ -73,6 +73,10 @@ public static class LlmErrorCodes
     public const string Server = "SERVER";
     public const string Transport = "TRANSPORT";
     public const string Timeout = "TIMEOUT";
+    /// <summary>Provider accepted the request but streamed no bytes within the first-byte
+    /// watchdog window. Deliberately absent from <see cref="DefaultRetryable"/>: a stall that
+    /// long never recovers on a quick retry, and retrying would multiply the wait.</summary>
+    public const string FirstByteStall = "FIRST_BYTE_STALL";
     public const string Aborted = "ABORTED";
     public const string MalformedResponse = "MALFORMED_RESPONSE";
     public const string StreamClosed = "STREAM_CLOSED";

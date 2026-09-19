@@ -50,7 +50,7 @@ public class MultiProviderTests
             };
             settings.ProviderKeys["zai"] = "zai-key";
 
-            settings.SelectProvider("openai-compatible", "zai", keepCustomBaseUrl: false);
+            settings.SelectProvider("openai-compatible", "zai");
 
             Assert.Equal("zai", settings.Provider);
             Assert.Equal(ProviderCatalog.Info("zai")!.DefaultBaseUrl, settings.BaseUrlFor("zai")); // the gateway stayed with its own route
@@ -61,23 +61,52 @@ public class MultiProviderTests
             Assert.Equal(ProviderCatalog.DefaultModel("zai"), settings.Model);
 
             // Switching back restores the stashed endpoint; an explicit model override wins over the default.
-            settings.SelectProvider("zai", "openai-compatible", "glm-5.3", keepCustomBaseUrl: false);
+            settings.SelectProvider("zai", "openai-compatible", "glm-5.3");
             Assert.Equal("glm-5.3", settings.Model);
             Assert.Equal(gateway, settings.BaseUrlFor("openai-compatible"));
             Assert.Equal("zai-key", settings.ApiKeyFor("zai"));
-
-            // Settings-page semantics: a gateway URL follows the selection and serves the new provider.
-            var ui = new HarnessSettings { Provider = "deepseek", ApiKey = "sk-ds", BaseUrl = gateway };
-            ui.SelectProvider("deepseek", "zai");
-            Assert.Equal(gateway, ui.BaseUrlFor("zai"));
-            Assert.Equal("zai", ui.BaseUrlProvider);
-            Assert.Equal("sk-ds", ui.ProviderKeys["deepseek"]);
-            Assert.Equal(gateway, ui.ProviderBaseUrls["deepseek"]); // and switching back restores it
         }
         finally
         {
             Environment.SetEnvironmentVariable("ZAI_API_KEY", null);
         }
+    }
+
+    [Fact]
+    public void SelectProvider_SettingsSwitchNeverCarriesAProviderEndpointToAnotherProvider()
+    {
+        // Reported bug: switching providers in the Settings dropdown kept the previous provider's
+        // custom base URL (any non-catalog URL was treated as a shared gateway), so the new
+        // provider's key went to the old provider's host and the turn hung on an endpoint that
+        // never answered — even with a valid URL and key typed for the new provider.
+        const string mimo = "https://mimo.example.com/v1";
+        var ui = new HarnessSettings { Provider = "openai-compatible", ApiKey = "sk-mimo", BaseUrl = mimo };
+
+        ui.SelectProvider("openai-compatible", "deepseek");
+
+        Assert.Equal("deepseek", ui.Provider);
+        Assert.Equal(ProviderCatalog.Info("deepseek")!.DefaultBaseUrl, ui.BaseUrlFor("deepseek"));
+        Assert.Equal("deepseek", ui.BaseUrlProvider);
+        Assert.Equal(mimo, ui.ProviderBaseUrls["openai-compatible"]); // the endpoint stayed with its own route
+        Assert.Null(ui.ApiKey); // no key typed for deepseek yet — never mimo's
+
+        // Switching back restores the typed endpoint, so nothing needs re-typing.
+        ui.SelectProvider("deepseek", "openai-compatible");
+        Assert.Equal(mimo, ui.BaseUrlFor("openai-compatible"));
+        Assert.Equal("sk-mimo", ui.ApiKey);
+    }
+
+    [Fact]
+    public void BaseUrlFor_BackgroundRoutesUseTheProvidersOwnStashedUrl()
+    {
+        // A provider configured with a custom URL while active, then switched away from, must keep
+        // that URL when its route is rebuilt in the background (session topbar switches hit it).
+        const string proxy = "https://zai-proxy.internal/v1";
+        var settings = new HarnessSettings { Provider = "zai", BaseUrl = proxy };
+        settings.SelectProvider("zai", "deepseek"); // stashes the proxy under zai
+
+        Assert.Equal(ProviderCatalog.Info("deepseek")!.DefaultBaseUrl, settings.BaseUrlFor("deepseek"));
+        Assert.Equal(proxy, settings.BaseUrlFor("zai")); // not the catalog default
     }
 
     [Fact]

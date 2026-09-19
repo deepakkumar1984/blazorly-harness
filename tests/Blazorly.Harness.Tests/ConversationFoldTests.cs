@@ -1,4 +1,6 @@
+using Blazorly.Harness.Core.Agent;
 using Blazorly.Harness.Core.Sessions;
+using Blazorly.Harness.Llm;
 using Blazorly.Harness.Web.Services;
 using Xunit;
 
@@ -151,6 +153,97 @@ public class ConversationFoldTests
         Assert.Contains("could not be rendered", chip.CommandText);
         // The surrounding events still folded: a bad payload costs one chip, not the transcript.
         Assert.Contains(snapshot.Nodes, n => n.Kind == "turn-ok" && n.Turn == 1);
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition, int timeoutMs = 10_000)
+    {
+        for (var i = 0; i < Math.Max(1, timeoutMs / 25); i++)
+        {
+            if (condition()) return;
+            await Task.Delay(25);
+        }
+        Assert.True(condition(), "condition never became true before the timeout");
+    }
+
+    [Fact]
+    public async Task LiveReasoning_StreamsIntoAFoldedReasoningBlock()
+    {
+        // Reasoning models stream thinking before any text: mid-turn, the live node must carry
+        // the reasoning block (the UI renders it auto-expanded), not the empty placeholder.
+        await using var harness = TestHarness.Create(_ => new StreamChunk[]
+        {
+            new BlockStartChunk(1, "reasoning"),
+            new ReasoningDeltaChunk(1, "pondering the request carefully"),
+            new FinishChunk(FinishReason.Stop),
+        });
+        harness.ScriptedLlm.ChunkDelayMs = 1500;
+        var agent = harness.CreateAgent();
+        agent.Followup(Message.CreateUserText("hi"));
+        await WaitForAsync(() => agent.Session.Events.Any(e =>
+            e.Type == SessionEventTypes.AssistantChunk && SessionJson.FromElement<SessionPayloads.AssistantChunk>(e.Data).Chunk is ReasoningDeltaChunk));
+
+        var folder = new ConversationAssembler(harness.Tools).CreateFolder(agent.Session);
+        var mid = folder.Update(agent);
+        var live = mid.Nodes.SingleOrDefault(n => n.Kind == "assistant");
+        Assert.NotNull(live);
+        Assert.Equal("streaming", live!.StepStatus);
+        var reasoning = Assert.IsType<ReasoningBlock>(live.Blocks!.Single());
+        Assert.Contains("pondering", reasoning.Text);
+        Assert.DoesNotContain(mid.Nodes, n => n.StepStatus == "thinking");
+
+        await agent.WhenIdleAsync();
+        var done = folder.Update(agent);
+        Assert.Contains(done.Nodes, n => n.Kind == "assistant" && n.StepStatus == "settled");
+    }
+
+    [Fact]
+    public async Task ThinkingPlaceholder_ShowsBeforeTheFirstChunk_AndClearsOnceContentStreams()
+    {
+        // Reasoning models can think for minutes before the first block arrives; the page
+        // used to render nothing at all during that window and look hung.
+        await using var harness = TestHarness.Create(_ => Scripted.Text("finally!"));
+        harness.ScriptedLlm.ChunkDelayMs = 3000;
+        var agent = harness.CreateAgent();
+        agent.Followup(Message.CreateUserText("hi"));
+        await WaitForAsync(() => agent.Status == AgentStatus.Running
+            && agent.Session.Events.Any(e => e.Type == SessionEventTypes.TurnStart));
+
+        var folder = new ConversationAssembler(harness.Tools).CreateFolder(agent.Session);
+        var mid = folder.Update(agent);
+        var thinking = mid.Nodes.SingleOrDefault(n => n.StepStatus == "thinking");
+        Assert.NotNull(thinking);
+        Assert.Empty(thinking!.Blocks ?? []);
+        Assert.NotNull(thinking.StartedAt);
+
+        await agent.WhenIdleAsync();
+        var done = folder.Update(agent);
+        Assert.DoesNotContain(done.Nodes, n => n.StepStatus == "thinking");
+        Assert.Contains(done.Nodes, n => n.Kind == "assistant" && n.StepStatus == "settled");
+    }
+
+    [Fact]
+    public async Task ThinkingPlaceholder_HidesWhileAToolRuns_TheToolRowCarriesTheProgress()
+    {
+        var calls = 0;
+        await using var harness = TestHarness.Create(_ =>
+            ++calls == 1
+                ? Scripted.ToolCall("bash", new { command = "sleep 2", description = "Hold the tool open" })
+                : Scripted.Text("done"));
+        var agent = harness.CreateAgent();
+        agent.Followup(Message.CreateUserText("run it"));
+        await WaitForAsync(() => agent.Session.Events.Any(e => e.Type == SessionEventTypes.ToolCall));
+
+        var folder = new ConversationAssembler(harness.Tools).CreateFolder(agent.Session);
+        var mid = folder.Update(agent);
+        Assert.DoesNotContain(mid.Nodes, n => n.StepStatus == "thinking");
+        var tool = mid.Nodes.Single(n => n.Kind == "tool");
+        Assert.Equal("running", tool.ToolStatus);
+        Assert.NotNull(tool.StartedAt);
+
+        await agent.WhenIdleAsync();
+        var done = folder.Update(agent);
+        Assert.Equal("done", done.Nodes.Single(n => n.Kind == "tool").ToolStatus);
+        Assert.DoesNotContain(done.Nodes, n => n.StepStatus == "thinking");
     }
 
     [Fact]

@@ -55,8 +55,7 @@ public static class HeadlessRunner
             // Route overrides must land before the selection is applied, and must not carry the
             // persisted route's base URL or typed key onto a different provider's host.
             if (!string.IsNullOrWhiteSpace(options.Provider))
-                bootstrapper.Settings.SelectProvider(bootstrapper.Settings.Provider, options.Provider, options.Model,
-                    keepCustomBaseUrl: false);
+                bootstrapper.Settings.SelectProvider(bootstrapper.Settings.Provider, options.Provider, options.Model);
             else if (!string.IsNullOrWhiteSpace(options.Model)) bootstrapper.Settings.Model = options.Model;
             bootstrapper.ApplyProviderSelection();
             bootstrapper.ApplyDefaultSelection();

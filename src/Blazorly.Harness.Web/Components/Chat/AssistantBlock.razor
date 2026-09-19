@@ -7,8 +7,10 @@
 }
 else if (Block is ReasoningBlock reasoning)
 {
-    <details class="reasoning">
-        <summary>Think</summary>
+    var streaming = StepStatus == "streaming";
+    // Live thinking must be visible while it streams — it settles back to collapsed once done.
+    <details class="reasoning @(streaming ? "streaming" : "")" open="@(streaming)">
+        <summary>@(streaming ? "Thinking…" : "Think")</summary>
         <div class="reasoning-body">@reasoning.Text</div>
     </details>
 }
@@ -21,6 +23,9 @@ else if (Block is ToolCallBlock call)
 @code {
     [Parameter] public ContentBlock? Block { get; set; }
     [Parameter] public MarkdownService Markdown { get; set; } = null!;
+    /// <summary>Step lifecycle of the owning bubble (streaming | thinking | settled | interrupted);
+    /// keeps live reasoning expanded while it grows.</summary>
+    [Parameter] public string? StepStatus { get; set; }
 
     /// <summary>First string argument of the call, for a human-readable running line.</summary>
     private static string InlineArgs(ToolCallBlock call)

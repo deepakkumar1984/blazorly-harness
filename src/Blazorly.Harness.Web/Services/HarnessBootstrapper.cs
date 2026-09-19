@@ -45,6 +45,10 @@ public sealed class HarnessSettings
     public double CompactionThreshold { get; set; } = 0.9;
     public int CompactionPrunerChars { get; set; } = 4_000;
     public Blazorly.Harness.Core.Retry.RetryPolicyConfig Retry { get; set; } = new();
+    /// <summary>First-byte watchdog in seconds: cancel a request whose provider has streamed no
+    /// bytes within this window (0 disables). Buffered routes can legitimately sit silent for
+    /// minutes at large context — the default is sized for that, not for fast routes.</summary>
+    public int FirstByteTimeoutSeconds { get; set; } = 600;
     /// <summary>Retry policy overrides keyed by provider id (e.g. "zai"); routes without an entry use Retry.</summary>
     public Dictionary<string, Blazorly.Harness.Core.Retry.RetryPolicyConfig> RetryProviders { get; set; } = new(StringComparer.Ordinal);
     public List<CustomProviderConfig> CustomProviders { get; set; } = [];
@@ -150,17 +154,16 @@ public sealed class HarnessSettings
 
     /// <summary>
     /// Switches the active route: the typed key is stashed for the provider being left and the
-    /// entering provider's stashed key restored, and a base URL that is blank or still at another
-    /// catalog provider's default follows the new provider (custom proxy URLs are kept). Without
-    /// this, an override such as `blazorly run --provider zai` would keep the previous host's URL
-    /// and typed key while labelling every request as the new provider — the exact cross-route
-    /// leak <see cref="ApiKeyFor"/> promises never to make.
+    /// entering provider's stashed key restored, and likewise for endpoints — the entering
+    /// provider gets its own stashed URL or its catalog default, never the previous route's
+    /// URL. Without this, an override such as `blazorly run --provider zai` would keep the
+    /// previous host's URL and typed key while labelling every request as the new provider —
+    /// the exact cross-route leak <see cref="ApiKeyFor"/> promises never to make. A URL that
+    /// must serve several providers belongs in a custom provider, where name, URL and key
+    /// travel together.
     /// </summary>
     /// <param name="previousProvider">The provider the typed key and base URL belong to.</param>
-    /// <param name="keepCustomBaseUrl">true for the Settings page, where a gateway URL is meant to
-    /// serve whichever provider is selected; false for an explicit override (`run --provider zai`),
-    /// which must reach that provider's own endpoint rather than the previous route's gateway.</param>
-    public void SelectProvider(string previousProvider, string provider, string? model = null, bool keepCustomBaseUrl = true)
+    public void SelectProvider(string previousProvider, string provider, string? model = null)
     {
         if (string.IsNullOrWhiteSpace(provider) || provider == previousProvider)
         {
@@ -176,27 +179,27 @@ public sealed class HarnessSettings
         if (!string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(previousProvider)
             && (BaseUrlProvider is null || BaseUrlProvider == previousProvider))
             ProviderBaseUrls[previousProvider] = BaseUrl;
+        // The entering provider's own endpoint: its stashed URL, else its catalog default. The
+        // previous provider's URL never follows the selection — carrying it over would pin the
+        // new route at a host that may hold the connection without answering (an unbounded
+        // hang under the streaming client) and send the new provider's key to the old host.
         BaseUrl = ProviderBaseUrls.TryGetValue(provider, out var stashedUrl) && stashedUrl.Length > 0
             ? stashedUrl
-            : keepCustomBaseUrl && BaseUrl.Length > 0 && !IsCatalogDefaultUrl(BaseUrl)
-                ? BaseUrl // a gateway/proxy URL follows the selection, as the Settings page has always done
-                : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? BaseUrl;
+            : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? BaseUrl;
         BaseUrlProvider = provider;
         Provider = provider;
         Model = !string.IsNullOrWhiteSpace(model) ? model! : ProviderCatalog.DefaultModel(provider);
     }
 
-    private static bool IsCatalogDefaultUrl(string url)
-    {
-        var trimmed = url.TrimEnd('/');
-        return ProviderCatalog.All.Any(p => p.DefaultBaseUrl.TrimEnd('/') == trimmed);
-    }
-
-    /// <summary>Endpoint for the active route: the configured URL when it belongs to this provider, else the catalog default.</summary>
+    /// <summary>Endpoint for a provider route (active or background): the URL the user
+    /// configured for that provider — the typed field when it belongs to them, else their
+    /// stash — falling back to the catalog default.</summary>
     public string BaseUrlFor(string provider)
         => string.IsNullOrWhiteSpace(BaseUrlProvider) || BaseUrlProvider == provider
             ? BaseUrl
-            : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? BaseUrl;
+            : ProviderBaseUrls.TryGetValue(provider, out var stashed) && stashed.Length > 0
+                ? stashed
+                : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? BaseUrl;
 
     /// <summary>Resolved per request, never persisted; never sends one provider's key to another provider's route.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -396,7 +399,13 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 
         var plugins = new List<IHarnessPlugin>
         {
-            MountPlugin.Sync("llm", [], ctx => Llm = LlmRuntime.Mount(ctx)),
+            MountPlugin.Sync("llm", [], ctx =>
+            {
+                Llm = LlmRuntime.Mount(ctx);
+                Llm.FirstByteTimeout = Settings.FirstByteTimeoutSeconds > 0
+                    ? TimeSpan.FromSeconds(Settings.FirstByteTimeoutSeconds)
+                    : null;
+            }),
             MountPlugin.Sync("systemPrompt", [], ctx => prompt = SystemPromptService.Mount(ctx)),
             MountPlugin.Sync("tools", [SystemPromptService.ServiceKey],
                 ctx => Tools = ToolRuntime.Mount(ctx, prompt!)),
@@ -887,13 +896,16 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                 RuntimeModels(Settings.Provider)));
             desired.Add(Settings.Provider);
         }
-        // Background routes for every other configured provider: local servers with
-        // their catalog base URLs, cloud providers with a resolved key. Custom gateways
-        // keep their own key/base-URL handling below.
+        // Background routes for every other configured provider, each at its own endpoint:
+        // the URL stashed while it was active (a custom proxy stays with its provider), else
+        // the catalog default. Custom gateways keep their own key/base-URL handling below.
         foreach (var id in DesiredRouteProviders(Settings))
         {
             if (desired.Contains(id) || ProviderCatalog.Info(id) is not { } info) continue;
-            RegisterRoute(BuildRoute(id, info.DefaultBaseUrl, Settings.ApiKeyFor(id), RuntimeModels(id)));
+            var baseUrl = Settings.ProviderBaseUrls.TryGetValue(id, out var stashedUrl) && stashedUrl.Length > 0
+                ? stashedUrl
+                : info.DefaultBaseUrl;
+            RegisterRoute(BuildRoute(id, baseUrl, Settings.ApiKeyFor(id), RuntimeModels(id)));
             desired.Add(id);
         }
         foreach (var custom in Settings.CustomProviders)
@@ -992,6 +1004,16 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             settings.ProviderKeys["zai"] = zhipuKey;
         if (settings.DiscoveredModels.Remove("zhipu", out var zhipuModels) && !settings.DiscoveredModels.ContainsKey("zai"))
             settings.DiscoveredModels["zai"] = zhipuModels;
+
+        // zai-coding moved from the chat-completions wire (/api/coding/paas/v4) to the Responses
+        // wire (/api/v1): both buffer the whole completion server-side on the coding plan — minutes
+        // of silence at large context — while /api/v1 streams reasoning deltas incrementally
+        // (verified live). Rewrite a stashed legacy URL so existing installs move with it.
+        const string legacyCodingUrl = "https://api.z.ai/api/coding/paas/v4";
+        if (settings.BaseUrlProvider == "zai-coding" && settings.BaseUrl.TrimEnd('/') == legacyCodingUrl)
+            settings.BaseUrl = ProviderCatalog.Info("zai-coding")!.DefaultBaseUrl;
+        if (settings.ProviderBaseUrls.TryGetValue("zai-coding", out var stashed) && stashed.TrimEnd('/') == legacyCodingUrl)
+            settings.ProviderBaseUrls["zai-coding"] = ProviderCatalog.Info("zai-coding")!.DefaultBaseUrl;
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -1038,12 +1060,24 @@ public static class ProviderCatalog
         new("cohere", "Cohere", "cloud", "https://api.cohere.ai/compatibility/v1", "COHERE_API_KEY"),
         new("deepseek", "DeepSeek", "cloud", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
         new("qwen", "Alibaba Qwen (DashScope)", "cloud", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
+        // Qwen also sells subscription token plans on a dedicated MaaS endpoint (same split as
+        // zai/zai-coding): a plan key against the pay-as-you-go DashScope route burns no plan quota.
+        new("qwen-token-plan", "Alibaba Qwen (Token Plan)", "cloud", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "QWEN_TOKEN_PLAN_API_KEY"),
         new("moonshot", "Moonshot AI (Kimi)", "cloud", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
         // Z.ai ships two routes with separate keys/quotas: pay-as-you-go API and the GLM Coding Plan
-        // subscription (dedicated endpoint; a coding-plan key against /api/paas/v4 does not burn plan quota).
+        // subscription. The coding plan speaks three wires — Anthropic Messages (/api/anthropic),
+        // chat completions (/api/coding/paas/v4) and Responses (/api/v1) — but only /api/v1 streams
+        // reasoning incrementally (verified live); the other two buffer the whole completion
+        // server-side, which is minutes of silence at large context. Same key on all three.
         new("zai", "Z.ai API (GLM)", "cloud", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY"),
-        new("zai-coding", "Z.ai Coding Plan (GLM)", "cloud", "https://api.z.ai/api/coding/paas/v4", "ZAI_CODING_API_KEY"),
+        new("zai-coding", "Z.ai Coding Plan (GLM)", "cloud", "https://api.z.ai/api/v1", "ZAI_CODING_API_KEY"),
+        // The coding plan is sold per region: intl (api.z.ai) and China (open.bigmodel.cn) take
+        // separate subscriptions and keys. The CN host is measurably faster at cold-start prefill
+        // for large contexts — the same route Pi's zai-coding-cn provider targets.
+        new("zai-coding-cn", "Z.ai Coding Plan CN (GLM)", "cloud", "https://open.bigmodel.cn/api/coding/paas/v4", "ZAI_CODING_CN_API_KEY"),
         new("minimax", "MiniMax", "cloud", "https://api.minimax.io/v1", "MINIMAX_API_KEY"),
+        // Xiaomi MiMo subscription token plan; the dedicated SGP endpoint is the plan surface.
+        new("mimo", "Xiaomi MiMo (Token Plan)", "cloud", "https://token-plan-sgp.xiaomimimo.com/v1", "MIMO_API_KEY"),
         new("doubao", "ByteDance Doubao (Ark)", "cloud", "https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY"),
         new("ernie", "Baidu ERNIE (Qianfan)", "cloud", "https://qianfan.baidubce.com/v2", "QIANFAN_API_KEY"),
         new("hunyuan", "Tencent Hunyuan", "cloud", "https://api.hunyuan.cloud.tencent.com/v1", "HUNYUAN_API_KEY"),
@@ -1070,7 +1104,7 @@ public static class ProviderCatalog
     /// is legacy there. Other OpenAI-compatible hosts (Groq, Ollama, DeepSeek, custom gateways)
     /// still speak /chat/completions.
     /// </summary>
-    public static bool UsesResponsesApi(string provider) => provider is "xai" or "openai";
+    public static bool UsesResponsesApi(string provider) => provider is "xai" or "openai" or "zai-coding";
 
     public static IReadOnlyList<string> Categories => ["cloud", "local", "generic"];
 
@@ -1177,7 +1211,7 @@ public static class ProviderCatalog
             new LlmModelInfo(provider, "command-r-plus-08-2024", "Command R+", ContextWindowTokens: 131_072, MaxOutputTokens: 4_096),
             new LlmModelInfo(provider, "command-r7b-12-2024", "Command R7B", ContextWindowTokens: 131_072, MaxOutputTokens: 4_096),
         ],
-        "qwen" =>
+        "qwen" or "qwen-token-plan" =>
         [
             new LlmModelInfo(provider, "qwen3-max", "Qwen3 Max", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768),
             new LlmModelInfo(provider, "qwen3-plus", "Qwen3 Plus", ContextWindowTokens: 131_072, MaxOutputTokens: 16_384),
@@ -1193,7 +1227,7 @@ public static class ProviderCatalog
                 SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
             new LlmModelInfo(provider, "kimi-k2.6", "Kimi K2.6", ContextWindowTokens: 262_144),
         ],
-        "zai" or "zai-coding" =>
+        "zai" or "zai-coding" or "zai-coding-cn" =>
         [
             new LlmModelInfo(provider, "glm-5.3", "GLM-5.3", ContextWindowTokens: 1_048_576, MaxOutputTokens: 131_072,
                 SupportsReasoning: true, ReasoningEfforts: ["low", "high", "max"], DefaultEffort: "max"),
@@ -1208,6 +1242,14 @@ public static class ProviderCatalog
                 SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "high"),
             new LlmModelInfo(provider, "MiniMax-M2.7", "MiniMax M2.7", ContextWindowTokens: 204_800,
                 SupportsReasoning: true, ReasoningEfforts: OpenAiEfforts, DefaultEffort: "medium"),
+        ],
+        "mimo" =>
+        [
+            // From the token-plan endpoint's live /models listing; the asr/tts variants it also
+            // publishes are not chat models. Context/output caps unpublished — the token meter
+            // falls through to per-request declarations.
+            new LlmModelInfo(provider, "mimo-v2.5-pro", "MiMo 2.5 Pro"),
+            new LlmModelInfo(provider, "mimo-v2.5", "MiMo 2.5"),
         ],
         "doubao" =>
         [

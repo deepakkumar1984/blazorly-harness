@@ -177,6 +177,44 @@ public class OpenAiAdapterWireTests
     };
 
     [Fact]
+    public async Task FirstByteWatchdog_StallsEndTheStreamWithAClearNonRetryableError()
+    {
+        // A silent provider (accepts the connection, never streams) used to hang the turn forever.
+        await using var harness = TestHarness.Create(_ => Scripted.Text("late"));
+        harness.ScriptedLlm.ChunkDelayMs = 60_000; // first byte far past the watchdog window
+        harness.Llm.FirstByteTimeout = TimeSpan.FromMilliseconds(300);
+
+        var chunks = new List<StreamChunk>();
+        await foreach (var chunk in harness.Llm.Stream(new GenerateOptions
+        {
+            Provider = "scripted", Model = "test", Messages = [Message.CreateUserText("hi")],
+        })) chunks.Add(chunk);
+
+        var finish = Assert.IsType<FinishChunk>(chunks.Last());
+        Assert.Equal(FinishReason.Error, finish.Reason);
+        Assert.Equal(LlmErrorCodes.FirstByteStall, finish.Failure!.Code);
+        Assert.Contains("first-byte timeout", finish.Failure.Message);
+        Assert.False(LlmErrorCodes.IsRetryable(finish.Failure.Code)); // one stall must not multiply the wait
+    }
+
+    [Fact]
+    public async Task FirstByteWatchdog_LeavesStreamsAloneOnceBytesFlow()
+    {
+        await using var harness = TestHarness.Create(_ => Scripted.Text("hello"));
+        harness.ScriptedLlm.ChunkDelayMs = 150;
+        harness.Llm.FirstByteTimeout = TimeSpan.FromSeconds(5);
+
+        var chunks = new List<StreamChunk>();
+        await foreach (var chunk in harness.Llm.Stream(new GenerateOptions
+        {
+            Provider = "scripted", Model = "test", Messages = [Message.CreateUserText("hi")],
+        })) chunks.Add(chunk);
+
+        Assert.Contains(chunks, c => c is TextDeltaChunk t && t.Text == "hello");
+        Assert.Equal(FinishReason.Stop, Assert.IsType<FinishChunk>(chunks.Last()).Reason);
+    }
+
+    [Fact]
     public void MapsHarnessMessagesToWireFormat()
     {
         var adapter = new OpenAiCompatibleAdapter("test", "http://localhost", "k", [], new HttpClient());
@@ -189,6 +227,43 @@ public class OpenAiAdapterWireTests
         Assert.Contains("\"tool_call_id\":\"call_1\"", json);
         Assert.Contains("\"function\":{\"name\":\"bash\"", json);
         Assert.Contains("\"reasoning_content\"", json); // assistant reasoning replayed
+    }
+
+    // Thinking controls are provider-specific and were verified live against the token-plan
+    // endpoints: GLM silently ignores reasoning_effort "off" (thinking stays on), MiMo rejects
+    // it with a 400, and both honor the Anthropic-style thinking object including budget_tokens.
+    private static Dictionary<string, object?> ThinkingOf(IReadOnlyDictionary<string, object?> fields)
+        => (Dictionary<string, object?>)fields["thinking"];
+
+    [Fact]
+    public void Thinking_ZaiAndMimoUseTheNativeThinkingObject_NotReasoningEffort()
+    {
+        foreach (var provider in new[] { "zai", "zai-coding", "zai-coding-cn", "mimo" })
+        {
+            var adapter = new OpenAiCompatibleAdapter(provider, "http://localhost", "k", [], new HttpClient());
+            var off = adapter.BuildThinkingFields(new GenerateOptions { Provider = provider, Model = "m", Messages = [], ReasoningEffort = "off" });
+            Assert.Equal("disabled", ThinkingOf(off)["type"]); // GLM ignores / MiMo 400s on effort "off"
+            Assert.Null(off.GetValueOrDefault("reasoning_effort"));
+
+            var high = adapter.BuildThinkingFields(new GenerateOptions { Provider = provider, Model = "m", Messages = [], ReasoningEffort = "high" });
+            Assert.Equal("enabled", ThinkingOf(high)["type"]);
+            Assert.Equal(16_384, ThinkingOf(high)["budget_tokens"]);
+
+            var unset = adapter.BuildThinkingFields(new GenerateOptions { Provider = provider, Model = "m", Messages = [] });
+            Assert.Empty(unset); // provider default, same as before
+
+            var title = adapter.BuildThinkingFields(new GenerateOptions { Provider = provider, Model = "m", Messages = [], Purpose = "session-title", ReasoningEffort = "high" });
+            Assert.Equal("disabled", ThinkingOf(title)["type"]); // titles stay cheap
+        }
+    }
+
+    [Fact]
+    public void Thinking_GenericRoutesStillPassEffortThrough()
+    {
+        var adapter = new OpenAiCompatibleAdapter("openai", "http://localhost", "k", [], new HttpClient());
+        var high = adapter.BuildThinkingFields(new GenerateOptions { Provider = "openai", Model = "m", Messages = [], ReasoningEffort = "high" });
+        Assert.Equal("high", high["reasoning_effort"]);
+        Assert.Empty(adapter.BuildThinkingFields(new GenerateOptions { Provider = "openai", Model = "m", Messages = [] }));
     }
 
     [Fact]

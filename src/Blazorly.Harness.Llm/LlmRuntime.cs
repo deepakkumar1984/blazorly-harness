@@ -63,6 +63,12 @@ public sealed class LlmRuntime
         lock (_gate) return _adapters.GetValueOrDefault(provider);
     }
 
+    /// <summary>First-byte watchdog: cancel an adapter stream that has produced no chunk within
+    /// this window (null = off). Buffered routes (GLM coding plan at large context) sit silent
+    /// for minutes; a dead endpoint sits silent forever. Only the pre-first-byte silence is
+    /// capped — once chunks flow, the stream runs as long as it needs.</summary>
+    public TimeSpan? FirstByteTimeout { get; set; }
+
     public IReadOnlyList<LlmModelInfo> ListModels(string provider)
         => GetAdapter(provider)?.ListModels() ?? [];
 
@@ -96,7 +102,21 @@ public sealed class LlmRuntime
             yield break;
         }
 
-        IAsyncEnumerator<StreamChunk> enumerator = adapter.Stream(options, ct).GetAsyncEnumerator(ct);
+        // Watchdog plumbing: the delay fires once; if the first byte already arrived it does
+        // nothing. Cancelling streamCts breaks the adapter's pending read out of its await.
+        var streamCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var firstByte = new ManualResetEventSlim(false);
+        if (FirstByteTimeout is { } timeout)
+        {
+            _ = Task.Delay(timeout, ct).ContinueWith(_ =>
+            {
+                if (firstByte.IsSet) return;
+                try { streamCts.Cancel(); } catch (ObjectDisposedException) { } // stream already finished
+            }, TaskScheduler.Default);
+        }
+        var effectiveCt = FirstByteTimeout is null ? ct : streamCts.Token;
+
+        IAsyncEnumerator<StreamChunk> enumerator = adapter.Stream(options, effectiveCt).GetAsyncEnumerator(effectiveCt);
         try
         {
             while (true)
@@ -112,6 +132,13 @@ public sealed class LlmRuntime
                 {
                     failureFinish = new FinishChunk(FinishReason.Aborted, new LlmFailure("request cancelled", LlmErrorCodes.Aborted));
                 }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested && FirstByteTimeout is not null)
+                {
+                    failureFinish = new FinishChunk(FinishReason.Error, new LlmFailure(
+                        $"provider accepted the request but streamed nothing for {FirstByteTimeout.Value.TotalSeconds:0}s (first-byte timeout). "
+                        + "Large contexts on buffered routes can take minutes — raise firstByteTimeoutSeconds, lower the reasoning effort, or compact the session.",
+                        LlmErrorCodes.FirstByteStall));
+                }
                 catch (LlmException ex)
                 {
                     failureFinish = new FinishChunk(FinishReason.Error, ex.Failure);
@@ -125,7 +152,11 @@ public sealed class LlmRuntime
                     yield return failureFinish;
                     yield break;
                 }
-                if (chunk is not null) yield return chunk;
+                if (chunk is not null)
+                {
+                    firstByte.Set();
+                    yield return chunk;
+                }
                 if (chunk is FinishChunk) yield break;
             }
             // Provider closed the stream without a terminal chunk.
@@ -134,6 +165,8 @@ public sealed class LlmRuntime
         finally
         {
             await enumerator.DisposeAsync().ConfigureAwait(false);
+            streamCts.Dispose();
+            firstByte.Dispose();
         }
     }
 }

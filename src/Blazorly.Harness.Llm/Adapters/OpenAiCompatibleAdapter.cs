@@ -198,19 +198,29 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     }
 
     /// <summary>
-    /// DeepSeek's thinking extension (dsh llm-deepseek serialize.ts): "off" disables thinking,
-    /// anything else enables it and carries the effort on <c>reasoning_effort</c>. Title requests
-    /// always run thinking-disabled. Generic OpenAI-compatible routes only pass the effort through.
+    /// Per-provider thinking controls. The z.ai and Xiaomi MiMo routes speak an Anthropic-style
+    /// <c>thinking</c> object — verified live: plain <c>reasoning_effort</c> is tolerated by GLM
+    /// but its <c>"off"</c> value is silently ignored there (thinking stays on), while MiMo
+    /// rejects <c>"off"</c> outright with a 400; the object form disables cleanly on both and
+    /// its <c>budget_tokens</c> caps reasoning (a 16-token budget was honored by each). DeepSeek
+    /// keeps its documented extension (thinking object plus <c>reasoning_effort</c>). Everything
+    /// else passes the effort through OpenAI-style. Title requests always run thinking-disabled.
     /// </summary>
     public IReadOnlyDictionary<string, object?> BuildThinkingFields(GenerateOptions options)
     {
         var effort = options.ReasoningEffort;
+        if (options.Provider is "zai" or "zai-coding" or "zai-coding-cn" or "mimo")
+        {
+            if (options.Purpose == "session-title" || effort == "off") return ThinkingFields("disabled");
+            if (effort is null) return NoThinkingFields;
+            return ThinkingFields("enabled", ThinkingBudgetTokens(effort));
+        }
         if (options.Provider == "deepseek")
         {
             return options.Purpose == "session-title" || effort == "off"
-                ? new Dictionary<string, object?> { ["thinking"] = new Dictionary<string, object?> { ["type"] = "disabled" } }
+                ? ThinkingFields("disabled")
                 : effort is null
-                    ? new Dictionary<string, object?>()
+                    ? NoThinkingFields
                     : new Dictionary<string, object?>
                     {
                         ["thinking"] = new Dictionary<string, object?> { ["type"] = "enabled" },
@@ -218,9 +228,30 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
                     };
         }
         return effort is null
-            ? new Dictionary<string, object?>()
+            ? NoThinkingFields
             : new Dictionary<string, object?> { ["reasoning_effort"] = effort };
     }
+
+    private static readonly IReadOnlyDictionary<string, object?> NoThinkingFields = new Dictionary<string, object?>();
+
+    private static Dictionary<string, object?> ThinkingFields(string type, int? budgetTokens = null) => new()
+    {
+        ["thinking"] = budgetTokens is { } tokens
+            ? new Dictionary<string, object?> { ["type"] = type, ["budget_tokens"] = tokens }
+            : new Dictionary<string, object?> { ["type"] = type },
+    };
+
+    /// <summary>Effort → reasoning cap on routes that take <c>budget_tokens</c> (harness-chosen
+    /// tiers; the provider default applies when no effort is set).</summary>
+    internal static int ThinkingBudgetTokens(string effort) => effort switch
+    {
+        "minimal" => 2_048,
+        "low" => 4_096,
+        "medium" => 8_192,
+        "high" => 16_384,
+        "xhigh" => 24_576,
+        _ => 32_768, // "max"
+    };
 
     public static LlmException ClassifyHttp(int status, string body, System.Net.Http.Headers.HttpHeaders? headers = null)
     {

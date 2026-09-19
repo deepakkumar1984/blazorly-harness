@@ -1,4 +1,5 @@
 @using Blazorly.Harness.Web.Services
+@implements IDisposable
 
 <div class="tool-row @Node.ToolStatus">
     <button class="tool-summary" @onclick="Toggle">
@@ -9,7 +10,14 @@
         {
             <span class="tool-preview">@ResultPreview</span>
         }
-        @if (Node.DurationMs is { } ms)
+        @if (Node.ToolStatus == "running")
+        {
+            @if (Node.StartedAt is { } started)
+            {
+                <span class="tool-state">@ConversationNode.ElapsedLabel(started)</span>
+            }
+        }
+        else if (Node.DurationMs is { } ms)
         {
             <span class="tool-state">@(ms >= 1000 ? $"{ms / 1000.0:F1}s" : $"{ms}ms")</span>
         }
@@ -92,7 +100,7 @@
             }
             else if (Node.ToolStatus == "running")
             {
-                <div class="io-card running">running…</div>
+                <div class="io-card running">@(Node.StartedAt is { } started ? $"running {ConversationNode.ElapsedLabel(started)}…" : "running…")</div>
             }
         </div>
     }
@@ -105,6 +113,32 @@
     private bool _rawArgs;
     private System.Text.Json.JsonElement? _resultJson;
     private bool _resultParsed;
+    private System.Timers.Timer? _elapsedTick;
+    private volatile bool _disposed;
+
+    protected override void OnParametersSet()
+    {
+        // A running card self-ticks: long tool runs (minute-plus bash, exit_plan_mode holds)
+        // otherwise sit frozen on the page — the elapsed label proves the run is alive.
+        if (Node.ToolStatus != "running") { StopTick(); return; }
+        if (_elapsedTick is not null) return;
+        _elapsedTick = new System.Timers.Timer(1000) { AutoReset = true };
+        _elapsedTick.Elapsed += (_, _) =>
+        {
+            if (_disposed) return;
+            try { _ = InvokeAsync(StateHasChanged); } catch (ObjectDisposedException) { }
+        };
+        _elapsedTick.Start();
+    }
+
+    private void StopTick()
+    {
+        _elapsedTick?.Stop();
+        _elapsedTick?.Dispose();
+        _elapsedTick = null;
+    }
+
+    void IDisposable.Dispose() { _disposed = true; StopTick(); }
 
     /// <summary>Result text clamped for the DOM: a 30KB tool dump in an expanded card
     /// bloats the circuit diff and the layout; the full text lives in the session log.</summary>

@@ -98,17 +98,59 @@ public class ProviderCatalogTests
     public void Catalog_ZaiSplitsStandardApiAndCodingPlan()
     {
         // Two routes, both documented hosts on api.z.ai, distinct keys — a coding-plan key
-        // against the standard endpoint does not consume plan quota.
+        // against the standard endpoint does not consume plan quota. The coding plan runs on
+        // the Responses wire (/api/v1): it is the only one of its three protocols that streams
+        // reasoning incrementally (verified live; the Anthropic and chat-completions routes
+        // buffer the whole completion server-side).
         var api = ProviderCatalog.Info("zai")!;
         var coding = ProviderCatalog.Info("zai-coding")!;
         Assert.Equal("https://api.z.ai/api/paas/v4", api.DefaultBaseUrl);
-        Assert.Equal("https://api.z.ai/api/coding/paas/v4", coding.DefaultBaseUrl);
+        Assert.Equal("https://api.z.ai/api/v1", coding.DefaultBaseUrl);
         Assert.Equal("ZAI_API_KEY", api.ApiKeyEnv);
         Assert.Equal("ZAI_CODING_API_KEY", coding.ApiKeyEnv);
         Assert.False(api.Local);
         Assert.False(coding.Local);
+        Assert.True(ProviderCatalog.UsesResponsesApi("zai-coding"));
+        Assert.False(ProviderCatalog.UsesResponsesApi("zai"));
         Assert.NotEmpty(ProviderCatalog.For("zai", ""));
         Assert.NotEmpty(ProviderCatalog.For("zai-coding", ""));
+
+        // The CN-host coding plan is a separate subscription (own key) on the China gateway —
+        // the route Pi's zai-coding-cn provider targets, chat-completions wire.
+        var cn = ProviderCatalog.Info("zai-coding-cn")!;
+        Assert.Equal("https://open.bigmodel.cn/api/coding/paas/v4", cn.DefaultBaseUrl);
+        Assert.Equal("ZAI_CODING_CN_API_KEY", cn.ApiKeyEnv);
+        Assert.False(ProviderCatalog.UsesResponsesApi("zai-coding-cn"));
+        Assert.NotEmpty(ProviderCatalog.For("zai-coding-cn", ""));
+    }
+
+    [Fact]
+    public void Catalog_QwenSplitsStandardApiAndTokenPlan()
+    {
+        // Two routes, distinct endpoints and keys — a token-plan key against the pay-as-you-go
+        // DashScope route does not consume plan quota (same split as zai/zai-coding).
+        var api = ProviderCatalog.Info("qwen")!;
+        var plan = ProviderCatalog.Info("qwen-token-plan")!;
+        Assert.Equal("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", api.DefaultBaseUrl);
+        Assert.Equal("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", plan.DefaultBaseUrl);
+        Assert.Equal("DASHSCOPE_API_KEY", api.ApiKeyEnv);
+        Assert.Equal("QWEN_TOKEN_PLAN_API_KEY", plan.ApiKeyEnv);
+        Assert.False(api.Local);
+        Assert.False(plan.Local);
+        // Both routes serve the same Qwen model line.
+        Assert.NotEmpty(ProviderCatalog.For("qwen", ""));
+        Assert.Equal(ProviderCatalog.For("qwen", "").Count, ProviderCatalog.For("qwen-token-plan", "").Count);
+    }
+
+    [Fact]
+    public void Catalog_XiaomiMimoTokenPlanRoute()
+    {
+        var mimo = ProviderCatalog.Info("mimo")!;
+        Assert.Equal("https://token-plan-sgp.xiaomimimo.com/v1", mimo.DefaultBaseUrl);
+        Assert.Equal("MIMO_API_KEY", mimo.ApiKeyEnv);
+        Assert.False(mimo.Local);
+        // Seeds come from the endpoint's live /models listing (chat models only).
+        Assert.Contains(ProviderCatalog.For("mimo", ""), m => m.Id == "mimo-v2.5-pro");
     }
 
     [Fact]
@@ -123,7 +165,7 @@ public class ProviderCatalogTests
     public void RequiresApiKey_OnlyCloudRoutes()
     {
         // Cloud providers fail fast with a clear message when no key is configured…
-        foreach (var id in new[] { "openai", "anthropic", "deepseek", "zai", "zai-coding", "minimax" })
+        foreach (var id in new[] { "openai", "anthropic", "deepseek", "zai", "zai-coding", "minimax", "qwen-token-plan", "mimo" })
             Assert.True(ProviderCatalog.RequiresApiKey(id), id);
         // …local servers and open gateways stream keyless; custom route names are unknown to the catalog.
         foreach (var id in new[] { "ollama", "lmstudio", "omlx", "unsloth", "openai-compatible", "my-gateway" })
@@ -163,6 +205,25 @@ public class ProviderCatalogTests
         Assert.Equal("sk-zhipu", settings.ProviderKeys["zai"]);
         Assert.Equal(["glm-4.6"], settings.DiscoveredModels["zai"].Select(m => m.Id));
         Assert.False(settings.ProviderKeys.ContainsKey("zhipu"));
+    }
+
+    [Fact]
+    public void MigrateLegacySettings_ZaiCodingMovesToTheResponsesWire()
+    {
+        // The coding plan's chat-completions URL is retired: only the Responses wire streams
+        // reasoning incrementally. A stashed legacy URL moves with the catalog default.
+        var settings = new HarnessSettings
+        {
+            Provider = "zai-coding",
+            BaseUrl = "https://api.z.ai/api/coding/paas/v4",
+            BaseUrlProvider = "zai-coding",
+        };
+        settings.ProviderBaseUrls["zai-coding"] = "https://api.z.ai/api/coding/paas/v4/";
+
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+
+        Assert.Equal("https://api.z.ai/api/v1", settings.BaseUrl);
+        Assert.Equal("https://api.z.ai/api/v1", settings.ProviderBaseUrls["zai-coding"]);
     }
 
     [Fact]

@@ -66,8 +66,7 @@ public static class InitCommand
         try
         {
             if (!string.IsNullOrWhiteSpace(provider))
-                bootstrapper.Settings.SelectProvider(bootstrapper.Settings.Provider, provider, model,
-                    keepCustomBaseUrl: false);
+                bootstrapper.Settings.SelectProvider(bootstrapper.Settings.Provider, provider, model);
             else if (!string.IsNullOrWhiteSpace(model)) bootstrapper.Settings.Model = model;
             bootstrapper.ApplyProviderSelection();
             bootstrapper.ApplyDefaultSelection();

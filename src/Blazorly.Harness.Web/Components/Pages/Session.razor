@@ -303,8 +303,8 @@
                     case "assistant":
                         <div class="bubble assistant" @key="node.Key">
                             <div class="bubble-head">
-                                <span class="bubble-role">Assistant @(node.StepStatus == "streaming" ? "· typing…" : "")</span>
-                                @if (node.StepStatus != "streaming")
+                                <span class="bubble-role">Assistant @(node.StepStatus == "streaming" ? "· typing…" : node.StepStatus == "thinking" ? "· thinking…" : "")</span>
+                                @if (node.StepStatus is not ("streaming" or "thinking"))
                                 {
                                     <button class="icon-btn bubble-copy @(_copiedKey == node.Key ? "copied" : "")"
                                             title="@(_copiedKey == node.Key ? "Copied" : "Copy message")"
@@ -326,9 +326,26 @@
                                 }
                             </div>
                             <div class="bubble-body">
-                                @foreach (var block in node.Blocks ?? [])
+                                @if (node.StepStatus == "thinking" && (node.Blocks is null || node.Blocks.Count == 0))
                                 {
-                                    <AssistantBlock Block="block" Markdown="Markdown" />
+                                    <div class="thinking-placeholder">
+                                        <span class="thinking-word">thinking</span>
+                                        @if (node.StartedAt is { } started)
+                                        {
+                                            <span class="thinking-elapsed">@ConversationNode.ElapsedLabel(started)</span>
+                                            @if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - started > 30_000)
+                                            {
+                                                <span class="thinking-note">no tokens yet — some routes buffer the whole response before sending anything (GLM coding plan can take minutes on large contexts)</span>
+                                            }
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    @foreach (var block in node.Blocks ?? [])
+                                    {
+                                        <AssistantBlock Block="block" Markdown="Markdown" StepStatus="node.StepStatus" />
+                                    }
                                 }
                             </div>
                         </div>
@@ -682,6 +699,7 @@
     private string _draft = "";
     private bool _running;
     private volatile bool _dirty;
+    private DateTimeOffset _lastBeat;
     private bool _pinned = true;
     private string _view = "chat";
     private bool _modelMenu;
@@ -792,9 +810,14 @@
         _coalesce = new System.Timers.Timer(120);
         _coalesce.Elapsed += (_, _) =>
         {
-            if (!_dirty && !_pendingChanged) return;
+            // Heartbeat: while a turn runs, re-render once a second even without new events
+            // so live elapsed labels (thinking placeholder) keep ticking.
+            var beat = _running && !_dirty && !_pendingChanged
+                && DateTimeOffset.UtcNow - _lastBeat >= TimeSpan.FromSeconds(1);
+            if (!_dirty && !_pendingChanged && !beat) return;
             _dirty = false;
             _pendingChanged = false;
+            if (beat) _lastBeat = DateTimeOffset.UtcNow;
             _ = InvokeAsync(async () =>
             {
                 try

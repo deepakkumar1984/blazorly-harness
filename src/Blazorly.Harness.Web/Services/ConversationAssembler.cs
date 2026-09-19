@@ -36,6 +36,14 @@ public sealed record ConversationNode
     public TurnEndReason? Reason { get; init; }
     public long? DurationMs { get; init; }
 
+    /// <summary>Live elapsed label for in-flight activity (running tool rows, the thinking
+    /// placeholder): <c>12s</c>, <c>4m 05s</c>. Recomputed on render; the page ticks while running.</summary>
+    public static string ElapsedLabel(long startedAtUnixMs)
+    {
+        var ms = Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - startedAtUnixMs);
+        return ms >= 60_000 ? $"{ms / 60_000}m {ms / 1_000 % 60:D2}s" : $"{ms / 1_000}s";
+    }
+
     // command row
     public string? CommandName { get; init; }
     public string? CommandArgs { get; init; }
@@ -147,6 +155,7 @@ public sealed class ConversationFolder
     private readonly Dictionary<int, int> _turnLastSeen = [];
     private readonly HashSet<int> _endedTurns = [];
     private readonly List<(int Turn, int Step)> _liveKeys = [];
+    private int _runningTools;
 
     private int _processed;
     private int _lastSeq = -1;
@@ -242,6 +251,29 @@ public sealed class ConversationFolder
                 Blocks = visible,
                 StepStatus = dead ? "interrupted" : "streaming",
             });
+        }
+
+        // Pre-first-token silence: reasoning models can think for minutes before any block
+        // arrives, and the turn otherwise renders nothing at all. While the agent runs with
+        // nothing streaming and no tool in flight, keep a live "thinking" placeholder on the
+        // tail — the page shows it ticking instead of looking frozen or hung.
+        _nodes.RemoveAll(n => n.Key.StartsWith("live-think-", StringComparison.Ordinal));
+        if (agentRunning && _liveKeys.Count == 0 && _runningTools == 0 && _turnStart.Count > 0)
+        {
+            var activeTurn = _turnStart.Keys.Max();
+            if (!_endedTurns.Contains(activeTurn) && _turnStart.TryGetValue(activeTurn, out var start))
+            {
+                _nodes.Add(new ConversationNode
+                {
+                    Key = $"live-think-{activeTurn}",
+                    Kind = "assistant",
+                    Turn = activeTurn,
+                    Step = 0,
+                    Blocks = [],
+                    StepStatus = "thinking",
+                    StartedAt = start.Time,
+                });
+            }
         }
 
         // The context reading is expensive (system-prompt assembly + full surface derivation +
@@ -369,6 +401,7 @@ public sealed class ConversationFolder
                     CallView = view,
                     StartedAt = e.Time,
                 });
+                _runningTools++;
                 break;
             }
             case SessionEventTypes.ToolResult:
@@ -387,6 +420,7 @@ public sealed class ConversationFolder
                         IsError = result.Error is not null,
                         DurationMs = target.StartedAt is { } started ? e.Time - started : null,
                     };
+                    _runningTools--;
                 }
                 break;
             }
