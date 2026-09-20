@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OG</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      width: 1200px; height: 630px;
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      overflow: hidden;
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(700px 360px at 82% 18%, rgba(79,143,247,.28), transparent 60%),
+        radial-gradient(520px 280px at 8% 88%, rgba(63,185,80,.12), transparent 55%),
+        linear-gradient(180deg, #0d1117 0%, #0a0d12 100%);
+    }
+    .grid {
+      position: absolute; inset: 0; opacity: .18;
+      background-image:
+        linear-gradient(rgba(230,237,243,.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(230,237,243,.08) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(ellipse at 70% 40%, #000 20%, transparent 75%);
+    }
+    .wrap {
+      position: relative; z-index: 1;
+      height: 630px; padding: 56px 64px;
+      display: flex; flex-direction: column; justify-content: space-between;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 650; font-size: 22px; }
+    .mark {
+      width: 36px; height: 36px; border-radius: 10px; background: #4f8ff7; color: #fff;
+      display: inline-flex; align-items: center; justify-content: center; font-weight: 750;
+    }
+    h1 {
+      margin: 24px 0 0; font-size: 64px; line-height: 1.05; letter-spacing: -0.035em;
+      max-width: 920px; font-weight: 700;
+    }
+    p { margin: 18px 0 0; font-size: 26px; color: #9aa4b2; max-width: 820px; line-height: 1.35; }
+    .meta { display: flex; gap: 10px; flex-wrap: wrap; }
+    .chip {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 16px; color: #9aa4b2;
+      border: 1px solid #3d444d; border-radius: 999px; padding: 7px 14px; background: #151b23;
+    }
+    .chip.ok { color: #3fb950; border-color: #3fb950; background: rgba(63,185,80,.12); }
+  </style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="wrap">
+    <div>
+      <div class="brand"><span class="mark">B</span> Blazorly</div>
+      <h1>An agentic coding harness you run yourself.</h1>
+      <p>Chat UI, multi-agent swarms, durable sessions, one binary. Linux, macOS, Windows.</p>
+    </div>
+    <div class="meta">
+      <span class="chip ok">MIT · open source</span>
+      <span class="chip">no Docker</span>
+      <span class="chip">no SDK</span>
+      <span class="chip">localhost:5080</span>
+    </div>
+  </div>
+</body>
+</html>

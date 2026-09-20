@@ -1,0 +1,45 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Headless, CI, editors</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Headless runs, CI, and editor protocols</h1>
+  <p class="muted">The UI is the default. The same harness is a CLI, a JSON-RPC server, and an ACP server.</p>
+
+  <h2>blazorly run</h2>
+  <pre><code>blazorly run "summarize this repo"
+blazorly run --workspace /srv/app --timeout 180 --json "run the test suite and report failures"</code></pre>
+  <p>The invoking directory becomes the workspace on first use. Flags: <code>--workspace</code>, <code>--provider</code>, <code>--model</code>, <code>--effort</code>, <code>--resume</code>, <code>--timeout</code>, <code>--json</code>, <code>--quiet</code>.</p>
+  <p>Exit codes are part of the product:</p>
+  <ul>
+    <li><code>0</code> — completed or max-tokens</li>
+    <li><code>2</code> — turn error or blocked</li>
+    <li><code>3</code> — aborted or interrupted (including <code>--timeout</code>)</li>
+    <li><code>1</code> — harness failure</li>
+  </ul>
+  <p>Do not treat 3 as a flake. The run was cancelled on purpose or hit the watchdog. Retry with a longer timeout or a narrower brief.</p>
+
+  <h2>CI sketch</h2>
+  <pre><code># after the installer has put blazorly on PATH
+export DEEPSEEK_API_KEY
+blazorly run --timeout 300 --quiet "run tests; if they fail, stop and print the failures"
+echo $?   # 0 only if the turn completed</code></pre>
+  <p>Pin the binary version in the image. Do not curl the installer on every job without checking the checksum story — the installer verifies release checksums; skipping verify is <code>BLAZORLY_SKIP_VERIFY=1</code> and that is a footgun.</p>
+
+  <h2>JSON-RPC — serve-stdio</h2>
+  <p><code>blazorly serve-stdio</code> speaks an automation protocol on stdin/stdout: initialize, session/new, session/prompt, session/cancel, shutdown, plus <code>session.event</code> and <code>session.status</code> notifications. Use this when you are wiring a custom client, not a human.</p>
+
+  <h2>ACP — serve-acp</h2>
+  <p><code>blazorly serve-acp</code> is the Agent Client Protocol server for editors and SDK clients: initialize, session/new, session/prompt, session/load, session/cancel, session/set_config_option. Notifications: <code>session/update</code>. In <code>--permission ask</code>, every tool call is routed back as <code>session/request_permission</code>. Default permission mode is <code>auto</code>.</p>
+
+  <h2>eval</h2>
+  <p><code>blazorly eval --tasks eval/tasks</code> runs scored tasks in isolated workspaces against a matrix of sandbox backends. Results land in a timestamped directory as <code>results.json</code> and <code>summary.md</code>. This is how the interruption contract is kept from rotting.</p>
+
+  <h2>init</h2>
+  <p><code>blazorly init</code> drafts AGENTS.md files from a repo scan. Dry-run by default; <code>--write</code> creates or merges; <code>--force</code> replaces; <code>--deterministic</code> uses an offline template with no model calls.</p>
+
+  <h2>Related</h2>
+  <ul>
+    <li><a href="/install/">Install and settings</a></li>
+    <li><a href="/guides/durable-sessions/">Why exit 3 is a contract</a></li>
+  </ul>
+</article>

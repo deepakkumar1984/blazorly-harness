@@ -1,0 +1,41 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Multi-agent</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Multi-agent orchestration in Blazorly</h1>
+  <p class="muted">Swarms, reviewers, and teams run as children of the chat you already have. The sidebar does not become a second product.</p>
+
+  <div class="answer">
+    <p>Blazorly’s multi-agent features spawn sub-agents that each have their own session, provider, and workspace, but they render inside the parent conversation. The Agents panel — beside the task list — shows live status per worker: pulsing while running, a check when done, a link to the child session. The system prompt keeps delegation for large or parallel work; a single file edit stays with the lead. A delegated child never blocks on you: <code>ask_user_question</code> answers itself.</p>
+  </div>
+
+  <figure class="shot">
+    <img src="/assets/img/ui-agents.webp" width="1440" height="900" alt="Agents panel with workers and a reviewer next to the parent chat transcript.">
+    <figcaption>Parent transcript on the left. Tasks and agents on the right.</figcaption>
+  </figure>
+
+  <h2>swarm</h2>
+  <p>A planner shards the objective. Workers run in parallel. A reviewer inspects the actual workspace, not the workers’ claims. Failed tasks re-dispatch with the review notes attached. Use this when the work splits cleanly — “implement the route, write the test, update the OpenAPI file” — and you want a gate at the end that looks at git status and the test run, not at a summary.</p>
+
+  <h2>review</h2>
+  <p>An independent agent forks from the current conversation, reads the files, runs tests, and returns a structured verdict: <code>pass</code>, <code>fail</code>, or <code>concerns</code>. That is a different job from the lead, on purpose. The lead has just written the code; the reviewer is scored on whether the workspace matches the brief.</p>
+
+  <h2>Teams</h2>
+  <p>When enabled (<code>enableTeams</code>), the lead can <code>spawn_teammate</code>, <code>send_message</code>, and use a shared task board. Batch sends run teammates in parallel. This is the longer-lived variant of a swarm: people-shaped roles instead of a one-shot fan-out.</p>
+
+  <h2>Background sub-agents</h2>
+  <p><code>subagent_start</code>, <code>subagent_send</code>, <code>subagent_list</code>, <code>subagent_interrupt</code>. Fire work, keep chatting, poll later. Settled children cold-resume days later because their sessions are durable logs, not in-memory tasks. Interrupt is a first-class call, not “hope the child notices.”</p>
+
+  <h2>What we refuse to do</h2>
+  <ul>
+    <li>Open a new sidebar row for every worker. Inspection is a click from the Agents panel.</li>
+    <li>Let a child sit on a multiple-choice prompt aimed at you. That is how fan-out deadlocks.</li>
+    <li>Delegate a rename or a one-line lookup. The lead should just do it.</li>
+  </ul>
+
+  <h2>Related</h2>
+  <ul>
+    <li><a href="/guides/durable-sessions/">How child sessions survive a crash</a></li>
+    <li><a href="/features/">All features</a></li>
+  </ul>
+</article>

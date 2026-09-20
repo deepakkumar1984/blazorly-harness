@@ -1,0 +1,73 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / Compare</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Blazorly compared to other coding agents</h1>
+  <p class="muted">Same job, different harness. This page states where Blazorly sits next to Claude Code, Cursor, OpenCode, and Aider — without pretending one tool wins every axis.</p>
+
+  <div class="answer">
+    <p>Blazorly is a local, model-agnostic agentic coding harness with a browser UI, durable session logs, and multi-agent fan-out. Claude Code is Anthropic’s CLI/TUI harness, tightly integrated with Claude. Cursor is an IDE with an in-house agent. OpenCode is an open-source, model-agnostic CLI/IDE. Aider is a git-centric terminal pair programmer. Choose Blazorly when you want a self-contained binary, a chat UI you can open from any browser, interruption that keeps the log honest, and swarms that stay inside one session.</p>
+  </div>
+
+  <h2>Feature matrix</h2>
+</article>
+<section>
+  <div class="wrap">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Blazorly</th>
+            <th>Claude Code</th>
+            <th>Cursor</th>
+            <th>OpenCode</th>
+            <th>Aider</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Primary surface</td><td>Browser UI + CLI</td><td>CLI / TUI</td><td>Forked IDE</td><td>CLI / IDE / desktop</td><td>Terminal</td></tr>
+          <tr><td>Model choice</td><td class="yes">Bring your own</td><td>Claude-first</td><td>Cursor + BYOK</td><td class="yes">Bring your own</td><td class="yes">Bring your own</td></tr>
+          <tr><td>Runs locally</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+          <tr><td>Install shape</td><td>Single binary, 6 platforms</td><td>Native installer</td><td>IDE download</td><td>Node / app</td><td>Python package</td></tr>
+          <tr><td>Multi-agent swarms</td><td class="yes">Built-in, in-chat</td><td>Sub-agents</td><td>Background agents</td><td>Varies by version</td><td class="no">Not the product</td></tr>
+          <tr><td>Durable cancel / crash resume</td><td class="yes">First-class log contract</td><td>Session files</td><td>Composer history</td><td>Session store</td><td>Git as memory</td></tr>
+          <tr><td>Permission presets</td><td class="yes">full / workspace-write / read-only</td><td>Allow/deny prompts</td><td>IDE sandbox</td><td>Tool permissions</td><td>Git-scoped edits</td></tr>
+          <tr><td>Editor protocol</td><td>ACP + JSON-RPC</td><td>CLI; IDE extensions</td><td>Is the editor</td><td>IDE option</td><td>Editor plugins</td></tr>
+          <tr><td>Headless CI</td><td class="yes"><code>blazorly run</code> + exit codes</td><td>CLI non-interactive</td><td>Limited</td><td>CLI</td><td class="yes">Yes</td></tr>
+          <tr><td>License</td><td>MIT</td><td>Proprietary</td><td>Proprietary</td><td>MIT (typical)</td><td>Apache-2.0</td></tr>
+          <tr><td>Hosted account required</td><td class="yes">No</td><td>Anthropic account</td><td>Cursor account</td><td>No</td><td>No</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">Other products move. This matrix describes the job each tool is built for, not a score. Verify current features on each vendor’s site before a buy-or-build decision.</p>
+  </div>
+</section>
+<article class="prose prose-wrap">
+  <h2>When Blazorly is the right harness</h2>
+  <ul>
+    <li>You want a <strong>browser UI</strong> on localhost, not only a TUI, and you still want a CLI for CI.</li>
+    <li>You pick the model — cloud, local, or a custom OpenAI-compatible route — and you do not want the harness to own the vendor relationship.</li>
+    <li>You interrupt agents constantly and care that Stop, timeout, and process-kill leave a log you can resume.</li>
+    <li>You need swarms and reviewers without a sidebar full of child chats.</li>
+    <li>You want a single binary you can checksum, not a Node or Python tree.</li>
+  </ul>
+
+  <h2>When a different tool is a better fit</h2>
+  <ul>
+    <li><strong>Claude Code</strong> — you already live in Anthropic’s models and want their CLI, memory, and ecosystem as the default path.</li>
+    <li><strong>Cursor</strong> — the agent should sit inside the editor with inline diffs as the primary loop.</li>
+    <li><strong>Aider</strong> — you want a small, git-native pair programmer and you are happy in the terminal.</li>
+    <li><strong>OpenCode</strong> — you want an open-source CLI/IDE with a large provider catalog and you do not need Blazorly’s interruption contract or in-chat swarm UI.</li>
+  </ul>
+
+  <h2>What is unique, in one paragraph</h2>
+  <p>The interruption contract is the part most harnesses treat as an afterthought. Blazorly states it as invariants and measures it: every turn ends with a reason; pending tools close; partial assistant text is kept; a killed process reloads and continues. That is why the homepage quotes 0.3 ms, 148 ms, and 132k events. Those numbers are from the project’s own evals and a production session replay, not a marketing benchmark suite.</p>
+
+  <h2>Related</h2>
+  <ul>
+    <li><a href="/guides/what-is-an-agent-harness/">What is an agentic coding harness?</a></li>
+    <li><a href="/features/">Feature list</a></li>
+    <li><a href="/install/">Install</a></li>
+  </ul>
+</article>

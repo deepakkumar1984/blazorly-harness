@@ -1,0 +1,39 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Durable sessions</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Durable sessions and the interruption contract</h1>
+  <p class="muted">Stop, timeout, and kill are states of a turn. They are not “the agent crashed, start over.”</p>
+
+  <div class="answer">
+    <p>Blazorly stores each session as an append-only log. Line 1 is a header; every following line is an event with a contiguous sequence number. Turns end with an explicit reason from a closed set: completed, aborted (user / parent / disposed), interrupted, error, blocked, max-tokens. Cancelled tools write a result. If a cancelled stream already produced text, that assistant message is committed with <code>interrupted: true</code>. A process killed mid-turn leaves a log that reloads, repairs the open turn in memory, and accepts the next user message. Measured on the project’s own evals: median 0.3 ms to abort mid-stream (in-process adapter), 1.6 ms mid-SSE on the HTTP adapter, 148 ms median to abort inside a bash process-tree kill. A 132,010-event, 24 MB production session cold-replays in 1.29 s; its full-text index rebuilds in 42 ms.</p>
+  </div>
+
+  <h2>The invariants</h2>
+  <ol>
+    <li>Every turn ends, exactly once, with an explicit reason. After a crash, reload synthesizes the missing end <em>in memory</em>; the disk keeps the honest record that the turn never ended.</li>
+    <li>Pending tool calls close. Bash kills its process tree and reports <code>aborted: true</code>. A killed process leaves dangling calls; repair synthesizes <code>TOOL_OUTCOME_UNKNOWN</code> so the next model request is balanced.</li>
+    <li>Partial assistant work is preserved. You keep what you read.</li>
+    <li>Queued inbox items survive or are spliced out with a <code>canceled</code> outcome, on purpose.</li>
+    <li>The log reloads and resumes. A follow-up on a killed session is an ordinary turn.</li>
+    <li>Exit codes tell the truth for headless: 0 completed, 2 error/blocked, 3 aborted/interrupted.</li>
+  </ol>
+
+  <h2>Why this is a product feature</h2>
+  <p>Interactive coding agents run long turns. Users hit Stop when the model goes the wrong way. Laptops sleep. CI watchdog timers fire. If the harness throws that work away, you pay for tokens twice and you lose the trail of what already happened. Treating interruption as an error also poisons the next prompt: the model sees a truncated tool call with no result, or it sees nothing, and either way it guesses.</p>
+  <p>The HTTP adapter has a known asymmetry in OpenAI-compatible clients: cancelling mid-SSE-read often surfaces as a stream <em>error</em> rather than an abort. Blazorly still closes the turn; the paper in the repo spells out why that distinction matters.</p>
+
+  <h2>How to see it</h2>
+  <ul>
+    <li>Hit Stop while a bash command is running. The tool card should close; the transcript should keep any assistant text already shown.</li>
+    <li><code>blazorly run --timeout 2 "…"</code> should exit 3, not 1.</li>
+    <li>Kill the UI process mid-turn, start it again, send a follow-up. The session should reload, not fork into a blank chat.</li>
+  </ul>
+  <p>The scored tasks are <code>eval/tasks/interrupt-cancel</code>, <code>interrupt-timeout</code>, and <code>interrupt-restart</code>. They run against a fake OpenAI-compatible server so the bash window is deterministic.</p>
+
+  <h2>Related</h2>
+  <ul>
+    <li><a href="https://github.com/deepakkumar1984/blazorly-harness/blob/main/paper/paper.md">Draft paper in the repo</a></li>
+    <li><a href="/guides/headless-ci/">Exit codes in CI</a></li>
+  </ul>
+</article>

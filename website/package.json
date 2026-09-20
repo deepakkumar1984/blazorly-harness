@@ -1,0 +1,19 @@
+{
+  "name": "blazorly-site",
+  "private": true,
+  "description": "Blazorly marketing site — static HTML on a Cloudflare Worker",
+  "scripts": {
+    "build": "python3 build.py",
+    "capture": "python3 scripts/capture.py",
+    "dev": "python3 build.py && wrangler dev",
+    "deploy": "python3 build.py && wrangler deploy",
+    "dry-run": "python3 build.py && wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "4.110.0"
+  },
+  "allowScripts": {
+    "workerd@1.20260708.1": true,
+    "esbuild@0.28.1": true
+  }
+}

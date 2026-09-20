@@ -1,0 +1,29 @@
+# Blazorly
+
+> Blazorly is an open-source agentic coding harness you run locally. Chat UI or headless CLI. Bring your own model. MIT licensed.
+
+Blazorly is the runtime around a coding model: tools, durable sessions, sandbox presets, and multi-agent fan-out. It is not a hosted cloud agent and not an IDE. Install is a self-contained binary for Linux, macOS, and Windows (x64 and arm64).
+
+## Product
+- [Home](https://blazorly.dev/): What Blazorly is, demo, install commands
+- [Features](https://blazorly.dev/features/): UI, tools, swarms, durability, System One, CLI
+- [Install](https://blazorly.dev/install/): One-command install, settings, providers
+- [Compare](https://blazorly.dev/compare/): vs Claude Code, Cursor, OpenCode, Aider
+- [About](https://blazorly.dev/about/): License, evidence, source
+
+## Guides
+- [What is an agentic coding harness?](https://blazorly.dev/guides/what-is-an-agent-harness/)
+- [Getting started](https://blazorly.dev/guides/getting-started/)
+- [Multi-agent orchestration](https://blazorly.dev/guides/multi-agent/)
+- [Durable sessions](https://blazorly.dev/guides/durable-sessions/)
+- [Permissions and sandbox](https://blazorly.dev/guides/permissions/)
+- [Headless, CI, and editors](https://blazorly.dev/guides/headless-ci/)
+
+## Key facts
+- Single binary, six platforms; no SDK, no Docker
+- Web UI at http://localhost:5080; `blazorly run` for CI (exit 0/2/3)
+- Permission presets: full-access, workspace-write, read-only
+- Interruption is durable: median 0.3 ms mid-stream cancel; 132,010-event session cold-replays in 1.29 s
+- Providers: DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, OpenAI-compatible routes
+- Source: https://github.com/deepakkumar1984/blazorly-harness
+- Full text for agents: https://blazorly.dev/llms-full.txt

@@ -1,0 +1,112 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / Features</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Blazorly features</h1>
+  <p class="muted">Everything the harness actually ships: the chat UI, the toolset, multi-agent orchestration, durable sessions, the decision model, sandbox presets, and the CLI surfaces. No vapour. No “coming soon” as a heading.</p>
+</article>
+
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-chat.webp" width="1440" height="900" alt="Blazorly chat-first web UI with live tool cards and a running session.">
+      <figcaption>Chat view: user brief, assistant plan, tool cards for read / edit / bash.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<article class="prose prose-wrap">
+  <h2>Chat-first web UI</h2>
+  <p>Blazorly’s primary surface is a Blazor Server app on port 5080. It is not a thin log viewer. Streaming assistant text, reasoning, and tool cards land in the transcript as they happen. A context meter shows how much of the window is used. A task list tracks the agent’s own todos. A delegations panel tracks every sub-agent.</p>
+  <p>The sidebar groups sessions by workspace. Search hits the session index, not a fuzzy title match. You can fork a settled turn, rename a session, archive it, or generate AGENTS.md docs from a repo scan without leaving the chat.</p>
+  <ul>
+    <li>Chat and trajectory views for the same session</li>
+    <li>Persistent terminal drawer per session</li>
+    <li>Stats: turns, tokens, duration, tool usage</li>
+    <li>Model and reasoning-effort chips on the session header</li>
+    <li>Permission preset chip, switchable mid-session</li>
+  </ul>
+
+  <h2>Workspace tools</h2>
+  <p>The built-in toolset is what a coding agent needs to finish work, not a demo subset:</p>
+  <table>
+    <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>bash</code></td><td>Run a command. Cancel kills the process tree and records a structured abort.</td></tr>
+      <tr><td><code>read</code> / <code>write</code> / <code>edit</code></td><td>File I/O with workspace policy from the permission preset.</td></tr>
+      <tr><td><code>grep</code> / <code>glob</code></td><td>Search the tree without shelling out to a brittle find pipeline.</td></tr>
+      <tr><td><code>web_search</code> / <code>web_fetch</code></td><td>Look things up and read URLs when the brief needs them.</td></tr>
+      <tr><td><code>todo_write</code></td><td>Keep a visible task list in the session chrome.</td></tr>
+      <tr><td><code>subagent_*</code></td><td>Start, message, list, and interrupt child agents.</td></tr>
+      <tr><td><code>swarm</code> / <code>review</code></td><td>Fan-out with a reviewer; independent verdicts on the workspace.</td></tr>
+      <tr><td><code>job_*</code></td><td>Background jobs: list, read output, kill.</td></tr>
+      <tr><td><code>skill</code></td><td>Load skill instructions into the turn.</td></tr>
+      <tr><td><code>session_search</code> and traces</td><td>Query the durable log, not a screenshot of it.</td></tr>
+    </tbody>
+  </table>
+  <p>MCP servers you configure in settings are loaded as additional tools. Plugins you do not want can be disabled by name.</p>
+
+  <h2>Multi-agent orchestration</h2>
+  <p>Delegation is reserved for work that is actually large or parallel. A one-file edit stays inline. When the lead does spawn children, they run inside the parent chat:</p>
+  <ul>
+    <li><strong>swarm</strong> — a planner shards the objective, workers run in parallel, a reviewer checks the workspace. Failures re-dispatch with review notes.</li>
+    <li><strong>review</strong> — an independent agent forks from the conversation, inspects files, runs tests, and returns <code>pass</code>, <code>fail</code>, or <code>concerns</code>.</li>
+    <li><strong>Teams</strong> — spawn teammates, shared task board, batch sends.</li>
+    <li><strong>Background sub-agents</strong> — fire and poll with <code>subagent_list</code>. Settled children cold-resume later.</li>
+  </ul>
+  <p>A delegated child never hangs on <code>ask_user_question</code>: it answers itself. See <a href="/guides/multi-agent/">multi-agent orchestration</a>.</p>
+
+  <h2>Durable sessions and interruption</h2>
+  <div class="answer">
+    <p>Blazorly treats interruption as a first-class state, not an error path. The session log is append-only JSON-lines (or SQLite). Every turn ends with an explicit reason. Cancelled tools close with a durable result. Partial assistant output is committed. A process killed mid-turn leaves a log that reloads with in-memory repair and resumes. Measured: median 0.3 ms to abort mid-stream (in-process adapter); 148 ms median to abort inside a bash process-tree kill; a 132,010-event production session cold-replays in 1.29 s.</p>
+  </div>
+  <p>Headless runs map finish reasons to exit codes: 0 completed or max-tokens, 2 error or blocked, 3 aborted or interrupted. That is the contract CI should rely on. Read <a href="/guides/durable-sessions/">durable sessions</a>.</p>
+
+  <h2>Permission presets and sandbox</h2>
+  <p>Three presets, switchable with <code>/permission</code>:</p>
+  <ul>
+    <li><code>full-access</code> (default) — tools run on the host.</li>
+    <li><code>workspace-write</code> — writes confined to the session folder. On Linux, a Landlock helper jails <code>bash</code> and <code>run_code</code>.</li>
+    <li><code>read-only</code> — mutations denied.</li>
+  </ul>
+  <p>macOS and Windows build and run without Landlock; the confining presets simply cannot jail those tools there. The UI shows when a preset is degraded. Details in <a href="/guides/permissions/">permissions and sandbox</a>.</p>
+
+  <h2>Decision model — System One / JEV-1</h2>
+  <p>Optional. A small classifier handles seams a full LLM call is wasteful for:</p>
+  <ul>
+    <li><code>auto-plan</code> — does this brief need a plan before anything changes?</li>
+    <li><code>risk-gate</code> — could this call destroy data or leak secrets?</li>
+    <li><code>tool-gate</code> — which tools does the upcoming work need?</li>
+  </ul>
+  <p>The tool gate is hybrid: core + recently used + lexical relevance stay with zero extra calls. The ambiguous tail gets one System One choice, cached per brief. Any failure returns the full tool list — byte-identical to pre-gate behaviour. Stats at <code>GET /api/decisions</code>.</p>
+
+  <h2>Providers and routes</h2>
+  <p>Works with DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, and any OpenAI-compatible endpoint. Custom routes live in Settings. Z.ai ships two routes: pay-as-you-go and GLM Coding Plan. Model lists are discovered live from each provider’s API. Keys resolve per request.</p>
+
+  <h2>CLI surfaces</h2>
+  <pre><code>blazorly                 # web UI, port 5080
+blazorly run "job"       # headless, cwd is the workspace
+blazorly sessions        # list / import / seed
+blazorly init            # draft AGENTS.md (dry-run; --write to create)
+blazorly eval            # scored task benchmarks
+blazorly decisions       # System One doctor / probe
+blazorly serve-stdio     # JSON-RPC automation protocol
+blazorly serve-acp       # Agent Client Protocol for editors
+blazorly update          # checksum-verified self-update</code></pre>
+  <p>More in <a href="/guides/headless-ci/">headless, CI, and editors</a>.</p>
+
+  <h2>What it is not</h2>
+  <ul>
+    <li>Not a hosted cloud agent. There is no Blazorly account.</li>
+    <li>Not an IDE. Editors talk to it over ACP or JSON-RPC.</li>
+    <li>Not tied to one model vendor.</li>
+    <li>Not a wrapper that throws away the turn when you hit Stop.</li>
+  </ul>
+</article>
+
+<section class="cta-band">
+  <div class="wrap">
+    <h2>Install the binary and open the UI.</h2>
+    <a class="btn btn-primary" href="/install/">Install Blazorly</a>
+  </div>
+</section>

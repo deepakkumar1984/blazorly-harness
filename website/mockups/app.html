@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blazorly mockup</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body data-scene="chat">
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">B</span>
+        <span>Blazorly Harness</span>
+      </div>
+      <div class="search">Search sessions…</div>
+      <button class="new-chat" type="button">＋ New chat</button>
+      <nav class="sessions">
+        <div class="ws-head">▾ <span>blazorly-harness</span> <em>4</em></div>
+        <a class="sess active" href="#"><i class="dot run"></i> Add health endpoint</a>
+        <a class="sess" href="#"><i class="dot"></i> Compact session log</a>
+        <a class="sess" href="#"><i class="dot"></i> Landlock helper</a>
+        <a class="sess" href="#"><i class="dot"></i> Swarm review gate</a>
+        <div class="ws-head">▾ <span>payments-api</span> <em>2</em></div>
+        <a class="sess" href="#"><i class="dot"></i> Rate-limit middleware</a>
+        <a class="sess" href="#"><i class="dot"></i> OpenAPI snapshot</a>
+      </nav>
+      <div class="side-foot">
+        <div class="meter"><span style="width:38%"></span></div>
+        <span>24.7k / 65.5k</span>
+      </div>
+    </aside>
+
+    <section class="main">
+      <header class="top">
+        <div class="ident">
+          <strong>Add health endpoint</strong>
+          <span class="chip run">● running</span>
+        </div>
+        <div class="actions">
+          <div class="tabs">
+            <button class="tab on" type="button">Chat</button>
+            <button class="tab" type="button">Trajectory</button>
+          </div>
+          <button class="ghost" type="button">Terminal</button>
+          <button class="ghost" type="button">Stats</button>
+        </div>
+      </header>
+      <div class="status-row">
+        <span class="chip">deepseek / deepseek-v4-flash</span>
+        <span class="chip">effort: high</span>
+        <span class="chip lock">🔒 workspace-write</span>
+        <span class="chip ctx">context 38%</span>
+      </div>
+
+      <div class="workspace">
+        <div class="transcript">
+          <article class="bubble user">
+            <div class="role">You</div>
+            <p>Add a <code>/health</code> endpoint to the API, cover it with a test, and run the suite. Keep the change in the existing routing file.</p>
+          </article>
+
+          <article class="bubble assistant">
+            <div class="role">Blazorly</div>
+            <p>I'll inspect the current routing, add a health check that reports process liveness, then lock it in with a test.</p>
+
+            <div class="tool">
+              <div class="tool-h"><span class="pill">read</span> <code>src/Api/Program.cs</code> <span class="ok">done</span></div>
+              <pre>app.MapGet("/ready", () => Results.Ok());</pre>
+            </div>
+            <div class="tool">
+              <div class="tool-h"><span class="pill edit">edit</span> <code>src/Api/Program.cs</code> <span class="ok">done</span></div>
+              <pre>+ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));</pre>
+            </div>
+            <div class="tool live">
+              <div class="tool-h"><span class="pill bash">bash</span> <code>dotnet test</code> <span class="run">running</span></div>
+              <pre>Passed!  — Failed: 0, Passed: 41, Skipped: 0, Total: 41</pre>
+            </div>
+          </article>
+        </div>
+
+        <aside class="rail">
+          <div class="panel todos">
+            <h3>Tasks <span>2/3</span></h3>
+            <label><input type="checkbox" checked disabled> Locate routing file</label>
+            <label><input type="checkbox" checked disabled> Add /health route</label>
+            <label><input type="checkbox" disabled> Run test suite</label>
+          </div>
+          <div class="panel agents">
+            <h3>Agents <span>2 live</span></h3>
+            <div class="agent run">
+              <i></i>
+              <div>
+                <strong>worker · tests</strong>
+                <small>running · 18s</small>
+              </div>
+            </div>
+            <div class="agent run">
+              <i></i>
+              <div>
+                <strong>worker · route</strong>
+                <small>running · 12s</small>
+              </div>
+            </div>
+            <div class="agent done">
+              <i></i>
+              <div>
+                <strong>reviewer</strong>
+                <small>pass · workspace matches brief</small>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <div class="term-dock">
+        <div class="term-h">terminal · session <span>bash</span></div>
+        <pre>$ dotnet test --nologo
+  Passed!  — Failed:     0, Passed:    41, Skipped:     0, Total:    41, Duration: 1 s
+
+$ git diff --stat
+ src/Api/Program.cs                 |  6 ++++++
+ tests/Api.Tests/HealthTests.cs     | 24 ++++++++++++++++++++++++
+ 2 files changed, 30 insertions(+)</pre>
+      </div>
+
+      <form class="composer" action="#" onsubmit="return false">
+        <span class="cwd">~/work/blazorly-harness</span>
+        <div class="box">Ask a follow-up…</div>
+        <button class="send" type="button">Send</button>
+      </form>
+    </section>
+  </div>
+
+  <div class="settings">
+    <aside class="sidebar">
+      <div class="brand"><span class="mark">B</span> Blazorly Harness</div>
+      <nav class="sessions">
+        <a class="sess" href="#"><i class="dot"></i> Sessions</a>
+        <a class="sess active" href="#"><i class="dot"></i> Settings</a>
+      </nav>
+    </aside>
+    <section class="main settings-main">
+      <header class="top"><strong>Settings</strong></header>
+      <div class="settings-grid">
+        <article>
+          <h3>Provider</h3>
+          <p>Route used for new chats. Keys stay on this machine.</p>
+          <div class="field">deepseek</div>
+          <div class="field">deepseek-v4-flash</div>
+        </article>
+        <article>
+          <h3>Permission preset</h3>
+          <p>What tools may touch. Switch mid-session with <code>/permission</code>.</p>
+          <ul>
+            <li><b>full-access</b> — tools run on the host</li>
+            <li class="on"><b>workspace-write</b> — writes confined to the session folder</li>
+            <li><b>read-only</b> — no mutations</li>
+          </ul>
+        </article>
+        <article>
+          <h3>System One</h3>
+          <p>Optional classifier for tool-gate, auto-plan, and risk-gate.</p>
+          <div class="toggle on">enableSystemOne · tool-gate</div>
+        </article>
+        <article>
+          <h3>Platforms</h3>
+          <p>Linux, macOS, Windows · x64 and arm64. One self-contained binary.</p>
+        </article>
+      </div>
+    </section>
+  </div>
+
+  <div class="cli">
+    <div class="cli-win">
+      <div class="cli-bar"><i></i><i></i><i></i><span>blazorly · headless</span></div>
+      <pre><span class="dim">$</span> blazorly run "summarize this repo"
+<span class="accent">blazorly</span>  session 7f3a2c · workspace /home/dev/blazorly-harness
+<span class="dim">read</span>     README.md
+<span class="dim">grep</span>     Name =>  ·  src/Blazorly.Harness.Tools
+<span class="ok">done</span>     Blazorly is a local agentic coding harness with a chat UI,
+         sub-agent swarms, and durable JSONL/SQLite sessions. Install
+         is a single binary; no SDK, no Docker.
+
+<span class="dim">$</span> echo $?
+0</pre>
+    </div>
+  </div>
+</body>
+</html>

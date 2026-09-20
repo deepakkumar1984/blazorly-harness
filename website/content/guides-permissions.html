@@ -1,0 +1,35 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Permissions</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Permission presets and sandboxing</h1>
+  <p class="muted">Three presets. Switch them mid-session. Linux can jail bash; other platforms still enforce the write policy in the harness.</p>
+
+  <div class="answer">
+    <p>Blazorly’s permission presets control what the agent can touch. <code>full-access</code> (the default) runs tools on the host. <code>workspace-write</code> confines writes to the session folder. <code>read-only</code> denies mutations. Change the preset from Settings, from the session chip, or with <code>/permission &lt;preset&gt;</code>. On Linux, a Landlock helper compiled on first use jails <code>bash</code> and <code>run_code</code> for the confining presets. Without that helper, mutating commands fail closed rather than run unsandboxed.</p>
+  </div>
+
+  <figure class="shot">
+    <img src="/assets/img/ui-settings.webp" width="1440" height="900" alt="Blazorly settings showing provider, permission preset workspace-write, and System One tool-gate enabled.">
+    <figcaption>Settings: provider, permission preset, optional System One.</figcaption>
+  </figure>
+
+  <h2>What each preset means</h2>
+  <table>
+    <thead><tr><th>Preset</th><th>Reads</th><th>Writes / bash</th><th>Use when</th></tr></thead>
+    <tbody>
+      <tr><td><code>full-access</code></td><td>Host</td><td>Host</td><td>You trust the loop on this machine and need it to operate outside the repo.</td></tr>
+      <tr><td><code>workspace-write</code></td><td>As allowed</td><td>Session / workspace folder</td><td>The default you should switch to for unfamiliar briefs.</td></tr>
+      <tr><td><code>read-only</code></td><td>Yes</td><td>Denied</td><td>Explain, review, or search — do not touch the tree.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Landlock, and when it is missing</h2>
+  <p>Linux kernel 5.13+ plus a C compiler for a small helper. macOS and Windows run the harness fine; they cannot apply Landlock to bash. The UI marks a degraded sandbox so you are not surprised. Policy in the file tools still applies: the harness will refuse writes that the preset does not allow even if the OS jail is absent.</p>
+
+  <h2>Risk-gate</h2>
+  <p>If System One is enabled with the <code>risk-gate</code> seam, calls that look like they could destroy data or leak secrets park for approval. That is a second line, not a replacement for the preset. Failure of the classifier does not fail open into a different preset; it falls back to the seam’s deterministic path.</p>
+
+  <h2>Practical default</h2>
+  <p>Install with full-access so the first session is not a maze. The moment you point Blazorly at a repo that is not a toy, switch that session to workspace-write. Keep read-only for “what does this codebase do?” on a tree you do not own.</p>
+</article>

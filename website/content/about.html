@@ -1,0 +1,23 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / About</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>About Blazorly</h1>
+  <p>Blazorly is an open-source agentic coding harness. The code lives at <a href="https://github.com/deepakkumar1984/blazorly-harness">github.com/deepakkumar1984/blazorly-harness</a> under the MIT License. There is no hosted control plane and no account to create. You run the binary, you keep the keys, you keep the session logs.</p>
+
+  <h2>What we built, and why</h2>
+  <p>Coding agents fail in boring ways: a Stop that drops the turn, a crash that leaves the log unbalanced, a swarm that dumps ten chats into the sidebar, a tool list so large the model spends tokens staring at it. Blazorly is a harness that treats those as the product. The loop, the tools, the sandbox, the log, and the UI are one system.</p>
+  <p>The stack is .NET 10. The UI is Blazor Server. Persistence is JSONL or SQLite. Linux sandboxing uses Landlock. Releases are self-contained binaries for six platform/arch pairs.</p>
+
+  <h2>Evidence, not slogans</h2>
+  <p>The interruption numbers on this site come from the repository: unit and integration tests, scored eval tasks under <code>eval/tasks/interrupt-*</code>, and replay of a 132,010-event production session. A draft paper in <code>paper/paper.md</code> writes the contract down as invariants. If a number cannot be reproduced from that tree, it does not belong on a marketing page.</p>
+
+  <h2>License</h2>
+  <p>MIT. Copyright 2026 Blazorly. You can use, copy, modify, merge, publish, distribute, sublicense, and sell copies, subject to the license notice. See <a href="https://github.com/deepakkumar1984/blazorly-harness/blob/main/LICENSE">LICENSE</a>.</p>
+
+  <h2>This website</h2>
+  <p>Static HTML on a Cloudflare Worker. Source is the <code>website/</code> directory in the same repository. Canonical origin: this site. If you are reading a <code>workers.dev</code> preview, treat it as a staging URL — production indexing is meant for the attached custom domain.</p>
+
+  <h2>Contact</h2>
+  <p>Issues and pull requests on GitHub. There is no support mailbox pretending to be a product team.</p>
+</article>

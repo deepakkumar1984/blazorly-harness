@@ -1,0 +1,53 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Getting started</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Getting started with Blazorly</h1>
+  <p class="muted">From a blank machine to a session that edits a real repo. About ten minutes if you already have an API key.</p>
+
+  <h2>1. Install the binary</h2>
+  <p>Linux and macOS:</p>
+  <pre><code>curl -fsSL https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.sh | bash</code></pre>
+  <p>Windows (PowerShell):</p>
+  <pre><code>powershell -c "irm https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.ps1 | iex"</code></pre>
+  <p>Confirm with <code>blazorly --version</code>. Full flags live on the <a href="/install/">install page</a>.</p>
+
+  <h2>2. Start the UI</h2>
+  <pre><code>blazorly</code></pre>
+  <p>A browser tab opens on port 5080. The first run writes <code>~/.blazorly/settings.json</code>. The URL includes a console token unless you passed <code>--token</code>.</p>
+
+  <h2>3. Configure a provider</h2>
+  <p>Settings discovers models from the provider API. Or write the file:</p>
+  <pre><code>{
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "apiKey": "sk-…"
+}</code></pre>
+  <p>Local models: set the provider to Ollama or LM Studio and leave the cloud keys empty. Blazorly will not send a DeepSeek key to an OpenAI route.</p>
+
+  <h2>4. Open a workspace</h2>
+  <p>In the sidebar, start a new chat in the folder you care about. Empty folders are marked — the agent has nothing to read until you put files there. For a one-shot from the terminal:</p>
+  <pre><code>cd /path/to/repo
+blazorly run "summarize this repo"</code></pre>
+
+  <h2>5. Ask for a change you can verify</h2>
+  <p>Good first briefs are small and checkable: add a health endpoint, rename a symbol, write a missing test. Watch the tool cards. If the model heads the wrong way, hit Stop. Partial text stays; the next message continues from a truthful log. That behaviour is documented in <a href="/guides/durable-sessions/">durable sessions</a>.</p>
+
+  <h2>6. Tighten the sandbox once you trust the loop</h2>
+  <p>Default is <code>full-access</code>. For a repo you do not want the agent roaming around in, switch to <code>workspace-write</code> with <code>/permission workspace-write</code>. Read-only is there for “explain this tree, do not touch it.” See <a href="/guides/permissions/">permissions</a>.</p>
+
+  <h2>If something is quiet</h2>
+  <ul>
+    <li>No models in the dropdown — the key is missing or the provider route is wrong. Check Settings and the env var.</li>
+    <li>UI will not open — another process on 5080, or you bound <code>--host</code> away from localhost.</li>
+    <li>Headless exits 2 — the turn errored or blocked. Exit 3 is a cancel or timeout, not a crash.</li>
+    <li>Linux writes fail closed under a confining preset — the Landlock helper needs <code>cc</code>/<code>gcc</code> once; without it, mutating commands refuse rather than run unsandboxed.</li>
+  </ul>
+
+  <h2>Next</h2>
+  <ul>
+    <li><a href="/guides/multi-agent/">Run a swarm without cluttering the sidebar</a></li>
+    <li><a href="/guides/headless-ci/">Wire <code>blazorly run</code> into CI</a></li>
+    <li><a href="/features/">Feature list</a></li>
+  </ul>
+</article>

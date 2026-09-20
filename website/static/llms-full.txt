@@ -1,0 +1,53 @@
+# Blazorly — full text for coding agents
+
+Blazorly is an open-source agentic coding harness (MIT). Give it a task and it reads, writes, runs commands, searches the web, and orchestrates sub-agents. Surfaces: Blazor web UI (default port 5080), headless CLI (`blazorly run`), JSON-RPC (`serve-stdio`), Agent Client Protocol (`serve-acp`).
+
+Install (Linux/macOS):
+curl -fsSL https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.sh | bash
+
+Install (Windows PowerShell):
+powershell -c "irm https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.ps1 | iex"
+
+Data: ~/.blazorly (Windows: %LOCALAPPDATA%\blazorly). No Docker, no Python, no .NET SDK required to use a release binary.
+
+Quick start:
+blazorly
+# then set provider + apiKey in Settings or ~/.blazorly/settings.json
+
+{
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "apiKey": "sk-…"
+}
+
+Providers: DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, custom OpenAI-compatible routes. Keys resolve per request; env vars win if settings field is empty.
+
+Permission presets (switch with /permission):
+- full-access (default): tools on the host
+- workspace-write: writes confined to the session folder; Linux Landlock jails bash/run_code
+- read-only: no mutations
+
+CLI:
+blazorly                 # UI
+blazorly run "job"       # headless; cwd is workspace
+blazorly sessions
+blazorly init            # draft AGENTS.md (dry-run; --write to create)
+blazorly eval
+blazorly decisions
+blazorly serve-stdio
+blazorly serve-acp
+blazorly update
+blazorly --version
+
+Headless exit codes: 0 completed/max-tokens, 2 error/blocked, 3 aborted/interrupted, 1 harness failure.
+
+Tools include: bash, read, write, edit, grep, glob, web_search, web_fetch, todo_write, subagent_start/send/list/interrupt, swarm, review, job_list/output/kill, skill, session_search and traces, MCP tools you configure.
+
+Multi-agent: swarm (planner + parallel workers + reviewer; failed tasks re-dispatch), review (pass|fail|concerns), teams (enableTeams), background sub-agents. Children render in the parent chat Agents panel. Delegated children answer ask_user_question themselves.
+
+Durable sessions: append-only JSONL or SQLite. Turns end with completed | aborted(cause) | interrupted | error | blocked | max-tokens. Cancelled tools close. Partial assistant text is kept. Process kill reloads with in-memory repair. Measured: median 0.3 ms mid-stream cancel (in-process); 148 ms median bash process-tree kill; 132,010-event production session cold-replays in 1.29 s.
+
+System One / JEV-1 (optional): auto-plan, risk-gate, tool-gate. Tool gate is hybrid; failure returns the full tool list.
+
+Source: https://github.com/deepakkumar1984/blazorly-harness
+Site: https://blazorly.dev/

@@ -1,0 +1,85 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / Install</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Install Blazorly</h1>
+  <p class="muted">One self-contained binary. No .NET SDK, no Docker, no Python. Linux, macOS, and Windows on x64 and arm64. Re-run the installer to upgrade — it verifies the checksum and swaps the binary atomically.</p>
+
+  <h2>Linux and macOS</h2>
+  <div class="install-box" style="margin:16px 0">
+    <div class="install-row">
+      <code id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.sh | bash</code>
+      <button class="copy" type="button" data-copy="#cmd-unix">Copy</button>
+    </div>
+  </div>
+  <p>That puts <code>blazorly</code> on your PATH. The app lives in <code>~/.blazorly/app/current</code>. Session data lives in <code>~/.blazorly</code>.</p>
+
+  <h2>Windows</h2>
+  <div class="install-box" style="margin:16px 0">
+    <div class="install-row">
+      <code id="cmd-win">powershell -c "irm https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.ps1 | iex"</code>
+      <button class="copy" type="button" data-copy="#cmd-win">Copy</button>
+    </div>
+  </div>
+  <p>Data directory: <code>%LOCALAPPDATA%\blazorly</code>.</p>
+
+  <h2>Start the UI</h2>
+  <pre><code>blazorly</code></pre>
+  <p>The first run creates <code>~/.blazorly/settings.json</code> and serves the chat UI at <code>http://localhost:5080</code>. Flags:</p>
+  <ul>
+    <li><code>--port &lt;n&gt;</code> — bind this port (default 5080)</li>
+    <li><code>--host &lt;ip&gt;</code> — bind address (default localhost; <code>0.0.0.0</code> for all interfaces)</li>
+    <li><code>--token &lt;secret&gt;</code> — pin the console access token (default: fresh random token each boot, printed in the startup URL)</li>
+    <li><code>--no-open</code> — do not open a browser tab</li>
+  </ul>
+
+  <h2>Set a provider</h2>
+  <p>Open Settings in the UI — it discovers models live from each provider — or write the file:</p>
+  <pre><code>{
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "apiKey": "sk-…"
+}</code></pre>
+  <p>Works with DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, and any OpenAI-compatible endpoint. Custom routes live under Settings → Routes.</p>
+  <p>API keys resolve per request. Environment variables (<code>DEEPSEEK_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>XAI_API_KEY</code>, <code>GEMINI_API_KEY</code>, …) take precedence if the settings field is empty. A provider’s key is never sent to another route.</p>
+
+  <h2>Headless, from a repo</h2>
+  <pre><code>blazorly run "summarize this repo"</code></pre>
+  <p>The invoking directory becomes the workspace. Useful flags: <code>--workspace</code>, <code>--provider</code>, <code>--model</code>, <code>--resume</code>, <code>--timeout</code>, <code>--json</code>, <code>--quiet</code>.</p>
+  <p>Exit codes: <code>0</code> completed, <code>2</code> error or blocked, <code>3</code> aborted or interrupted, <code>1</code> harness failure.</p>
+
+  <h2>Essential settings</h2>
+  <table>
+    <thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>provider</code> / <code>model</code></td><td>deepseek / deepseek-v4-flash</td><td>LLM route for new sessions</td></tr>
+      <tr><td><code>apiKey</code></td><td>—</td><td>Or the provider’s environment variable</td></tr>
+      <tr><td><code>sandboxMode</code></td><td>full-access</td><td><code>full-access</code>, <code>workspace-write</code>, or <code>read-only</code></td></tr>
+      <tr><td><code>contextWindowTokens</code></td><td>65536</td><td>Compaction and context-meter window</td></tr>
+      <tr><td><code>enableTeams</code></td><td>false until set</td><td>Teammate tools</td></tr>
+      <tr><td><code>enableSystemOne</code></td><td>false until set</td><td>Decision-model seams</td></tr>
+      <tr><td><code>disabledPlugins</code></td><td>[]</td><td>Turn off plugins you do not need, e.g. <code>["terminals","lsp"]</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Build from source</h2>
+  <p>Requires .NET SDK 10.0. Linux needs <code>cc</code>/<code>gcc</code> for the Landlock sandbox helper (compiled on first use).</p>
+  <pre><code>git clone https://github.com/deepakkumar1984/blazorly-harness.git
+cd blazorly-harness
+dotnet build Blazorly.Harness.slnx
+dotnet test
+dotnet run --project src/Blazorly.Harness.Web
+dotnet run --project src/Blazorly.Harness.Cli -- run "hello"</code></pre>
+
+  <h2>Upgrade and verify</h2>
+  <pre><code>blazorly update
+blazorly --version</code></pre>
+  <p>The installer also upgrades in place if you re-run it. Set <code>BLAZORLY_INSTALL_BASE</code> to a local <code>dist/</code> folder to test unpublished builds. <code>BLAZORLY_SKIP_VERIFY=1</code> skips the checksum gate — do not use that on a machine you care about.</p>
+
+  <h2>Next</h2>
+  <ul>
+    <li><a href="/guides/getting-started/">Getting started</a> — first useful session</li>
+    <li><a href="/guides/permissions/">Permissions and sandbox</a></li>
+    <li><a href="/guides/headless-ci/">Headless, CI, and editors</a></li>
+  </ul>
+</article>

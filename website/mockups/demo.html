@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Blazorly demo</title>
+  <link rel="stylesheet" href="app.css">
+  <style>
+    body { width: 1280px; height: 720px; }
+    .shell { height: 720px; width: 1280px; }
+    .transcript { position: relative; }
+    .step { opacity: 0; transform: translateY(8px); animation: in .45s ease-out forwards; }
+    .s1 { animation-delay: .4s; }
+    .s2 { animation-delay: 1.6s; }
+    .s3 { animation-delay: 2.6s; }
+    .s4 { animation-delay: 3.8s; }
+    .s5 { animation-delay: 5.1s; }
+    .s6 { animation-delay: 6.4s; }
+    .s7 { animation-delay: 7.6s; }
+    .caret { display: inline-block; width: 8px; height: 14px; background: var(--accent); margin-left: 2px; animation: blink 1s steps(1) infinite; vertical-align: -2px; }
+    @keyframes in { to { opacity: 1; transform: none; } }
+    @keyframes blink { 50% { opacity: 0; } }
+    .type-target::after { content: ""; }
+    .badge-live { animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .45; } }
+    .end-banner {
+      opacity: 0; animation: in .5s ease-out 9.2s forwards;
+      margin: 0 auto 12px; max-width: 760px;
+      border: 1px solid rgba(63,185,80,.35); background: var(--success-soft);
+      color: var(--success); border-radius: 10px; padding: 10px 14px; font-weight: 600;
+    }
+  </style>
+</head>
+<body data-scene="agents">
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="mark">B</span> Blazorly Harness</div>
+      <div class="search">Search sessions…</div>
+      <button class="new-chat" type="button">＋ New chat</button>
+      <nav class="sessions">
+        <div class="ws-head">▾ <span>payments-api</span> <em>3</em></div>
+        <a class="sess active" href="#"><i class="dot run"></i> Add health endpoint</a>
+        <a class="sess" href="#"><i class="dot"></i> Rate-limit middleware</a>
+        <a class="sess" href="#"><i class="dot"></i> OpenAPI snapshot</a>
+      </nav>
+      <div class="side-foot"><div class="meter"><span style="width:41%"></span></div><span>26.8k / 65.5k</span></div>
+    </aside>
+    <section class="main">
+      <header class="top">
+        <div class="ident"><strong>Add health endpoint</strong><span class="chip run badge-live">● running</span></div>
+        <div class="actions">
+          <div class="tabs"><button class="tab on" type="button">Chat</button><button class="tab" type="button">Trajectory</button></div>
+        </div>
+      </header>
+      <div class="status-row">
+        <span class="chip">deepseek / deepseek-v4-flash</span>
+        <span class="chip lock">🔒 workspace-write</span>
+        <span class="chip ctx">context 41%</span>
+      </div>
+      <div class="workspace">
+        <div class="transcript">
+          <article class="bubble user step s1">
+            <div class="role">You</div>
+            <p>Add a <code>/health</code> endpoint, cover it with a test, and run the suite.</p>
+          </article>
+          <article class="bubble assistant">
+            <div class="role">Blazorly</div>
+            <p class="step s2">I'll inspect routing, add a liveness endpoint, then verify with the test suite.</p>
+            <div class="tool step s3">
+              <div class="tool-h"><span class="pill">read</span> <code>src/Api/Program.cs</code> <span class="ok">done</span></div>
+              <pre>app.MapGet("/ready", () => Results.Ok());</pre>
+            </div>
+            <div class="tool step s4">
+              <div class="tool-h"><span class="pill edit">edit</span> <code>src/Api/Program.cs</code> <span class="ok">done</span></div>
+              <pre>+ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));</pre>
+            </div>
+            <div class="tool step s5">
+              <div class="tool-h"><span class="pill edit">edit</span> <code>tests/Api.Tests/HealthTests.cs</code> <span class="ok">done</span></div>
+              <pre>+ public Task Health_returns_ok() => Get("/health").ShouldBe(200);</pre>
+            </div>
+            <div class="tool live step s6">
+              <div class="tool-h"><span class="pill bash">bash</span> <code>dotnet test</code> <span class="ok">done</span></div>
+              <pre>Passed!  — Failed: 0, Passed: 41, Skipped: 0, Total: 41</pre>
+            </div>
+            <div class="end-banner">Turn completed · 41 tests passed · session saved</div>
+          </article>
+        </div>
+        <aside class="rail" style="display:flex">
+          <div class="panel todos">
+            <h3>Tasks <span>3/3</span></h3>
+            <label class="step s3"><input type="checkbox" checked disabled> Locate routing file</label>
+            <label class="step s4"><input type="checkbox" checked disabled> Add /health route</label>
+            <label class="step s6"><input type="checkbox" checked disabled> Run test suite</label>
+          </div>
+          <div class="panel agents">
+            <h3>Agents <span>swarm</span></h3>
+            <div class="agent done step s4"><i></i><div><strong>worker · route</strong><small>finished · Program.cs</small></div></div>
+            <div class="agent done step s5"><i></i><div><strong>worker · tests</strong><small>finished · HealthTests.cs</small></div></div>
+            <div class="agent done step s7"><i></i><div><strong>reviewer</strong><small>pass · workspace matches brief</small></div></div>
+          </div>
+        </aside>
+      </div>
+      <form class="composer" action="#" onsubmit="return false">
+        <span class="cwd">~/work/payments-api</span>
+        <div class="box">Ask a follow-up…</div>
+        <button class="send" type="button">Send</button>
+      </form>
+    </section>
+  </div>
+</body>
+</html>

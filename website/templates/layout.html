@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <meta name="description" content="{{ description }}">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <link rel="canonical" href="{{ canonical }}">
+  <link rel="alternate" type="text/plain" href="{{ origin }}/llms.txt" title="LLM index">
+  <meta name="author" content="Blazorly">
+  <meta name="theme-color" content="#0d1117">
+  <meta property="og:type" content="{{ og_type }}">
+  <meta property="og:site_name" content="Blazorly">
+  <meta property="og:title" content="{{ og_title }}">
+  <meta property="og:description" content="{{ description }}">
+  <meta property="og:url" content="{{ canonical }}">
+  <meta property="og:image" content="{{ origin }}/assets/img/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Blazorly — an agentic coding harness you run yourself">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ og_title }}">
+  <meta name="twitter:description" content="{{ description }}">
+  <meta name="twitter:image" content="{{ origin }}/assets/img/og.png">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/img/og.png">
+  <link rel="stylesheet" href="/assets/css/site.css">
+  <script type="application/ld+json">{{ jsonld }}</script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="wrap nav">
+      <a class="logo" href="/">
+        <span class="logo-mark" aria-hidden="true">B</span>
+        Blazorly
+      </a>
+      <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="site-nav" aria-label="Open menu">Menu</button>
+      <ul class="nav-links" id="site-nav" data-nav>
+        <li><a href="/features/"{{ nav_features }}>Features</a></li>
+        <li><a href="/install/"{{ nav_install }}>Install</a></li>
+        <li><a href="/guides/"{{ nav_guides }}>Guides</a></li>
+        <li><a href="/compare/"{{ nav_compare }}>Compare</a></li>
+        <li><a href="https://github.com/deepakkumar1984/blazorly-harness">GitHub</a></li>
+        <li><a class="nav-cta" href="/install/">Get the binary</a></li>
+      </ul>
+    </div>
+  </header>
+  <main id="main">
+    {{ content }}
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-grid">
+      <div>
+        <a class="logo" href="/"><span class="logo-mark" aria-hidden="true">B</span> Blazorly</a>
+        <p>An open-source agentic coding harness. Chat UI or headless CLI. Your machine, your keys, your workspace.</p>
+      </div>
+      <div>
+        <strong>Product</strong>
+        <ul>
+          <li><a href="/features/">Features</a></li>
+          <li><a href="/install/">Install</a></li>
+          <li><a href="/compare/">Compare</a></li>
+          <li><a href="/about/">About</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>Guides</strong>
+        <ul>
+          <li><a href="/guides/what-is-an-agent-harness/">What is an agent harness?</a></li>
+          <li><a href="/guides/getting-started/">Getting started</a></li>
+          <li><a href="/guides/multi-agent/">Multi-agent orchestration</a></li>
+          <li><a href="/guides/durable-sessions/">Durable sessions</a></li>
+        </ul>
+      </div>
+      <div>
+        <strong>Developers</strong>
+        <ul>
+          <li><a href="https://github.com/deepakkumar1984/blazorly-harness">Source on GitHub</a></li>
+          <li><a href="https://github.com/deepakkumar1984/blazorly-harness/releases">Releases</a></li>
+          <li><a href="/llms.txt">llms.txt</a></li>
+          <li><a href="/llms-full.txt">llms-full.txt</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="wrap legal">MIT License · © 2026 Blazorly · Last updated {{ date }}</div>
+  </footer>
+  <script src="/assets/js/site.js" defer></script>
+</body>
+</html>

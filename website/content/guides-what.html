@@ -1,0 +1,57 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/guides/">Guides</a> / What is an agent harness?</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>What is an agentic coding harness?</h1>
+  <p class="muted">Published 2026-09-20 · Blazorly docs</p>
+
+  <div class="answer">
+    <p>An agentic coding harness is the runtime around a language model that turns a coding task into tool calls, file edits, commands, and a session you can resume. The model writes tokens. The harness owns the loop: which tools exist, how results return, how context is compacted, how a stop or crash is recorded, and whether a second agent can join the work. In one line: agent = model + harness. Blazorly is that harness as a local binary with a chat UI and a headless CLI. You bring the provider and the key.</p>
+  </div>
+
+  <h2>Why the word “harness”</h2>
+  <p>A language model can generate a patch in a chat window. That is not an agent. An agent needs a loop that can call tools, look at the results, update a plan, ask for approval on risky actions, keep a growing context from exploding, and keep going until the task is done or someone stops it. The surrounding machinery is the harness. The term has been used that way across open-source CLIs, IDE agents, and research write-ups through 2025–2026: the harness is the agent without the model.</p>
+  <p>That split matters because most of the product difference between coding agents is not the base model. Two teams on the same API will get different outcomes if one drops cancelled turns, the other keeps them; if one dumps every tool schema into every request, the other gates the list; if one treats a crash as “start over”, the other reloads a truthful log.</p>
+
+  <h2>What the harness owns</h2>
+  <ul>
+    <li><strong>The loop</strong> — assemble prompt, stream, dispatch tools, write a turn ending with a reason.</li>
+    <li><strong>Tools</strong> — bash, files, search, web, LSP, MCP, sub-agents. Policy on what they may touch.</li>
+    <li><strong>Session</strong> — a durable log, not a chat buffer in RAM.</li>
+    <li><strong>Context</strong> — compaction, token metering, what the model is allowed to see next turn.</li>
+    <li><strong>Control</strong> — Stop, timeout, permission prompts, plan mode.</li>
+    <li><strong>Surfaces</strong> — UI, CLI, editor protocol. Same loop underneath.</li>
+  </ul>
+  <p>What you own: the workspace, the provider, the key, and the decision to hit Stop.</p>
+
+  <h2>What Blazorly is in that picture</h2>
+  <p>Blazorly is a model-agnostic coding harness. It does not sell inference. It runs on your machine, talks to DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, or a custom OpenAI-compatible route, and keeps provider keys from leaking across routes. The default surface is a browser UI at localhost:5080. The same binary runs headless (<code>blazorly run</code>), serves ACP for editors, and serves JSON-RPC for automation.</p>
+  <p>Three design bets, written down so they can be wrong in public:</p>
+  <ol>
+    <li><strong>Interruption is a state.</strong> Stop, timeout, and process-kill must leave a log that reloads. See <a href="/guides/durable-sessions/">durable sessions</a>.</li>
+    <li><strong>Delegation stays in the parent chat.</strong> Swarms and reviewers are children, not a second product. See <a href="/guides/multi-agent/">multi-agent</a>.</li>
+    <li><strong>Install is a binary.</strong> Six platforms, checksum, atomic swap. No SDK required to use it.</li>
+  </ol>
+
+  <h2>Harness vs IDE vs hosted agent</h2>
+  <table>
+    <thead><tr><th>Shape</th><th>Where the loop lives</th><th>Typical tradeoff</th></tr></thead>
+    <tbody>
+      <tr><td>IDE agent (Cursor and similar)</td><td>Inside the editor</td><td>Best inline diffs; you take the IDE.</td></tr>
+      <tr><td>CLI / TUI harness (Claude Code, Aider, OpenCode)</td><td>Terminal on your machine</td><td>Scriptable; UI is the terminal.</td></tr>
+      <tr><td>Hosted cloud agent</td><td>Vendor infrastructure</td><td>Zero install; your repo and keys leave home.</td></tr>
+      <tr><td>Blazorly</td><td>Local process, browser UI + CLI</td><td>You operate the binary; you pick the model.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>A short example</h2>
+  <p>You type: “Add a <code>/health</code> endpoint and cover it with a test.” The harness, not the model, decides which tools to offer, records <code>read</code> of the routing file, records <code>edit</code>, runs <code>dotnet test</code> under the permission preset, and writes <code>turn/end {completed}</code>. If you hit Stop during the test, bash is killed, the tool result is stored as aborted, and the partial assistant text you already saw stays in the transcript. That last sentence is the harness. The model only wrote the patch.</p>
+
+  <h2>Further reading</h2>
+  <ul>
+    <li><a href="/features/">Blazorly features</a></li>
+    <li><a href="/compare/">How it compares</a></li>
+    <li><a href="/guides/getting-started/">Getting started</a></li>
+    <li>Source: <a href="https://github.com/deepakkumar1984/blazorly-harness">github.com/deepakkumar1984/blazorly-harness</a></li>
+  </ul>
+</article>

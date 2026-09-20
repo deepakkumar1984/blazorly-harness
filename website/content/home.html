@@ -1,0 +1,210 @@
+<section class="hero">
+  <div class="wrap hero-copy">
+    <p class="kicker">Open source · MIT · single binary</p>
+    <h1>An agentic coding harness you run yourself.</h1>
+    <p class="lede">Blazorly is a local agentic coding harness: give it a task and it reads, writes, runs commands, searches the web, and orchestrates sub-agents until the work is done. Chat UI in the browser, or headless for CI.</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="/install/">Install Blazorly</a>
+      <a class="btn btn-ghost" href="#demo">Watch an 11-second demo</a>
+    </div>
+    <div class="install-box" role="region" aria-label="Install commands">
+      <div class="install-tabs" role="tablist">
+        <button type="button" role="tab" aria-selected="true" data-install-tab="unix">Linux &amp; macOS</button>
+        <button type="button" role="tab" aria-selected="false" data-install-tab="win">Windows</button>
+      </div>
+      <div class="install-pane active" data-install-pane="unix" role="tabpanel">
+        <div class="install-row">
+          <code id="cmd-unix">curl -fsSL https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.sh | bash</code>
+          <button class="copy" type="button" data-copy="#cmd-unix">Copy</button>
+        </div>
+      </div>
+      <div class="install-pane" data-install-pane="win" role="tabpanel">
+        <div class="install-row">
+          <code id="cmd-win">powershell -c "irm https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install.ps1 | iex"</code>
+          <button class="copy" type="button" data-copy="#cmd-win">Copy</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="wrap hero-shot">
+    <figure class="hero-media">
+      <img src="/assets/img/ui-chat.webp" width="1440" height="900" fetchpriority="high" decoding="async" alt="Blazorly chat UI showing a running session with live tool cards for read, edit, and bash, plus a workspace-write permission chip.">
+    </figure>
+    <p class="caption">The web UI at localhost:5080 — streaming turns, live tool cards, permission presets.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="stats">
+      <div class="stat"><b>6 platforms</b><span>Linux, macOS, Windows · x64 and arm64</span></div>
+      <div class="stat"><b>0.3 ms</b><span>Median mid-stream cancel (in-process adapter)</span></div>
+      <div class="stat"><b>132,010</b><span>Events in a production session that cold-replays in 1.29 s</span></div>
+      <div class="stat"><b>MIT</b><span>No SDK, no Docker, keys stay on your machine</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="demo">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>See a turn land.</h2>
+      <p>A recorded walkthrough of the chat UI: the agent reads a file, edits routing, writes a test, runs <code>dotnet test</code>, and a reviewer checks the workspace. Nothing here is a mock API — the chrome matches the real app.</p>
+    </div>
+    <figure class="hero-media">
+      <video controls playsinline preload="none" poster="/assets/img/demo-poster.webp" width="1280" height="720">
+        <source src="/assets/video/demo.mp4" type="video/mp4">
+        <source src="/assets/video/demo.webm" type="video/webm">
+      </video>
+    </figure>
+    <p class="caption">Demo of Blazorly adding a <code>/health</code> endpoint, covering it with a test, and passing the suite under a workspace-write sandbox.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <h2>What Blazorly is</h2>
+      <p>Blazorly is an agentic coding harness: the runtime around a language model that turns a prompt into file edits, shell commands, searches, and verified work. You bring the provider and the key. The harness owns the loop, the tools, the log, and the stop button.</p>
+    </div>
+    <div class="answer">
+      <p>An agentic coding harness is the software that sits between you and a coding model: it calls tools, keeps a durable session, sandboxes writes, and can spawn other agents. Blazorly is that harness as a self-contained binary with a chat UI and a headless CLI. It is not an IDE plugin and it is not a hosted cloud agent. It runs on localhost, talks to DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, or any OpenAI-compatible route, and never sends a provider’s key to a different route.</p>
+    </div>
+    <div class="grid-3">
+      <article class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 3h11v7H9L5.5 13v-3H2.5V3z"/></svg>
+        </div>
+        <h3>Chat-first web UI</h3>
+        <p>Streaming turns, live tool cards, a terminal drawer, a task list, a context meter, and an agents panel for every sub-agent in flight. Open any browser at <code>http://localhost:5080</code>.</p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="8" r="1.5"/><path d="M4.5 5.2v5.6M4.5 8h5.3"/></svg>
+        </div>
+        <h3>Multi-agent in one chat</h3>
+        <p>Swarm, review, and teams run as children of the current session. The sidebar does not fill with noise. Failed swarm tasks re-dispatch with the reviewer’s notes.</p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3.5h10v9H3z"/><path d="M5 6h6M5 8.5h4"/></svg>
+        </div>
+        <h3>A log that does not lie</h3>
+        <p>Every turn, tool call, and cancel is appended to a session log. Stop mid-stream and the partial answer stays. Kill the process and the next message resumes from a repaired tail.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>The workspace the agent actually sees</h2>
+      <p>Tool output is first-class in the transcript. Sub-agents show up beside the task list. The terminal is a drawer on the same session, not a second window you lose.</p>
+    </div>
+    <div class="grid-2">
+      <figure class="shot">
+        <img src="/assets/img/ui-agents.webp" width="1440" height="900" loading="lazy" alt="Blazorly agents panel with two live workers and a reviewer that passed, next to a task list for adding a health endpoint.">
+        <figcaption>Delegations stay inside the parent chat. Each row links to the child session.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="/assets/img/ui-terminal.webp" width="1440" height="900" loading="lazy" alt="Blazorly session with the terminal drawer open, showing dotnet test passing and a git diff stat.">
+        <figcaption>A persistent shell for the session, next to the composer.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Capabilities, not a feature dump</h2>
+    </div>
+    <div class="grid-2">
+      <article class="card">
+        <h3>Full workspace toolset</h3>
+        <p>bash, read/write/edit, grep/glob, web search and fetch, LSP diagnostics, tmux awareness, session search, run_code, jobs, skills, and every tool your MCP servers expose.</p>
+      </article>
+      <article class="card">
+        <h3>Permission presets</h3>
+        <p><code>full-access</code> runs on the host. <code>workspace-write</code> confines writes to the session folder. <code>read-only</code> denies mutations. Switch mid-session with <code>/permission</code>.</p>
+      </article>
+      <article class="card">
+        <h3>Bring your own model</h3>
+        <p>DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, and custom OpenAI-compatible routes. Settings discovers models live from each provider’s API.</p>
+      </article>
+      <article class="card">
+        <h3>Headless, ACP, JSON-RPC</h3>
+        <p><code>blazorly run "job"</code> for CI. <code>serve-acp</code> for editors. <code>serve-stdio</code> for automation. Exit codes tell the truth: 0 completed, 2 error, 3 aborted.</p>
+      </article>
+      <article class="card">
+        <h3>Decision model (System One)</h3>
+        <p>Optional fast classifier for tool-gate, auto-plan, and risk-gate. Easy cases stay on a pure-code path. The ambiguous tail is one small model call. Failure returns the full tool list.</p>
+      </article>
+      <article class="card">
+        <h3>Docs from the repo</h3>
+        <p><code>blazorly init</code> drafts hierarchical AGENTS.md files from a workspace scan. Dry-run by default; <code>--write</code> creates the files.</p>
+      </article>
+    </div>
+    <p style="margin-top:20px"><a href="/features/">Read the full feature list →</a></p>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>How a first session goes</h2>
+    </div>
+    <ol class="prose" style="max-width:68ch">
+      <li>Install the binary. No .NET SDK, no Docker, no Python.</li>
+      <li>Run <code>blazorly</code>. The UI opens on port 5080. Data lives in <code>~/.blazorly</code>.</li>
+      <li>Set a provider and key on the Settings page, or drop them into <code>settings.json</code>.</li>
+      <li>Point a chat at a workspace and ask for the change. Watch the tools. Hit Stop if it goes the wrong way — the log keeps what you already saw.</li>
+    </ol>
+    <figure class="shot" style="margin-top:24px;max-width:920px">
+      <img src="/assets/img/ui-cli.webp" width="1440" height="900" loading="lazy" alt="Headless Blazorly CLI running blazorly run summarize this repo and exiting 0.">
+      <figcaption>Same harness, no browser: <code>blazorly run "summarize this repo"</code>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Questions people actually ask</h2>
+    </div>
+    <div class="faq">
+      <details>
+        <summary>What is Blazorly?</summary>
+        <p>Blazorly is an open-source agentic coding harness written in .NET 10. It runs a coding agent locally: a Blazor web UI, a headless CLI, and stdio servers (JSON-RPC and ACP) for editors. You supply the LLM provider and API key.</p>
+      </details>
+      <details>
+        <summary>Is Blazorly a Claude Code alternative?</summary>
+        <p>It occupies the same job — a local coding agent with tools — but it is model-agnostic, ships a browser UI instead of a TUI-only workflow, and treats interruption as a durable session state. See the <a href="/compare/">comparison</a> for an honest matrix.</p>
+      </details>
+      <details>
+        <summary>Where do API keys go?</summary>
+        <p>On the machine that runs the binary. Settings and <code>~/.blazorly/settings.json</code> store them. Environment variables win if the settings field is empty. A provider’s key is never sent to another route.</p>
+      </details>
+      <details>
+        <summary>Does it work offline?</summary>
+        <p>The harness is local. Point it at Ollama or LM Studio and the loop, tools, and sessions work without a cloud provider. Web search and fetch still need a network, obviously.</p>
+      </details>
+      <details>
+        <summary>What does “durable session” mean?</summary>
+        <p>The session log is append-only. Turns end with an explicit reason. Cancelled tools close with a result. Partial assistant text is committed. A killed process reloads with in-memory repair and can continue. Details in <a href="/guides/durable-sessions/">durable sessions</a>.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="cta-band">
+  <div class="wrap">
+    <h2>Install it. Point it at a repo. Ask.</h2>
+    <p>One command puts <code>blazorly</code> on your PATH. Re-run it to upgrade — checksum-verified, atomic swap.</p>
+    <div class="hero-actions" style="justify-content:center">
+      <a class="btn btn-primary" href="/install/">Install instructions</a>
+      <a class="btn btn-ghost" href="https://github.com/deepakkumar1984/blazorly-harness">Star the repo</a>
+    </div>
+  </div>
+</section>
