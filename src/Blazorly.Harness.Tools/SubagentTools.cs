@@ -98,6 +98,8 @@ public sealed class SubagentStartTool(SubagentService subagents) : ToolDefinitio
         },
         required: ["session_id", "status"]);
 
+    protected override bool IsConcurrencySafeTyped(SubagentStartArgs args) => true;
+
     protected override async Task<SubagentStartOutput> ExecuteTyped(SubagentStartArgs args, ToolRunContext exec)
     {
         var parent = exec.Agent ?? throw new ToolException("NO_AGENT", "this tool requires an owning agent");
@@ -168,6 +170,8 @@ public sealed class SubagentSendTool(SubagentService subagents) : ToolDefinition
         },
         required: ["session_id", "summary"]);
 
+    protected override bool IsConcurrencySafeTyped(SubagentSendArgs args) => true;
+
     protected override async Task<SubagentSendOutput> ExecuteTyped(SubagentSendArgs args, ToolRunContext exec)
     {
         var parent = exec.Agent ?? throw new ToolException("NO_AGENT", "this tool requires an owning agent");
@@ -209,6 +213,8 @@ public sealed class SubagentListTool(SubagentService subagents) : ToolDefinition
             }),
         },
         required: ["children"]);
+
+    protected override bool IsConcurrencySafeTyped(SubagentListArgs args) => true;
 
     protected override async Task<SubagentListOutput> ExecuteTyped(SubagentListArgs args, ToolRunContext exec)
     {
@@ -273,6 +279,8 @@ public sealed class SubagentInterruptTool(SubagentService subagents) : ToolDefin
             ["interrupted"] = JsonSchema.Boolean(),
         },
         required: ["session_id", "interrupted"]);
+
+    protected override bool IsConcurrencySafeTyped(SubagentInterruptArgs args) => true;
 
     protected override Task<SubagentInterruptOutput> ExecuteTyped(SubagentInterruptArgs args, ToolRunContext exec)
     {

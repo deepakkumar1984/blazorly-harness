@@ -437,6 +437,35 @@ Inspect what it has cost at `GET /api/decisions` (calls, answered, degraded, mea
 
 > The public System One request/response schema is not pinned. The adapter sends a self-describing payload and parses several common reply shapes; `blazorly decisions probe` prints the raw exchange so a mismatch is a two-line fix in `SystemOneClient.BuildRequest` / `TryReadAnswer` rather than a mystery.
 
+### Multi-agent orchestration
+
+Delegation is a first-class seam: child agents get their own persisted sessions (lineage-stamped,
+depth-capped at 3), and the tools compose into several patterns —
+
+- **subagents** (`subagent_start` / `subagent_send` / `subagent_list` / `subagent_interrupt`):
+  foreground or background children with provider/model/persona overrides, fork-from-log seeding,
+  and schema-validated structured output. Settled continuable children cold-resume on the next send.
+- **teams** (`spawn_teammate`, `send_message`, `wait_agent`, `interrupt_agent`, `team_task_*`):
+  a lead coordinates labeled teammates, each with a scoped `report` tool feeding the lead's inbox;
+  roster, tasks, and mailbox fold durably from the lead's log. Team tools are concurrency-safe:
+  batch several `send_message` calls to run teammates in parallel — deliveries to the same teammate
+  still process in order (per-child gating in the subagent seam).
+- **workflows** (`workflow`, `ralph`, `swarm`, `review`): fixed sequential pipelines; a bounded
+  loop of fresh agents toward an immutable objective; parallel fan-out; and independent review.
+  `swarm` shards an objective (a planner subagent, or explicit tasks), runs workers concurrently
+  as background subagents under `max_parallel`, then a reviewer agent verifies the completed work
+  in the workspace — failed tasks re-dispatch with the review notes up to `max_review_rounds`.
+  `review` spawns a forked reviewer that verifies any completed work and returns a structured
+  verdict (pass | fail | concerns) with issues and followups.
+
+All of it rides the same durability: children persist, compact, and survive restarts. Children run
+**inside the parent chat**: they never appear as separate chats in the sidebar, and their live
+progress (running → finished, with each worker's summary) folds into an **Agents panel** beside
+the task list — each row links to the child's session if you want the full transcript. Delegated
+children never block on the human: `ask_user_question` from a child answers itself with standing
+guidance, and delegation is reserved by prompt for genuinely large or parallelizable work — small
+tasks stay inline in the lead.
+
 ### Plugins
 
 Everything mounts as plugins: core services join the same topological boot as capability

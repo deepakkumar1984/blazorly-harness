@@ -43,6 +43,7 @@ public sealed class SubagentService
     private readonly HarnessContext _ctx;
     private readonly List<(string Parent, Agent.Agent Child)> _children = new();
     private readonly List<Action<Agent.Agent>> _continuableSetups = [];
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _deliveries = new();
     private readonly object _gate = new();
     private int _counter;
 
@@ -94,12 +95,14 @@ public sealed class SubagentService
     {
         var child = StartChild(parent, request, out var childSession);
         _ = _ctx.Events.EmitAsync("subagent/started", new { parentSessionId = parent.Session.Id, childSessionId = childSession.Id }, parent);
+        RecordStatus(parent.Session, childSession.Id, request.Description, "running");
 
         var prompt = $"{SystemPromptOf(request)}\n\nTask: {request.Prompt}" + SchemaInstruction(request.OutputSchema);
         await DeliverAsync(child, Message.CreateUserText(prompt), ct).ConfigureAwait(false);
         await FlushChildAsync(childSession.Id, ct).ConfigureAwait(false);
 
         var (summary, finishKind) = LastAssistantOutput(childSession);
+        RecordStatus(parent.Session, childSession.Id, request.Description, StatusOf(finishKind), summary);
         var (structured, diagnostic) = EvaluateStructured(request.OutputSchema, summary);
         _ = _ctx.Events.EmitAsync("subagent/finished", new { childSessionId = childSession.Id, finishKind }, parent);
         return new SubagentResult(childSession.Id, summary, finishKind, structured, diagnostic);
@@ -110,6 +113,7 @@ public sealed class SubagentService
     {
         var child = StartChild(parent, request, out var childSession);
         _ = _ctx.Events.EmitAsync("subagent/started", new { parentSessionId = parent.Session.Id, childSessionId = childSession.Id }, parent);
+        RecordStatus(parent.Session, childSession.Id, request.Description, "running");
 
         var prompt = $"{SystemPromptOf(request)}\n\nTask: {request.Prompt}" + SchemaInstruction(request.OutputSchema);
         child.Followup(Message.CreateUserText(prompt));
@@ -117,6 +121,8 @@ public sealed class SubagentService
         {
             await child.WhenIdleAsync().ConfigureAwait(false);
             await FlushChildAsync(childSession.Id, CancellationToken.None).ConfigureAwait(false);
+            var (summary, finishKind) = LastAssistantOutput(childSession);
+            RecordStatus(parent.Session, childSession.Id, request.Description, StatusOf(finishKind), summary);
         });
 
         return new SubagentResult(childSession.Id, "", "running");
@@ -125,19 +131,31 @@ public sealed class SubagentService
     /// <summary>
     /// Continuation: delivers another instruction to a child as its next turn. A live child
     /// queues it; a settled continuable child is cold-resumed from its persisted session
-    /// (authorized for the exact resuming parent); one-shot children refuse.
+    /// (authorized for the exact resuming parent); one-shot children refuse. Deliveries to
+    /// the same child serialize on a per-child gate, so parallel callers (team sends to
+    /// different teammates, swarm steering) run concurrently without interleaving one child.
     /// </summary>
     public async Task<SubagentResult> ContinueAsync(Agent.Agent parent, string childSessionId, string prompt, CancellationToken ct)
     {
-        var live = GetChild(childSessionId);
-        if (live is not null)
+        var gate = _deliveries.GetOrAdd(childSessionId, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            await DeliverAsync(live, Message.CreateUserText(prompt), ct).ConfigureAwait(false);
-            await FlushChildAsync(childSessionId, ct).ConfigureAwait(false);
-            var (summary, finishKind) = LastAssistantOutput(live.Session);
-            return new SubagentResult(childSessionId, summary, finishKind);
+            var live = GetChild(childSessionId);
+            if (live is not null)
+            {
+                await DeliverAsync(live, Message.CreateUserText(prompt), ct).ConfigureAwait(false);
+                await FlushChildAsync(childSessionId, ct).ConfigureAwait(false);
+                var (summary, finishKind) = LastAssistantOutput(live.Session);
+                RecordStatus(parent.Session, childSessionId, null, StatusOf(finishKind), summary);
+                return new SubagentResult(childSessionId, summary, finishKind);
+            }
+            return await ColdResumeAsync(parent, childSessionId, prompt, ct).ConfigureAwait(false);
         }
-        return await ColdResumeAsync(parent, childSessionId, prompt, ct).ConfigureAwait(false);
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task<SubagentResult> ColdResumeAsync(Agent.Agent parent, string childSessionId, string prompt, CancellationToken ct)
@@ -168,11 +186,13 @@ public sealed class SubagentService
         _ctx.Get<AgentRuntime>("agents").Publish(child);
         lock (_gate) _children.Add((childSession.Header.ParentSession!, child));
         _ = _ctx.Events.EmitAsync("subagent/resumed", new { parentSessionId = parent.Id, childSessionId }, parent);
+        RecordStatus(parent.Session, childSessionId, descriptor.Persona, "running");
 
         await DeliverAsync(child, Message.CreateUserText(prompt), ct).ConfigureAwait(false);
         await FlushChildAsync(childSessionId, ct).ConfigureAwait(false);
 
         var (summary, finishKind) = LastAssistantOutput(childSession);
+        RecordStatus(parent.Session, childSessionId, null, StatusOf(finishKind), summary);
         return new SubagentResult(childSessionId, summary, finishKind);
     }
 
@@ -200,7 +220,7 @@ public sealed class SubagentService
         childSession = request.Fork
             ? ForkParentSession(parentSession, sessions)
             : sessions.Create(
-                id: $"session-sub-{++_counter:x8}",
+                id: $"session-sub-{Interlocked.Increment(ref _counter):x8}",
                 meta: new SessionMeta(
                     Cwd: parentSession.Header.Cwd,
                     ParentSession: parentSession.Id,
@@ -228,6 +248,22 @@ public sealed class SubagentService
         => request.Persona is { Length: > 0 }
             ? $"You are a delegated subagent. {request.Persona}"
             : "You are a delegated subagent: complete the task you are given autonomously, then stop.";
+
+    /// <summary>Maps a child's turn outcome onto the delegations-panel status vocabulary.</summary>
+    private static string StatusOf(string finishKind) => finishKind switch
+    {
+        "completed" => "finished",
+        "error" => "error",
+        "aborted" => "aborted",
+        _ => "finished",
+    };
+
+    /// <summary>
+    /// Durable progress for the parent chat's delegations panel: log-only (never model-visible),
+    /// latest per child wins in the UI fold, survives restarts and compaction.
+    /// </summary>
+    private static void RecordStatus(Session parentSession, string childSessionId, string? description, string status, string? summary = null)
+        => parentSession.Append(SessionEventTypes.SubagentStatus, new SessionPayloads.SubagentStatusPayload(childSessionId, description, status, summary));
 
     private static string SchemaInstruction(JsonSchema.Schema? schema)
         => schema is null
@@ -338,9 +374,18 @@ public sealed class SubagentService
 
     private async Task FlushChildAsync(string sessionId, CancellationToken ct)
     {
-        var persistence = _ctx.Get<SessionStore>("sessions").Persistence;
-        if (persistence is not null) await persistence.FlushAsync(sessionId, ct).ConfigureAwait(false);
+        await FlushAsync(sessionId, ct).ConfigureAwait(false);
     }
+
+    /// <summary>Persists a child session now; callers that read results after background joins use this.</summary>
+    public Task FlushAsync(string sessionId, CancellationToken ct = default)
+    {
+        var persistence = _ctx.Get<SessionStore>("sessions").Persistence;
+        return persistence is null ? Task.CompletedTask : persistence.FlushAsync(sessionId, ct);
+    }
+
+    /// <summary>The child's final assistant text and turn outcome, for callers joining background children.</summary>
+    public static (string Summary, string FinishKind) LatestOutput(Session session) => LastAssistantOutput(session);
 
     private static (string Summary, string FinishKind) LastAssistantOutput(Session session)
     {

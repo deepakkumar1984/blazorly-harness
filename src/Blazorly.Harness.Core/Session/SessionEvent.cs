@@ -38,6 +38,7 @@ public static class SessionEventTypes
     public const string TeamMessageQueued = "team/message/queued";
     public const string TeamMessageDelivered = "team/message/delivered";
     public const string SubagentDescriptor = "subagent/descriptor";
+    public const string SubagentStatus = "subagent/status";
 
     /// <summary>Surface events: the only types that may carry surfaceOp and project into model history.</summary>
     public static readonly IReadOnlySet<string> SurfaceTypes = new HashSet<string>(StringComparer.Ordinal)
@@ -54,8 +55,9 @@ public static class SessionEventTypes
         HookInvoked, HookResult, LlmRetry, LlmRetryStarted, ScheduleChange,
         TeamMember, TeamTask, TeamMessageQueued, TeamMessageDelivered,
 
-        // SubagentDescriptor is deliberately NOT a known type: like dsh's log-only descriptor,
-        // it is an ignorable plugin event — required knowledge lives in SubagentService only.
+        // SubagentDescriptor and SubagentStatus are deliberately NOT known types: like dsh's
+        // log-only descriptor, they are ignorable plugin events — required knowledge lives in
+        // SubagentService only. Status events drive the parent chat's delegations panel.
     };
 }
 

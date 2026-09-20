@@ -84,6 +84,16 @@ public sealed class AskUserTool(HarnessContext ctx) : ToolDefinition<AskUserArgs
 
     protected override async Task<AskUserOutput> ExecuteTyped(AskUserArgs args, ToolRunContext exec)
     {
+        // Delegated children never reach the human: the user watches the lead chat, not the
+        // child, so a blocking question would hang the delegation invisibly. Answer with
+        // standing guidance instead — the child proceeds on its own judgment.
+        if (exec.Agent?.Session.Header.ParentSession is not null)
+        {
+            return new AskUserOutput([.. args.Questions.Select(q => new AskUserAnswerView(
+                q.Id,
+                "The user is not available to delegated subagents. Proceed autonomously with your best "
+                + "judgment and record the assumption in your final report."))]);
+        }
         var lookup = exec.Agent?.Ctx ?? ctx;
         var service = lookup.TryGet<UserQuestionsService>(UserQuestionsService.ServiceKey)
             ?? throw new ToolException(NoProviderCode, "no user interface is available to answer questions");

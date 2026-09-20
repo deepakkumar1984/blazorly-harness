@@ -367,6 +367,10 @@
         var live = new List<SessionItem>();
         foreach (var session in Facade.LiveSessions())
         {
+            // Delegated children are not chats: they run inside the parent chat and surface as
+            // its delegations panel. Keeping them out of the sidebar prevents "a new chat
+            // appeared and is asking me things" confusion.
+            if (session.Header.ParentSession is not null) continue;
             var agent = Facade.Harness.Agents.Get(session.Id);
             var item = new SessionItem(session.Id, SessionFacade.DeriveTitle(session), agent?.Status == "running", Facade.IsArchived(session.Id), "");
             items.Add(item);

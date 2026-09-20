@@ -33,6 +33,17 @@ public static class SessionPayloads
     /// </summary>
     public sealed record SubagentDescriptorPayload(string Mode, string? Provider = null, string? Model = null, string? Persona = null);
 
+    /// <summary>
+    /// Log-only delegation progress, appended to the PARENT session: one event per child state
+    /// change (running → finished | error | aborted). The web UI folds the latest per child into
+    /// the delegations panel; model history never sees it.
+    /// </summary>
+    public sealed record SubagentStatusPayload(
+        string ChildSessionId,
+        string? Description = null,
+        string Status = "running",
+        string? Summary = null);
+
     public const string SubagentModeContinuable = "continuable";
 }
 
@@ -105,6 +116,9 @@ public static class SessionEventRead
 
     public static SessionPayloads.SubagentDescriptorPayload SubagentDescriptorOf(SessionEvent e)
         => SessionJson.FromElement<SessionPayloads.SubagentDescriptorPayload>(e.Data);
+
+    public static SessionPayloads.SubagentStatusPayload SubagentStatusOf(SessionEvent e)
+        => SessionJson.FromElement<SessionPayloads.SubagentStatusPayload>(e.Data);
 
     public static TurnEndReason TurnEndReasonOf(SessionEvent e)
         => SessionJson.FromElement<TurnEndReason>(e.Data.GetProperty("reason"));

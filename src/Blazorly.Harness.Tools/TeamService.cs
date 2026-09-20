@@ -62,7 +62,8 @@ internal static class DelegationGuards
 /// <summary>
 /// ctx.agentTeams — durable team state lives in the LEAD session's log. Spawns teammates through
 /// the subagent seam, each with a scoped report tool routing summaries back into the lead's inbox.
-/// Not concurrency-safe: one lead drives one team at a time.
+/// Concurrency: sends to different teammates run in parallel (issue several send_message calls in
+/// one batch); deliveries to the same teammate serialize on the subagent seam's per-child gate.
 /// </summary>
 public sealed class TeamService
 {
@@ -187,7 +188,8 @@ public sealed class TeamService
                 + "with send_message. Reply with one short line confirming you are ready.",
             Description: $"teammate '{label}'",
             Persona: $"You are teammate '{label}' on a team coordinated by a lead. Do your assigned work; "
-                + "when you have a report for the lead, call the report tool with your summary.",
+                + "when you have a report for the lead, call the report tool with your summary. Never ask the user "
+                + "questions — proceed on your best judgment and note assumptions in your reports.",
             Continuable: true,
             Setup: child =>
             {
@@ -281,6 +283,8 @@ public sealed class SpawnTeammateTool(TeamService service) : ToolDefinition<Spaw
         },
         required: ["sessionId", "label", "status", "summary"]);
 
+    protected override bool IsConcurrencySafeTyped(SpawnTeammateArgs args) => true;
+
     protected override async Task<SpawnTeammateOutput> ExecuteTyped(SpawnTeammateArgs args, ToolRunContext exec)
     {
         var lead = DelegationGuards.RequireAgent(exec);
@@ -359,7 +363,7 @@ public sealed record SendMessageArgs([property: JsonPropertyName("to_session_id"
 
 public sealed record SendMessageOutput(string MessageId, string To, string Reply);
 
-/// <summary>send_message: delivers an instruction to a teammate and drains its reply.</summary>
+/// <summary>send_message: delivers an instruction to a teammate and drains its reply. Parallel across teammates.</summary>
 public sealed class SendMessageTool(TeamService service) : ToolDefinition<SendMessageArgs, SendMessageOutput>
 {
     public override string Name => "send_message";
@@ -384,6 +388,8 @@ public sealed class SendMessageTool(TeamService service) : ToolDefinition<SendMe
             ["reply"] = JsonSchema.String(),
         },
         required: ["messageId", "to", "reply"]);
+
+    protected override bool IsConcurrencySafeTyped(SendMessageArgs args) => true;
 
     protected override async Task<SendMessageOutput> ExecuteTyped(SendMessageArgs args, ToolRunContext exec)
     {
@@ -432,6 +438,8 @@ public sealed class InterruptAgentTool(SubagentService subagents) : ToolDefiniti
         },
         required: ["sessionId", "status"]);
 
+    protected override bool IsConcurrencySafeTyped(InterruptAgentArgs args) => true;
+
     protected override Task<InterruptAgentOutput> ExecuteTyped(InterruptAgentArgs args, ToolRunContext exec)
     {
         DelegationGuards.RequireAgent(exec);
@@ -465,6 +473,8 @@ public sealed class TeamTaskCreateTool(TeamService service) : ToolDefinition<Tea
         required: ["title"]);
 
     public override JsonSchema.Schema Output { get; } = TeamSchemas.Task;
+
+    protected override bool IsConcurrencySafeTyped(TeamTaskCreateArgs args) => true;
 
     protected override Task<TeamTask> ExecuteTyped(TeamTaskCreateArgs args, ToolRunContext exec)
     {
@@ -582,6 +592,8 @@ public sealed class WaitAgentTool(TeamService service) : ToolDefinition<WaitAgen
         },
         required: ["sessionId", "status"]);
 
+    protected override bool IsConcurrencySafeTyped(WaitAgentArgs args) => true;
+
     protected override async Task<WaitAgentOutput> ExecuteTyped(WaitAgentArgs args, ToolRunContext exec)
     {
         DelegationGuards.RequireAgent(exec);
@@ -684,7 +696,9 @@ public sealed class TeamPlugin : HarnessPlugin
             + "teammate with interrupt_agent, and wait_agent before depending on its output. Track shared work with "
             + "team_task_create, team_task_update (open → in_progress → done), and team_task_list; assignees are "
             + "teammate session ids. Team state (roster, tasks, mailbox) is durable in this session's log. "
-            + "Team tools are not concurrency-safe: issue them one at a time.");
+            + "Team tools are concurrency-safe: batch several spawn_teammate or send_message calls in one response "
+            + "to run teammates in parallel — sends to the same teammate still process in order. Reserve teams for "
+            + "work that is genuinely large or parallelizable; small tasks you do yourself.");
         ctx.Effect(section.Dispose);
         return Task.CompletedTask;
     }

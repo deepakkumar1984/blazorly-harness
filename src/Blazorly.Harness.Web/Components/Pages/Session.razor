@@ -10,7 +10,7 @@
 @inject ConversationAssembler Assembler
 @implements IDisposable
 
-<div class="session-view @(ShowTodos ? "with-todos" : "") @(_terminalOpen ? "with-terminal" : "")">
+<div class="session-view @(ShowTodos ? "with-todos" : "") @(ShowDelegations ? "with-delegations" : "") @(_terminalOpen ? "with-terminal" : "")">
     @if (_permissionMenu || _ctxMenu)
     {
         <div class="menu-backdrop" @onclick="CloseMenus"></div>
@@ -105,6 +105,15 @@
                     <span class="status-chip" title="Plan mode is active — mutations are blocked until a plan is approved via exit_plan_mode (engaged @(_snapshot.PlanMode == "auto" ? "automatically for a complex brief" : "manually via /plan"))">
                         📋 plan · @(planState == "auto" ? "auto" : "on")
                     </span>
+                }
+                @if (_snapshot?.Delegations is { Count: > 0 } delegations)
+                {
+                    var runningCount = delegations.Count(d => d.Status == "running");
+                    <button class="status-chip @(runningCount > 0 ? "delegations-active" : "")"
+                            title="@(runningCount > 0 ? "Delegated agents are working in this chat — progress in the agents panel" : "Delegated agents ran in this chat — results in the agents panel")"
+                            @onclick="() => _delegationsCollapsed = !_delegationsCollapsed">
+                        🤖 agents @(runningCount > 0 ? $"{runningCount} running" : $"{delegations.Count} done")
+                    </button>
                 }
                 @if (_snapshot?.Context is { } context)
                 {
@@ -532,6 +541,37 @@
             </div>
         </aside>
     }
+
+    @if (ShowDelegations)
+    {
+        var agents = _snapshot!.Delegations;
+        var running = agents.Count(d => d.Status == "running");
+        <aside class="delegation-panel" aria-label="Delegated agents">
+            <div class="delegation-head">
+                <span class="todo-head-title">Agents</span>
+                <span class="todo-count">@(running > 0 ? $"{running} running" : "all settled")</span>
+                <button class="icon" title="Hide agents panel" aria-label="Hide agents panel" @onclick="() => _delegationsCollapsed = true">✕</button>
+            </div>
+            <div class="delegation-list">
+                @foreach (var d in agents)
+                {
+                    <div class="delegation-item @d.Status">
+                        <div class="delegation-item-head">
+                            <span class="delegation-glyph">@DelegationGlyph(d.Status)</span>
+                            <a class="delegation-desc" href="@($"/session/{d.ChildSessionId}")" title="Open this agent's session (read its full transcript)">
+                                @(d.Description ?? d.ChildSessionId)
+                            </a>
+                            <span class="delegation-status">@d.Status</span>
+                        </div>
+                        @if (d.Summary is { Length: > 0 })
+                        {
+                            <div class="delegation-summary">@d.Summary</div>
+                        }
+                    </div>
+                }
+            </div>
+        </aside>
+    }
     </div>
 
     <footer class="composer">
@@ -739,10 +779,15 @@
     private RawTrajectoryPage _rawEvents = new();
     private bool _statsOpen;
     private bool _todosCollapsed;
+    private bool _delegationsCollapsed;
     private string? _copiedKey;
     private System.Timers.Timer? _copyFlash;
 
     private bool ShowTodos => _view == "chat" && !_todosCollapsed && (_snapshot?.Todos.Count ?? 0) > 0;
+
+    /// <summary>Delegated agents (subagents, teammates, swarm workers) run inside THIS chat:
+    /// their live progress folds into a side panel, and their sessions stay out of the sidebar.</summary>
+    private bool ShowDelegations => _view == "chat" && !_delegationsCollapsed && (_snapshot?.Delegations.Count ?? 0) > 0;
 
     // ---- ui terminal state ----
     private bool _terminalOpen;
@@ -1660,6 +1705,14 @@
         TodoItem.Completed => '✔',
         TodoItem.InProgress => '◐',
         _ => '○',
+    };
+
+    private static char DelegationGlyph(string status) => status switch
+    {
+        "running" => '◐',
+        "finished" => '✔',
+        "error" => '✕',
+        _ => '⊘',
     };
 
     public void Dispose()

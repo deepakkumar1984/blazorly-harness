@@ -55,6 +55,8 @@ public sealed class ConversationSnapshot
 {
     public required ICollection<ConversationNode> Nodes { get; init; }
     public required IReadOnlyList<TodoItem> Todos { get; init; }
+    /// <summary>Live delegation progress folded from subagent/status events: latest per child.</summary>
+    public IReadOnlyList<DelegationView> Delegations { get; init; } = [];
     public required string Status { get; init; }
     public int LastSeq { get; init; }
     public string? Title { get; init; }
@@ -63,6 +65,13 @@ public sealed class ConversationSnapshot
     public string? PlanMode { get; init; }
     public Blazorly.Harness.Core.TokenMeter.ContextMeterReading? Context { get; init; }
 }
+
+/// <summary>One delegation row for the parent chat's progress panel: a child agent at work.</summary>
+public sealed record DelegationView(
+    string ChildSessionId,
+    string? Description,
+    string Status, // running | finished | error | aborted
+    string? Summary);
 
 /// <summary>
 /// Folds the durable event stream into transcript nodes: user messages, streaming
@@ -174,6 +183,7 @@ public sealed class ConversationFolder
     public int FoldFailures { get; private set; }
 
     private IReadOnlyList<TodoItem> _todos = [];
+    private readonly Dictionary<string, DelegationView> _delegations = new(StringComparer.Ordinal); // child id → latest status
     private long _usageIn, _usageOut, _usageCacheRead, _usageCacheWrite;
     private long? _declaredWindow;
     private ConversationSnapshot? _last;
@@ -314,6 +324,7 @@ public sealed class ConversationFolder
         {
             Nodes = [.. _nodes.OrderBy(ConversationAssemblerSort.Key)],
             Todos = _todos,
+            Delegations = [.. _delegations.Values],
             Status = agent?.Status ?? "idle",
             LastSeq = _lastSeq,
             Title = _session.LatestTitle(),
@@ -336,6 +347,21 @@ public sealed class ConversationFolder
 
         switch (e.Type)
         {
+            case SessionEventTypes.SubagentStatus:
+            {
+                // Log-only delegation progress (children are hidden from the sidebar): the panel
+                // in this chat shows the latest state per child. Later events may drop the
+                // description — keep the first non-null one.
+                var payload = SessionEventRead.SubagentStatusOf(e);
+                _delegations[payload.ChildSessionId] = new DelegationView(
+                    payload.ChildSessionId,
+                    _delegations.TryGetValue(payload.ChildSessionId, out var prior) && prior.Description is not null
+                        ? prior.Description
+                        : payload.Description,
+                    payload.Status,
+                    payload.Summary);
+                break;
+            }
             case SessionEventTypes.UserMessage:
             {
                 var message = SessionEventRead.MessageOf(e);

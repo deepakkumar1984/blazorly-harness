@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Serialization;
 using Blazorly.Harness.Core.Subagents;
+using Blazorly.Harness.Core.SystemPrompt;
 using Blazorly.Harness.Core.Tools;
 using Blazorly.Harness.Kernel;
 using Blazorly.Harness.Llm;
@@ -294,7 +295,7 @@ public sealed class RalphTool(SubagentService subagents) : ToolDefinition<RalphA
     };
 }
 
-/// <summary>Mounts the delegation workflows: the fixed-step pipeline and the ralph loop.</summary>
+/// <summary>Mounts the delegation workflows: the fixed-step pipeline, the ralph loop, the swarm fan-out, and the reviewer.</summary>
 public sealed class WorkflowPlugin : HarnessPlugin
 {
     public override string Name => "workflows";
@@ -306,6 +307,23 @@ public sealed class WorkflowPlugin : HarnessPlugin
         var tools = ctx.Get<ToolRuntime>(ToolRuntime.ServiceKey);
         ctx.Effect(tools.Register(new WorkflowTool(subagents)).Dispose);
         ctx.Effect(tools.Register(new RalphTool(subagents)).Dispose);
+        ctx.Effect(tools.Register(new SwarmTool(subagents)).Dispose);
+        ctx.Effect(tools.Register(new ReviewTool(subagents)).Dispose);
+
+        var prompt = ctx.Get<SystemPromptService>(SystemPromptService.ServiceKey);
+        var section = prompt.RegisterSection("delegation-workflows", 108, _ =>
+            "Delegation workflows: workflow runs a fixed sequence of steps, one subagent per step with the previous "
+            + "step's summary as context. ralph pursues an open-ended objective with a bounded loop of fresh subagents. "
+            + "swarm runs wide, independent work in parallel: a planner shards the objective (or you pass explicit "
+            + "tasks), workers execute concurrently, and a reviewer verifies the completed work in the workspace — "
+            + "failed tasks are re-dispatched with the review notes up to max_review_rounds. review spawns an "
+            + "independent reviewer forked from this conversation that verifies any completed work in the workspace "
+            + "and returns a structured verdict — call it before declaring non-trivial work done. Prefer swarm for "
+            + "parallelizable tasks, workflow for known pipelines, ralph when one pass may not suffice. "
+            + "Delegation is expensive — each child is a full session — and shows the user a separate progress card: "
+            + "reserve it for work that is genuinely large, exploratory, or parallelizable. Small tasks (a file edit, "
+            + "a lookup, one command, a short answer) you do yourself, inline.");
+        ctx.Effect(section.Dispose);
         return Task.CompletedTask;
     }
 }

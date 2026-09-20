@@ -1137,6 +1137,14 @@ button.link:hover { text-decoration: underline; }
     grid-template-columns: minmax(0, 1fr) 300px;
 }
 
+.session-view.with-delegations .session-body {
+    grid-template-columns: minmax(0, 1fr) 280px;
+}
+
+.session-view.with-todos.with-delegations .session-body {
+    grid-template-columns: minmax(0, 1fr) 300px 280px;
+}
+
 .session-main {
     min-width: 0;
     min-height: 0;
@@ -1192,7 +1200,88 @@ button.link:hover { text-decoration: underline; }
         border-top: 1px solid var(--border);
         max-height: 22vh;
     }
+    .session-view.with-delegations .session-body,
+    .session-view.with-todos.with-delegations .session-body {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(160px, 1fr) auto;
+    }
+    .delegation-panel {
+        border-left: none;
+        border-top: 1px solid var(--border);
+        max-height: 22vh;
+    }
 }
+
+/* ---- delegation panel: delegated agents run inside this chat, progress here ---- */
+.delegation-panel {
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    background: var(--bg-raised);
+    border-left: 1px solid var(--border);
+    padding: 12px 14px 16px;
+}
+.delegation-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 0 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+    position: sticky;
+    top: 0;
+    background: var(--bg-raised);
+    z-index: 1;
+}
+.delegation-list { display: flex; flex-direction: column; gap: 8px; }
+.delegation-item {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 9px;
+    font-size: 12px;
+}
+.delegation-item-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.delegation-glyph { flex: none; font-size: 13px; color: var(--text-dim); }
+.delegation-desc {
+    color: var(--text);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+}
+.delegation-desc:hover { text-decoration: underline; }
+.delegation-status {
+    flex: none;
+    font-size: 10.5px;
+    font-family: var(--mono);
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.delegation-summary {
+    margin-top: 5px;
+    color: var(--text-dim);
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+.delegation-item.running .delegation-glyph { color: var(--accent); animation: delegation-pulse 1.2s ease-in-out infinite; }
+.delegation-item.running .delegation-status { color: var(--accent); }
+.delegation-item.finished .delegation-glyph { color: var(--success); }
+.delegation-item.error .delegation-glyph,
+.delegation-item.aborted .delegation-glyph { color: var(--danger, #d24242); }
+.delegation-item.error .delegation-status,
+.delegation-item.aborted .delegation-status { color: var(--danger, #d24242); }
+@keyframes delegation-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+.status-chip.delegations-active { color: var(--accent); }
 
 /* ---- queue dock ---- */
 .queue-dock {
