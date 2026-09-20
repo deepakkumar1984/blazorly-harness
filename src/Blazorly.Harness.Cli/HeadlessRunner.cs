@@ -14,6 +14,8 @@ public sealed record HeadlessOptions
     public string? WorkspacePath { get; init; }
     public string? Provider { get; init; }
     public string? Model { get; init; }
+    /// <summary>Reasoning effort for the run (off/low/medium/high/…); unset keeps the session's.</summary>
+    public string? Effort { get; init; }
     public string? ResumeSessionId { get; init; }
     public int? TimeoutSeconds { get; init; }
     /// <summary>User-style stop of the running turn after this many milliseconds. Same
@@ -69,6 +71,8 @@ public static class HeadlessRunner
             var agent = options.ResumeSessionId is { } resume
                 ? await bootstrapper.Loop.ResumeAsync(resume, route).ConfigureAwait(false)
                 : bootstrapper.Loop.Create(new SessionMeta(Cwd: workspace.Root), route);
+            if (!string.IsNullOrWhiteSpace(options.Effort))
+                agent.Options = agent.Options with { ReasoningEffort = options.Effort };
 
             if (!options.Quiet && !options.Json)
             {

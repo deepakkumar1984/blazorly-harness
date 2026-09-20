@@ -335,7 +335,7 @@
                                             <span class="thinking-elapsed">@ConversationNode.ElapsedLabel(started)</span>
                                             @if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - started > 30_000)
                                             {
-                                                <span class="thinking-note">no tokens yet — some routes buffer the whole response before sending anything (GLM coding plan can take minutes on large contexts)</span>
+                                                <span class="thinking-note">waiting for the server — this can take a few minutes on long chats</span>
                                             }
                                         }
                                     </div>
@@ -965,6 +965,7 @@
             await TryJs("blazorly.mention.attach", _composerTa, _mentionMenu, SessionId);
             _topGrowRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
             await TryJs("blazorly.attachTopGrow", _transcript, _topGrowRef);
+            await TryJs("blazorly.composer.attach", _composerTa);
             // Phones: keep the transcript as the primary surface. Tasks stay one tap away.
             try
             {
@@ -984,6 +985,9 @@
             if (_pendingScrollForce) await TryJs("blazorly.settleBottom", _transcript);
             else await ScrollToBottom();
         }
+        // Programmatic draft changes (send clears it, slash completion fills it) fire
+        // no DOM input event — re-measure so the composer height tracks the text.
+        await TryJs("blazorly.composer.grow", _composerTa);
         if (_permissionMenu || _ctxMenu)
         {
             // keep an open dropdown inside the viewport (chips near the right edge on

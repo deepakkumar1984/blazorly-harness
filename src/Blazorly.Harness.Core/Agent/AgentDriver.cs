@@ -184,8 +184,13 @@ public sealed class AgentDriver
             var contextText = SystemPromptService.RenderContextSections(assembly);
             if (!string.Equals(contextText, _agent.RetainedContextSnapshot, StringComparison.Ordinal))
             {
+                // The maintenance preamble matters as much as the dedup check: the time section
+                // re-renders every minute (TimeContextPlugin), and chatty models used to answer
+                // each refresh with "The runtime context has been refreshed…" — narrating system
+                // upkeep instead of continuing the task.
+                var preamble = "(System maintenance message — do not acknowledge or comment on it; continue your current task.)\n\n";
                 var body = contextText.Length > 0
-                    ? "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n" + contextText
+                    ? preamble + "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n" + contextText
                     : "Current runtime context: none. This clears any earlier runtime-context snapshot.";
                 var snapshot = new Message(Ids.NewMessageId(), "user", [new TextBlock(body)], MessageSource.FromPlugin("system-prompt", "snapshot"));
                 _agent.RetainedContextSnapshot = contextText;

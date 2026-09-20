@@ -101,6 +101,35 @@ window.blazorly = {
             if (overflow > 0) el.style.transform = "translateX(" + (-overflow) + "px)";
         });
     },
+    // Composer textarea: grow with its content up to the CSS max-height, and keep
+    // the caret end of the text in view. Typing keeps the caret visible on its own,
+    // but a large paste (or a programmatic value set) leaves the box scrolled to
+    // the top — the tail, where the caret now sits, is what must stay visible.
+    composer: {
+        grow: function (ta, force) {
+            if (!ta) return;
+            // Skip re-measuring when neither the content nor the wrap width changed;
+            // the per-render calls from Blazor then cost nothing while streaming.
+            const sig = ta.value.length + ":" + ta.clientWidth;
+            if (!force && ta.dataset.growSig === sig) return;
+            ta.dataset.growSig = sig;
+            ta.style.height = "auto";
+            ta.style.height = ta.scrollHeight + "px"; // CSS max-height caps the growth
+        },
+        attach: function (ta) {
+            if (!ta || ta.dataset.composerBound) return;
+            ta.dataset.composerBound = "1";
+            this.grow(ta, true);
+            ta.addEventListener("input", () => {
+                this.grow(ta, true);
+                // Follow the bottom only while the caret sits at the end of the text;
+                // editing an earlier line must not yank the view down.
+                if (ta.selectionEnd === ta.value.length) ta.scrollTop = ta.scrollHeight;
+            });
+            // Rewrap on viewport changes needs a fresh measure even with same-length text.
+            window.addEventListener("resize", () => this.grow(ta, true));
+        }
+    },
     // Drag handle that resizes the terminal drawer between min and max pixels.
     attachTerminalResize: function (handle, drawer, min, max) {
         if (!handle || !drawer || handle.dataset.bound) return;

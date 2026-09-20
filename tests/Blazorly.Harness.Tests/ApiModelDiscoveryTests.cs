@@ -85,6 +85,71 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
         return new HarnessBootstrapper();
     }
 
+    /// <summary>A server that accepts the request and never answers — the wedge that kept the
+    /// Settings "Load models" button on "Loading…" forever (the streaming client has no timeout).</summary>
+    private sealed class SilentServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        public string BaseUrl { get; } = "";
+
+        public SilentServer()
+        {
+            for (var attempt = 0; ; attempt++)
+            {
+                var port = Random.Shared.Next(20000, 60000);
+                try
+                {
+                    _listener = new HttpListener();
+                    _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+                    _listener.Start();
+                    BaseUrl = $"http://127.0.0.1:{port}/v1";
+                    break;
+                }
+                catch (HttpListenerException) when (attempt < 20) { }
+            }
+            _ = Task.Run(async () =>
+            {
+                while (_listener.IsListening)
+                {
+                    try
+                    {
+                        // Take the context and deliberately never respond.
+                        var context = await _listener.GetContextAsync();
+                        _ = context;
+                    }
+                    catch { break; }
+                }
+            });
+        }
+
+        public void Dispose()
+        {
+            try { _listener.Stop(); _listener.Close(); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Discover_StalledModelsEndpoint_ReturnsATimeoutError_InsteadOfHanging()
+    {
+        using var server = new SilentServer();
+        var boot = Boot("deepseek", server.BaseUrl, "sk-test");
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var (ids, error) = await boot.DiscoverModelsAsync("deepseek", timeout: TimeSpan.FromSeconds(1));
+            sw.Stop();
+            Assert.Empty(ids);
+            Assert.NotNull(error);
+            Assert.Contains("timed out", error);
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"returned in {sw.Elapsed.TotalSeconds:0.0}s");
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task Discover_PersistsApiListAndReplacesSeeds()
     {

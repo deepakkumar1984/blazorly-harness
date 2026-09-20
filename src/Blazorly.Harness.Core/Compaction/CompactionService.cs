@@ -95,15 +95,19 @@ public sealed class CompactionService
         set => _options = value;
     }
 
-    /// <summary>Window for this session: the model catalog's context size when known, else the global option.</summary>
+    /// <summary>Window for this session: the model catalog's context size capped by the global
+    /// setting — the catalog states the model's advertised maximum (GLM-5.3 claims 1M), but the
+    /// service class may never deliver it usefully (coding-plan prefill ≈500 tok/s → a 1M surface
+    /// is half an hour to first token). The setting is the operator's usable-window preference.</summary>
     public long ResolveWindow(Agent.Agent agent)
     {
+        var cap = _options.ContextWindowTokens;
         if (agent.Options.Provider is { } provider && agent.Options.Model is { } model)
         {
             var info = _llm.ListModels(provider).FirstOrDefault(m => m.Id == model);
-            if (info?.ContextWindowTokens is { } window && window > 0) return window;
+            if (info?.ContextWindowTokens is { } window && window > 0) return Math.Min(window, cap);
         }
-        return _options.ContextWindowTokens;
+        return cap;
     }
 
     /// <summary>Trigger threshold against this session's resolved window.</summary>

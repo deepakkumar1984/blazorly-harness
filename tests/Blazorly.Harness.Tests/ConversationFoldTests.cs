@@ -197,6 +197,67 @@ public class ConversationFoldTests
     }
 
     [Fact]
+    public async Task AbortedMidThinkingStep_IsDroppedNotRenderedAsAnOrphan()
+    {
+        // Stop during the reasoning phase, then continue: the half-finished thinking used to
+        // survive as a live-tail node that always sorted below every later turn. An aborted
+        // step that never settles is an orphan — it must not render at all.
+        await using var harness = TestHarness.Create(_ => new StreamChunk[]
+        {
+            new BlockStartChunk(1, "reasoning"),
+            new ReasoningDeltaChunk(1, "half a thought that never fini"),
+        });
+        harness.ScriptedLlm.ChunkDelayMs = 600;
+        var agent = harness.CreateAgent();
+        agent.Followup(Message.CreateUserText("go"));
+        await WaitForAsync(() => agent.Session.Events.Any(e =>
+            e.Type == SessionEventTypes.AssistantChunk));
+        agent.Cancel(AgentCancelCause.User());
+        await agent.WhenIdleAsync();
+
+        var folder = new ConversationAssembler(harness.Tools).CreateFolder(agent.Session);
+        var snapshot = folder.Update(agent);
+        Assert.DoesNotContain(snapshot.Nodes, n => n.Kind == "assistant");
+        Assert.DoesNotContain(snapshot.Nodes, n => n.Kind == "assistant" && n.StepStatus is "interrupted" or "streaming");
+        // Stable across ticks: no late resurrection on later updates.
+        var again = folder.Update(agent);
+        Assert.Equal(again.Nodes.Count, snapshot.Nodes.Count);
+    }
+
+    [Fact]
+    public async Task ThinkingPlaceholder_TimerRestartsForEachSilentPhase()
+    {
+        // A turn's second silence (after a tool ran and settled) must anchor to the last event —
+        // anchoring to turn start made the timer accumulate the whole turn and trip the
+        // "waiting for the server" note immediately on every later phase.
+        var calls = 0;
+        await using var harness = TestHarness.Create(_ =>
+            ++calls == 1
+                ? Scripted.ToolCall("bash", new { command = "echo hi", description = "quick" })
+                : Scripted.Text("done"));
+        harness.ScriptedLlm.ChunkDelayMs = 1200; // both generates sit silent before their first chunk
+        var agent = harness.CreateAgent();
+        agent.Followup(Message.CreateUserText("go"));
+        await WaitForAsync(() => agent.Session.Events.Any(e => e.Type == SessionEventTypes.ToolResult), timeoutMs: 30_000);
+
+        var folder = new ConversationAssembler(harness.Tools).CreateFolder(agent.Session);
+        long turnStartTime = agent.Session.Events.First(e => e.Type == SessionEventTypes.TurnStart).Time;
+        long toolResultTime = agent.Session.Events.Last(e => e.Type == SessionEventTypes.ToolResult).Time;
+
+        await WaitForAsync(() => agent.Status == AgentStatus.Running
+            && agent.Session.Events.Count(e => e.Type == SessionEventTypes.AssistantChunk) > 0
+            && agent.Session.Events.Last().Seq > agent.Session.Events.Last(e => e.Type == SessionEventTypes.ToolResult).Seq
+            && folder.Update(agent).Nodes.Any(n => n.StepStatus == "thinking"), timeoutMs: 30_000);
+
+        var second = folder.Update(agent);
+        var thinking = second.Nodes.Single(n => n.StepStatus == "thinking");
+        // Anchored after the tool result (the last event of the previous phase), not at turn start.
+        Assert.True(thinking.StartedAt >= toolResultTime,
+            $"anchor {thinking.StartedAt} should be >= tool result {toolResultTime}");
+        Assert.True(thinking.StartedAt > turnStartTime, "anchor must not be the turn start");
+    }
+
+    [Fact]
     public async Task ThinkingPlaceholder_ShowsBeforeTheFirstChunk_AndClearsOnceContentStreams()
     {
         // Reasoning models can think for minutes before the first block arrives; the page

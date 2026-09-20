@@ -153,6 +153,9 @@ static (HeadlessOptions Options, List<string> Positional) Parse(string[] args)
             case "--model" when i + 1 < args.Length:
                 options = options with { Model = args[++i] };
                 break;
+            case "--effort" when i + 1 < args.Length:
+                options = options with { Effort = args[++i] };
+                break;
             case "--resume" when i + 1 < args.Length:
                 options = options with { ResumeSessionId = args[++i] };
                 break;

@@ -186,7 +186,10 @@ public sealed class Agent : IAsyncDisposable
             }
             // Reserve the phase synchronously so a following cancel reaches the turn's token.
             _cancelCause = null;
-            _retainedContextSnapshot = null;
+            // Deliberately NOT clearing _retainedContextSnapshot here: the driver re-injects the
+            // runtime-context snapshot when its content changes (equality-checked), and forcing
+            // a re-inject per turn made every turn open with "The runtime context has been
+            // refreshed…" narration. Compaction clears it when the snapshot leaves the surface.
             _phase = new PhaseState
             {
                 Kind = AgentStatus.Running,

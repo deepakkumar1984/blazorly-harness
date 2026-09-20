@@ -14,6 +14,32 @@ public class AgentLoopTests
         => calls[Math.Min(index, calls.Count - 1)];
 
     [Fact]
+    public async Task RuntimeContextSnapshot_IsSilent_AndDoesNotRepeatWithinTheMinute()
+    {
+        // The time section re-renders every minute; chatty models used to answer each refresh
+        // with "The runtime context has been refreshed…". The snapshot must carry a do-not-
+        // acknowledge preamble, and must not repeat while its content is unchanged.
+        await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
+        new Blazorly.Harness.Core.Context.TimeContextPlugin().Apply(harness.Ctx);
+        var agent = harness.CreateAgent();
+
+        agent.Followup(Message.CreateUserText("hi"));
+        await agent.WhenIdleAsync();
+        agent.Followup(Message.CreateUserText("again"));
+        await agent.WhenIdleAsync();
+
+        var snapshots = agent.Session.Events
+            .Where(e => e.Type == SessionEventTypes.UserMessage)
+            .Select(SessionEventRead.MessageOf)
+            .Where(m => m.Source.Kind == "plugin")
+            .ToList();
+        var texts = snapshots.Select(x => x.FlattenText()).ToList();
+        var text = Assert.Single(texts); // identical content across turns — injected once, not per turn
+        Assert.Contains("do not acknowledge", text);
+        Assert.Contains("Current time:", text);
+    }
+
+    [Fact]
     public async Task SimpleTurn_StreamsChunksAndAppendsDurableHistory()
     {
         var calls = new List<GenerateOptions>();

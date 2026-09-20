@@ -156,6 +156,10 @@ public sealed class ConversationFolder
     private readonly HashSet<int> _endedTurns = [];
     private readonly List<(int Turn, int Step)> _liveKeys = [];
     private int _runningTools;
+    /// <summary>Time of the newest event folded so far — the anchor for the thinking
+    /// placeholder, so each silent phase measures from the last thing that happened, not
+    /// from turn start (a turn's later silences would otherwise inherit a stale timer).</summary>
+    private long _lastEventTime;
 
     private int _processed;
     private int _lastSeq = -1;
@@ -230,7 +234,7 @@ public sealed class ConversationFolder
             _liveKeys.Clear();
         }
         var agentRunning = agent?.Status == Core.Agent.AgentStatus.Running;
-        foreach (var ((turn, step), assembler) in _assemblers)
+        foreach (var ((turn, step), assembler) in _assemblers.ToList())
         {
             if (_steps.ContainsKey((turn, step))) continue;
             var dead = _endedTurns.Contains(turn) || (!agentRunning && _turnStart.ContainsKey(turn));
@@ -241,6 +245,15 @@ public sealed class ConversationFolder
                 .Where(b => b is not ToolCallBlock).ToList();
             if (visible.Count == 0) continue;
             var key = (turn, step);
+            if (dead)
+            {
+                // Aborted mid-stream: no settled message will ever arrive, so whatever streamed
+                // (typically a half-finished reasoning block) is an orphan. Rendering it kept a
+                // fragment floating at the tail of the transcript below every later turn — drop
+                // it and stop tracking the step.
+                _assemblers.Remove(key);
+                continue;
+            }
             _liveKeys.Add(key);
             _nodes.Add(new ConversationNode
             {
@@ -249,20 +262,23 @@ public sealed class ConversationFolder
                 Turn = turn,
                 Step = step,
                 Blocks = visible,
-                StepStatus = dead ? "interrupted" : "streaming",
+                StepStatus = "streaming",
             });
         }
 
         // Pre-first-token silence: reasoning models can think for minutes before any block
         // arrives, and the turn otherwise renders nothing at all. While the agent runs with
         // nothing streaming and no tool in flight, keep a live "thinking" placeholder on the
-        // tail — the page shows it ticking instead of looking frozen or hung.
+        // tail — the page shows it ticking instead of looking frozen or hung. The timer anchors
+        // to the last folded event so each silent phase (between steps, after a tool, after a
+        // message) restarts at zero instead of accumulating the whole turn.
         _nodes.RemoveAll(n => n.Key.StartsWith("live-think-", StringComparison.Ordinal));
         if (agentRunning && _liveKeys.Count == 0 && _runningTools == 0 && _turnStart.Count > 0)
         {
             var activeTurn = _turnStart.Keys.Max();
             if (!_endedTurns.Contains(activeTurn) && _turnStart.TryGetValue(activeTurn, out var start))
             {
+                var anchor = _lastEventTime > 0 ? _lastEventTime : start.Time;
                 _nodes.Add(new ConversationNode
                 {
                     Key = $"live-think-{activeTurn}",
@@ -271,7 +287,7 @@ public sealed class ConversationFolder
                     Step = 0,
                     Blocks = [],
                     StepStatus = "thinking",
-                    StartedAt = start.Time,
+                    StartedAt = anchor,
                 });
             }
         }
@@ -310,6 +326,7 @@ public sealed class ConversationFolder
 
     private void ProcessEvent(SessionEvent e, Agent? agent)
     {
+        if (e.Time > _lastEventTime) _lastEventTime = e.Time;
         if (e.Data.ValueKind == System.Text.Json.JsonValueKind.Object
             && e.Data.TryGetProperty("turn", out var turnValue)
             && turnValue.ValueKind == System.Text.Json.JsonValueKind.Number)

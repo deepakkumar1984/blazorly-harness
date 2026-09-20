@@ -268,30 +268,39 @@ public class CompactionPrunerTests
     }
 
     [Fact]
-    public async Task Window_ResolvesFromTheModelCatalog_OverTheGlobalOption()
+    public async Task Window_ResolvesFromTheModelCatalog_CappedByTheGlobalOption()
     {
         await using var harness = TestHarness.Create();
         var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions { ContextWindowTokens = 100_000, Threshold = 0.5 });
         harness.Llm.RegisterAdapter(new CatalogAdapter("tiny"));
+        harness.Llm.RegisterAdapter(new CatalogAdapter("huge", 1_000_000));
 
         // Agent selection defaults override per-call options, so switch the default route.
         harness.Loop.DefaultSelection = new LlmCallConfig { Provider = "tiny", Model = "tiny-model" };
         var tinyAgent = harness.CreateAgent();
-        Assert.Equal(1_000, compaction.ResolveWindow(tinyAgent));
+        Assert.Equal(1_000, compaction.ResolveWindow(tinyAgent)); // smaller catalog wins over the option
         Assert.Equal(500, compaction.TriggerFor(tinyAgent));
+
+        // A model advertising a huge window (GLM-5.3 claims 1M) is capped by the operator's
+        // usable-window setting — otherwise the trigger/keep targets anchor to a window the
+        // service class can never deliver (500 tok/s prefill makes 1M ≈ half an hour).
+        harness.Loop.DefaultSelection = new LlmCallConfig { Provider = "huge", Model = "tiny-model" };
+        var cappedAgent = harness.CreateAgent();
+        Assert.Equal(100_000, compaction.ResolveWindow(cappedAgent));
+        Assert.Equal(50_000, compaction.TriggerFor(cappedAgent));
 
         harness.Loop.DefaultSelection = new LlmCallConfig { Provider = "scripted", Model = "test" };
         var defaultAgent = harness.CreateAgent(); // replay/demo has no catalog window
         Assert.Equal(100_000, compaction.ResolveWindow(defaultAgent));
     }
 
-    private sealed class CatalogAdapter(string provider) : LlmAdapter
+    private sealed class CatalogAdapter(string provider, int window = 1_000) : LlmAdapter
     {
         public override string Provider { get; } = provider;
         public override IAsyncEnumerable<StreamChunk> Stream(GenerateOptions options, CancellationToken ct = default)
             => throw new LlmException(LlmErrorCodes.NoAdapter, "catalog stub never streams");
         public override IReadOnlyList<LlmModelInfo> ListModels() =>
-            [new LlmModelInfo(Provider, "tiny-model", "Tiny", ContextWindowTokens: 1_000)];
+            [new LlmModelInfo(Provider, "tiny-model", "Tiny", ContextWindowTokens: window)];
     }
 }
 

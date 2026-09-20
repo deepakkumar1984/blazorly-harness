@@ -807,7 +807,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         property.SetValue(settings, false);
     }
     public async Task<(IReadOnlyList<string> Models, string? Error)> DiscoverModelsAsync(
-        string provider, string? typedBaseUrl = null, string? typedApiKey = null)
+        string provider, string? typedBaseUrl = null, string? typedApiKey = null, TimeSpan? timeout = null)
     {
         if (string.IsNullOrWhiteSpace(provider)) return ([], "provider is required");
         var custom = Settings.CustomProviders.FirstOrDefault(c => c.Name == provider);
@@ -837,7 +837,12 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         }
         try
         {
-            var models = await LlmModelDiscovery.DiscoverAsync(provider, baseUrl, apiKey, StreamingHttp, configure).ConfigureAwait(false);
+            // Discovery rides the streaming client, whose timeout is infinite (long generations);
+            // without a cap of its own, one stalled GET /models wedges the Settings button on
+            // "Loading…" forever. Metadata must answer fast or fail with a message.
+            using var discoveryCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+            discoveryCts.CancelAfter(timeout ?? TimeSpan.FromSeconds(30));
+            var models = await LlmModelDiscovery.DiscoverAsync(provider, baseUrl, apiKey, StreamingHttp, configure, discoveryCts.Token).ConfigureAwait(false);
             var ids = models.Select(m => m.Id).ToList();
             var entries = models.Select(m => new DiscoveredModelInfo(m.Id, m.ContextWindowTokens, m.MaxOutputTokens)).ToList();
             if (custom is not null)
@@ -854,6 +859,11 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             SaveSettings();
             ApplyProviderSelection();
             return (ids, null);
+        }
+        catch (OperationCanceledException)
+        {
+            return ([], $"model list request timed out after {(int)(timeout ?? TimeSpan.FromSeconds(30)).TotalSeconds}s — {baseUrl} accepted the connection but never answered. "
+                + "Check the base URL and key, or the provider may be queueing metadata requests.");
         }
         catch (Exception ex) when (ex is LlmException or HttpRequestException or System.Text.Json.JsonException or InvalidOperationException)
         {
