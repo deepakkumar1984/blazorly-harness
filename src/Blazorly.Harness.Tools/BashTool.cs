@@ -12,7 +12,7 @@ namespace Blazorly.Harness.Tools;
 
 /// <summary>
 /// The bash tool: one fresh `bash -c` per call, confined by Landlock under the session sandbox
-/// preset (workspace-write/read-only; danger-full-access runs unconstrained, fail-closed when
+/// preset (workspace-write/read-only; full-access runs unconstrained, fail-closed when
 /// the confinement helper is unavailable). Optional workdir + timeout; run_in_background
 /// registers a job collected via job_* tools.
 /// </summary>
@@ -92,8 +92,8 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             if (outcome is not ApprovalOutcome.AllowedOnce)
                 throw new ToolException("SANDBOX_DENIED",
                     $"[sandbox: bash cannot run under '{SandboxPolicy.WorkspaceWrite}' — Linux Landlock is not available. "
-                    + "The user declined to run the command unconfined. Ask the user to switch to danger-full-access "
-                    + "(/permission danger-full-access) if they want bash to run without prompting.]");
+                    + "The user declined to run the command unconfined. Ask the user to switch to full access "
+                    + "(/permission full-access) if they want bash to run without prompting.]");
 
             startInfo = BuildStartInfo(args, exec, foreground: true, forceUnconfined: true)
                 ?? throw new ToolException("SANDBOX_UNAVAILABLE",
@@ -215,7 +215,7 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             startInfo.ArgumentList.Add("-c");
             startInfo.ArgumentList.Add(command);
         }
-        else // danger-full-access
+        else // full-access
         {
             startInfo.FileName = "/bin/bash";
             startInfo.ArgumentList.Add("-c");

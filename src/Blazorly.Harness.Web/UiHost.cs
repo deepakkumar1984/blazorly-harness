@@ -349,6 +349,13 @@ public static class UiHost
             plannedSeams = Core.Decisions.DecisionSeams.Planned,
             riskGate = harness.Settings.EnableRiskGate,
             riskGateThreshold = harness.Settings.RiskGateThreshold,
+            toolGate = new
+            {
+                enabled = harness.Settings.EnableToolGate,
+                maxTools = harness.Settings.ToolGateMaxTools,
+                keep = harness.Settings.ToolGateKeep,
+                stats = harness.Context.TryGet<Core.Decisions.ToolGateService>(Core.Decisions.ToolGateService.ServiceKey)?.Stats(),
+            },
             autoPlanEngageAt = harness.Settings.AutoPlanEngageAt,
             autoPlanSkipAt = harness.Settings.AutoPlanSkipAt,
             stats = stats is null ? null : new

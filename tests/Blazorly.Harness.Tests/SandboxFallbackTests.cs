@@ -21,6 +21,21 @@ public class SandboxFallbackTests : IDisposable
     public SandboxFallbackTests() => Directory.CreateDirectory(_root);
 
     [Fact]
+    public void Normalize_MapsTheLegacySpelling_EverywhereItIsRead()
+    {
+        Assert.Equal(SandboxPolicy.FullAccess, SandboxPolicy.Normalize("danger-full-access"));
+        Assert.Equal(SandboxPolicy.FullAccess, SandboxPolicy.DangerFullAccess); // alias, not a second value
+        Assert.Equal(SandboxPolicy.ReadOnly, SandboxPolicy.Normalize(SandboxPolicy.ReadOnly));
+        Assert.Equal(SandboxPolicy.WorkspaceWrite, SandboxPolicy.Normalize(SandboxPolicy.WorkspaceWrite));
+        Assert.Null(SandboxPolicy.Normalize(null));
+
+        // a session log written before the rename still resolves to full access
+        var policy = new SandboxPolicy { DefaultMode = SandboxPolicy.WorkspaceWrite };
+        Assert.Equal(SandboxPolicy.FullAccess, policy.ResolveMode("danger-full-access"));
+        Assert.Equal(SandboxPolicy.FullAccess, SandboxPolicy.ResolveProcessMode("danger-full-access", SandboxPolicy.WorkspaceWrite));
+    }
+
+    [Fact]
     public void ProcessMode_DeploymentDefault_DegradesOnlyWhereConfinementIsImpossible()
     {
         var resolved = SandboxPolicy.ResolveProcessMode(sessionMode: null, SandboxPolicy.WorkspaceWrite);

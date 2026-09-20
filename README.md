@@ -62,7 +62,7 @@ blazorly eval ...       # task benchmarks        blazorly serve-acp  # ACP for e
 blazorly --version      # build stamp
 ```
 
-Notes: data always lives in `~/.blazorly` regardless of binary location; on macOS/Windows there is no Landlock sandbox, so bash/run_code fail closed until you switch a session's permission preset to `danger-full-access` (`/permission`). To cut a release: `git tag v0.1.0 && git push --tags` — the release workflow builds all six platforms and publishes the GitHub Release the installers read.
+Notes: data always lives in `~/.blazorly` regardless of binary location. The default preset is `full-access` (no confinement); on macOS/Windows there is no Landlock sandbox, so the confining presets (`read-only`, `workspace-write`) cannot jail bash/run_code there. To cut a release: `git tag v0.1.0 && git push --tags` — the release workflow builds all six platforms and publishes the GitHub Release the installers read.
 
 From the UI you can create/rename/fork/archive sessions, chat with the agent, watch tool calls stream in, manage workspaces, edit credentials, and configure providers on the **Settings** page — which is just a friendly editor for `settings.json` (see below).
 
@@ -149,7 +149,7 @@ once per backend and every row records which one it was measured under:
 | --- | --- | --- |
 | `landlock` | `sandboxMode: workspace-write`, `sandboxFailClosedWhenUnsupported: true` | Linux + a C compiler for `landlock-exec` |
 | `e2b` | `enableE2b: true`, remote execution | an E2B API key (settings or `E2B_API_KEY`) |
-| `none` | `sandboxMode: danger-full-access` | always |
+| `none` | `sandboxMode: full-access` | always |
 
 Selection: `--sandbox a,b,c` measures every task under each; otherwise a task's own
 `"sandbox": "landlock"` field decides, and a task that declares nothing runs under the host
@@ -422,6 +422,35 @@ Live seams:
 |---|---|---|
 | `auto-plan` | *Does this brief need a plan before anything changes?* | Engages plan mode at P ≥ `autoPlanEngageAt`, skips at P ≤ `autoPlanSkipAt`, and abstains to the `autoPlanThreshold` heuristic in between |
 | `risk-gate` | *Could this call destroy data or leak secrets irreversibly?* | Parks the call for your approval at P ≥ `riskGateThreshold` |
+| `tool-gate` | *Which tools does the upcoming work need?* | Prunes the request's tool schemas to a shortlist (see below) |
+
+#### Tool gate (hybrid tool selection)
+
+With MCP servers in play the visible tool set can run past dozens, and every request pays the
+full schema payload while raw selection accuracy falls. The tool gate is the hybrid pattern:
+
+- **Pure code first** — core tools (fs, bash, todo, ask-user), tools used recently in this session,
+  and lexical relevance to the current brief select the shortlist with **zero AI calls**. That is
+  the default shape of an enabled gate.
+- **Decision model for the ambiguous tail** — when the lexical pass scores fewer than
+  `toolGateMinLexical` tools and `tool-gate` is in `systemOneSeams`, one System One `Choice`
+  (options-capped at 255, state = brief + recent tools) picks the rest. One small parallel pass,
+  not a generation — and its answer is cached per brief, so the steps of a turn reuse it.
+- **Degrade-to-full** — disabled, under `toolGateMaxTools`, timeout, or any error returns the
+  full tool list: exactly the pre-gate request. A wrong shortlist self-heals: tools used once
+  stay kept, and the shortlist recomputes as the brief changes.
+
+```jsonc
+{
+  "enableToolGate": true,
+  "toolGateMaxTools": 28,
+  "toolGateKeep": 18,
+  "toolGateCoreTools": "read,write,edit,bash,grep,glob,todo_write"
+}
+```
+
+Cost shows up in `GET /api/decisions` → `toolGate.stats` (requests engaged/passed through, mean
+shortlist size, schema-chars saved). Evals pin the gate off so scores stay comparable.
 
 Two more seams are named in the settings vocabulary — `loop` (semantic thrash detection, where `RepeatCallGuard` only catches byte-identical calls) and `compaction` (ranking which context blocks to prune) — but nothing consumes them yet. `GET /api/decisions` reports them under `plannedSeams` rather than `seams` so an "enabled" flag never implies behaviour that isn't there; `decisions probe --seam loop` still works, to exercise the wire shape ahead of the consumer.
 

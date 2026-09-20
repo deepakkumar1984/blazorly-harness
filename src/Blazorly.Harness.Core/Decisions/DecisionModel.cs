@@ -168,12 +168,15 @@ public static class DecisionSeams
     /// <summary>How load-bearing is this context block, when pruning under pressure?</summary>
     public const string Compaction = "compaction";
 
+    /// <summary>Which tools does the upcoming work need, when the tool set is too large to send whole?</summary>
+    public const string ToolGate = "tool-gate";
+
     /// <summary>
     /// Seams with a consumer wired into the loop today. Reporting is driven by this list, not by
     /// <see cref="Known"/>, so the API and the Settings page can never advertise a seam that
     /// silently does nothing.
     /// </summary>
-    public static readonly IReadOnlyList<string> Wired = [AutoPlan, RiskGate];
+    public static readonly IReadOnlyList<string> Wired = [AutoPlan, RiskGate, ToolGate];
 
     /// <summary>
     /// Declared but not yet consumed. Named now so the settings vocabulary is stable and a probe

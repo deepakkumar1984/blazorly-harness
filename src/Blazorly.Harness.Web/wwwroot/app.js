@@ -101,6 +101,17 @@ window.blazorly = {
             if (overflow > 0) el.style.transform = "translateX(" + (-overflow) + "px)";
         });
     },
+    // Sidebar workspace-group collapse state, persisted across reloads. Safe no-ops when
+    // localStorage is unavailable (private mode, embedded webviews).
+    sidebar: {
+        loadCollapsed: function () {
+            try { return JSON.parse(localStorage.getItem("blazorly.sidebar.collapsed") ?? "null"); }
+            catch { return null; }
+        },
+        saveCollapsed: function (ids) {
+            try { localStorage.setItem("blazorly.sidebar.collapsed", JSON.stringify(ids ?? [])); } catch { }
+        }
+    },
     // Composer textarea: grow with its content up to the CSS max-height, and keep
     // the caret end of the text in view. Typing keeps the caret visible on its own,
     // but a large paste (or a programmatic value set) leaves the box scrolled to

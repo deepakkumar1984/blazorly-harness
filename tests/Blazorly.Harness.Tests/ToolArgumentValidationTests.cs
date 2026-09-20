@@ -111,7 +111,7 @@ public class ToolArgumentValidationTests : IDisposable
         Assert.StartsWith("[sandbox: bash cannot run under 'workspace-write'", message);
         Assert.Contains("do not retry", message);
         Assert.Contains("do not switch tools", message);
-        Assert.Contains("/permission danger-full-access", message);
+        Assert.Contains("/permission full-access", message);
     }
 
     private static ToolExecutionInput Read(Agent agent, string path) => Call(agent, "read", new { file_path = path });

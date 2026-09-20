@@ -112,6 +112,7 @@ a { color: var(--accent); }
     display: flex;
     flex-direction: column;
     min-width: 0;
+    overflow: hidden; /* the nav owns scrolling; the footer stays pinned at the bottom */
 }
 
 .brand {
@@ -175,8 +176,10 @@ a { color: var(--accent); }
 
 .session-list {
     flex: 1;
+    min-height: 0; /* without this the content height wins and pushes the footer off-screen */
     overflow-y: auto;
     padding: 0 8px;
+    overscroll-behavior: contain;
 }
 
 .session-item {
@@ -216,19 +219,44 @@ a { color: var(--accent); }
 }
 
 /* workspace groups */
-.workspace-group { margin-bottom: 8px; }
+.workspace-group { margin-bottom: 6px; }
 .workspace-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 5px 10px;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 6px;
     color: var(--text-faint);
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.07em;
-    cursor: default;
+    cursor: pointer;
+    user-select: none;
 }
-.workspace-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-head:hover { background: var(--bg-overlay); color: var(--text-dim); }
+.workspace-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.workspace-caret {
+    flex: none;
+    font-size: 9px;
+    color: var(--text-faint);
+    width: 10px;
+    text-align: center;
+    transition: transform 0.12s ease;
+}
+.workspace-count {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-faint);
+    background: var(--bg-overlay);
+    border-radius: 99px;
+    padding: 1px 6px;
+    min-width: 16px;
+    text-align: center;
+}
+.workspace-group.collapsed .workspace-count { color: var(--text-dim); }
+.workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.1s; }
 .workspace-head:hover .workspace-actions,
 .workspace-head:focus-within .workspace-actions { opacity: 1; }
@@ -247,8 +275,8 @@ button.icon:hover:not(:disabled) { color: var(--text); background: var(--bg-over
 button.icon.danger:hover { color: var(--danger); }
 button.icon:disabled { opacity: 0.35; }
 
-.session-row { display: flex; align-items: center; }
-.session-row .session-item { flex: 1; min-width: 0; }
+.session-row { display: flex; align-items: center; gap: 2px; }
+.session-row .session-item { flex: 1; min-width: 0; padding-top: 3px; padding-bottom: 3px; }
 /* Row actions stay visible (subdued) so archive/delete are discoverable, full on hover. */
 .session-row .archive, .session-row .delete { opacity: 0.5; }
 .session-row:hover .archive, .session-row:hover .delete,

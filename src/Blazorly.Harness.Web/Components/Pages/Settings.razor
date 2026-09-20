@@ -299,15 +299,36 @@
                     }
                     <p class="settings-note">Every decision is recorded as an ignorable <code>decision/result</code> event on the session. Verify the endpoint with <code>blazorly decisions probe</code>; changes apply after the app restarts.</p>
                 }
+                <label>
+                    <span>Tool gate</span>
+                    <div class="settings-toggles">
+                        <label class="toggle">
+                            <input type="checkbox" checked="@_settings.EnableToolGate" @onchange="e => _settings.EnableToolGate = e.Value is true" />
+                            <span>Prune the per-request tool list (hybrid selector)</span>
+                        </label>
+                    </div>
+                </label>
+                @if (_settings.EnableToolGate)
+                {
+                    <label>
+                        <span>Engage above</span>
+                        <input type="number" min="5" max="200" @bind="_settings.ToolGateMaxTools" />
+                    </label>
+                    <label>
+                        <span>Shortlist size</span>
+                        <input type="number" min="5" max="100" @bind="_settings.ToolGateKeep" />
+                    </label>
+                }
+                <p class="settings-note">Pure code by default: core tools + recently used + lexical relevance, no AI calls — big tool sets (MCP servers) stop paying full schema tokens on every request. @(SeamOn("tool-gate") ? "The ambiguous tail gets one System One choice." : "Add \"tool-gate\" to the System One seams to let the decision model handle the ambiguous tail.") Any failure sends the full tool list, exactly the pre-gate behaviour.</p>
                 break;
 
             case "sandbox":
                 <label>
                     <span>Default permission preset (new sessions)</span>
                     <select @bind="_settings.SandboxMode">
-                        <option value="@SandboxPolicy.WorkspaceWrite">workspace-write (writes confined to the session workspace)</option>
-                        <option value="@SandboxPolicy.ReadOnly">read-only (all mutations denied)</option>
-                        <option value="@SandboxPolicy.DangerFullAccess">danger-full-access (no confinement)</option>
+                        <option value="@SandboxPolicy.FullAccess">full access</option>
+                        <option value="@SandboxPolicy.WorkspaceWrite">workspace-write</option>
+                        <option value="@SandboxPolicy.ReadOnly">read-only</option>
                     </select>
                 </label>
                 <label>

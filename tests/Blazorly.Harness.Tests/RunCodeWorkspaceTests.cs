@@ -9,7 +9,7 @@ using Xunit;
 namespace Blazorly.Harness.Tests;
 
 /// <summary>
-/// run_code executes in-process under danger-full-access, and Directory.GetCurrentDirectory is
+/// run_code executes in-process under full-access, and Directory.GetCurrentDirectory is
 /// process-global: relative paths used to resolve against wherever the host binary was launched
 /// (e.g. src/Blazorly.Harness.Web) instead of the session workspace, so a script's
 /// File.ReadAllText("src/schema.js") failed with a path from a different directory tree.

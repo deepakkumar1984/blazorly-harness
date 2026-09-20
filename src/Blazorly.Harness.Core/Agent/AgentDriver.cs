@@ -178,6 +178,13 @@ public sealed class AgentDriver
 
         var assembly = _systemPrompt.Assemble(_agent, _agent.Session.Header.Cwd);
 
+        // Hybrid tool selection: over the engagement threshold, the gate prunes the schema list
+        // per request (core + recent + lexical rules, decision model only for the ambiguous tail).
+        // Pass-through on any disable or failure is the contract, so this is one safe await.
+        var toolGate = _ctx.TryGet<Decisions.ToolGateService>(Decisions.ToolGateService.ServiceKey);
+        if (toolGate is not null)
+            assembly = await toolGate.FilterAsync(_agent, assembly, ct).ConfigureAwait(false);
+
         var messages = new List<Message>(claimed);
         if (assembly.ContextSections.Count > 0)
         {

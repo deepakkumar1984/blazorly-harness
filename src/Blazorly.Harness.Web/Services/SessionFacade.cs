@@ -241,10 +241,12 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
 
     public void SetSessionSandboxMode(string sessionId, string mode)
     {
-        if (mode is not (SandboxPolicy.ReadOnly or SandboxPolicy.WorkspaceWrite or SandboxPolicy.DangerFullAccess))
+        var canonical = SandboxPolicy.Normalize(mode)
+            ?? throw new InvalidOperationException($"unknown permission preset '{mode}'");
+        if (canonical is not (SandboxPolicy.ReadOnly or SandboxPolicy.WorkspaceWrite or SandboxPolicy.FullAccess))
             throw new InvalidOperationException($"unknown permission preset '{mode}'");
         var session = GetSession(sessionId);
-        session.Append(SessionEventTypes.SandboxMode, new SessionPayloads.SandboxModePayload(mode));
+        session.Append(SessionEventTypes.SandboxMode, new SessionPayloads.SandboxModePayload(canonical));
     }
 
     public void SetSessionModel(string sessionId, string provider, string model)
@@ -292,7 +294,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
                 "/model" => CommandModel(sessionId, args),
                 "/effort" => CommandEffort(sessionId, args),
                 "/title" => CommandTitle(sessionId, args),
-                "/help" => ("/help — show commands\n/permission <read-only|workspace-write|danger-full-access> — switch this session's sandbox preset\n/model <provider>/<model> — switch the model route\n/effort <off|low|high|max|…> — set reasoning effort for this session's model\n/title <text> — rename this session\n/plan — toggle plan mode (restricts mutations until a plan is approved)\n/goal <objective> — set a persistent goal that auto-continues across turns\n/compact — prune + summarize older context now (frees window space)", true),
+                "/help" => ("/help — show commands\n/permission <read-only|workspace-write|full-access> — switch this session's sandbox preset\n/model <provider>/<model> — switch the model route\n/effort <off|low|high|max|…> — set reasoning effort for this session's model\n/title <text> — rename this session\n/plan — toggle plan mode (restricts mutations until a plan is approved)\n/goal <objective> — set a persistent goal that auto-continues across turns\n/compact — prune + summarize older context now (frees window space)", true),
                 "/plan" => CommandPlan(sessionId),
                 "/goal" => CommandGoal(sessionId, args),
                 "/compact" => CommandCompact(sessionId),
@@ -367,7 +369,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         if (args.Length == 0)
         {
             var current = GetSession(sessionId).LatestSandboxMode() ?? Harness.Settings.SandboxMode;
-            return ($"current permission preset: {current}\nusage: /permission <read-only|workspace-write|danger-full-access>", true);
+            return ($"current permission preset: {current}\nusage: /permission <read-only|workspace-write|full-access>", true);
         }
         SetSessionSandboxMode(sessionId, args);
         return ($"permission preset switched to {args}", true);

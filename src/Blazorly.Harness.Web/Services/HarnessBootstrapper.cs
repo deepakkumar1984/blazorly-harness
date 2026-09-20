@@ -33,10 +33,10 @@ public sealed class HarnessSettings
     /// <summary>Endpoint stash per provider id, so switching routes keeps each provider's URL typed once.</summary>
     public Dictionary<string, string> ProviderBaseUrls { get; set; } = new(StringComparer.Ordinal);
     public string WorkspaceRoot { get; set; } = Directory.GetCurrentDirectory();
-    public string SandboxMode { get; set; } = SandboxPolicy.WorkspaceWrite;
+    public string SandboxMode { get; set; } = SandboxPolicy.FullAccess;
     /// <summary>
     /// Fail closed when the host cannot confine (no Linux Landlock) instead of degrading an
-    /// unconfigured sandbox to danger-full-access.
+    /// unconfigured sandbox to full-access.
     /// </summary>
     public bool SandboxFailClosedWhenUnsupported { get; set; }
     public string Persistence { get; set; } = "sqlite"; // sqlite (default; jsonl sessions auto-import) | jsonl
@@ -133,13 +133,29 @@ public sealed class HarnessSettings
     public int SystemOneTimeoutMs { get; set; } = 1_500;
     /// <summary>
     /// Seams allowed to consult the model. Empty or ["*"] means every implemented seam.
-    /// Known seams: auto-plan, risk-gate, loop, compaction.
+    /// Known seams: auto-plan, risk-gate, tool-gate, loop, compaction.
     /// </summary>
     public List<string> SystemOneSeams { get; set; } = ["auto-plan", "risk-gate"];
 
     /// <summary>Park an allowed tool call for human approval at or above this P(risky).</summary>
     public bool EnableRiskGate { get; set; } = false;
     public double RiskGateThreshold { get; set; } = 0.5;
+
+    /// <summary>
+    /// Hybrid tool selection. Above ToolGateMaxTools the request's tool schemas are pruned to a
+    /// shortlist (core + recently used + lexically relevant) with zero AI calls; with
+    /// "tool-gate" in SystemOneSeams the ambiguous tail also gets one System One choice. Off
+    /// means every request carries the full tool list, exactly as before.
+    /// </summary>
+    public bool EnableToolGate { get; set; } = false;
+    /// <summary>Filtering engages only when the visible tool count exceeds this.</summary>
+    public int ToolGateMaxTools { get; set; } = 28;
+    /// <summary>Shortlist target size (core + recent + lexical + model picks, capped).</summary>
+    public int ToolGateKeep { get; set; } = 18;
+    /// <summary>Fewer lexical hits than this counts as an ambiguous brief for the model tail.</summary>
+    public int ToolGateMinLexical { get; set; } = 6;
+    /// <summary>Comma-separated always-kept tools; blank keeps the built-in default set.</summary>
+    public string? ToolGateCoreTools { get; set; }
 
     /// <summary>Auto-plan calibration bands; between them the model abstains and the heuristic decides.</summary>
     public double AutoPlanEngageAt { get; set; } = 0.60;
@@ -510,6 +526,21 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         {
             plugins.Add(new Core.Decisions.RiskGatePlugin(decisions.Service,
                 new Core.Decisions.RiskGateOptions { Threshold = Settings.RiskGateThreshold }));
+        }
+        // The tool gate is independent of System One: without the seam it is the pure-code filter.
+        if (Settings.EnableToolGate && !skipAtBoot.Contains(Core.Decisions.ToolGatePlugin.PluginName))
+        {
+            var core = (Settings.ToolGateCoreTools ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            plugins.Add(new Core.Decisions.ToolGatePlugin(
+                new Core.Decisions.ToolGateOptions
+                {
+                    Enabled = true,
+                    MaxTools = Settings.ToolGateMaxTools > 0 ? Settings.ToolGateMaxTools : 28,
+                    Keep = Settings.ToolGateKeep > 0 ? Settings.ToolGateKeep : 18,
+                    MinLexical = Settings.ToolGateMinLexical > 0 ? Settings.ToolGateMinLexical : 6,
+                    CoreTools = core.Length > 0 ? core : new Core.Decisions.ToolGateOptions().CoreTools,
+                },
+                decisionsEnabled ? decisions.Service : null));
         }
 
         plugins.Add(new JobsPlugin());

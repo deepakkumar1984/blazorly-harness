@@ -62,8 +62,8 @@ public class EvalEnvironmentTests : BootstrapperTestBase
             using var settings = JsonDocument.Parse(
                 File.ReadAllText(Path.Combine(output, "home-none", "settings.json")));
             var root = settings.RootElement;
-            // Pinned baseline
-            Assert.Equal("danger-full-access", root.GetProperty("sandboxMode").GetString());
+            // Pinned baseline (canonical spelling; the legacy danger-full-access alias would mean the same)
+            Assert.Equal("full-access", root.GetProperty("sandboxMode").GetString());
             Assert.False(root.GetProperty("enableTeams").GetBoolean());
             Assert.False(root.GetProperty("enableMcp").GetBoolean());
             Assert.Equal(65_536, root.GetProperty("contextWindowTokens").GetInt32());

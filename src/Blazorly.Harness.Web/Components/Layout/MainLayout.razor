@@ -49,37 +49,47 @@
             <nav class="session-list">
                 @foreach (var group in Groups())
                 {
-                    <div class="workspace-group @(group.Workspace.Id == UnfiledId ? "unfiled" : "")">
-                        <div class="workspace-head" title="@group.Workspace.Root">
+                    var open = IsGroupOpen(group);
+                    <div class="workspace-group @(group.Workspace.Id == UnfiledId ? "unfiled" : "") @(open ? "" : "collapsed")">
+                        <div class="workspace-head" title="@group.Workspace.Root" role="button" tabindex="0"
+                             aria-expanded="@open.ToString().ToLowerInvariant()"
+                             @onclick="() => ToggleGroup(group.Workspace.Id)"
+                             @onclick:preventDefault
+                             @onkeydown='e => { if (e.Key is "Enter" or " ") ToggleGroup(group.Workspace.Id); }'>
+                            <span class="workspace-caret" aria-hidden="true">@(open ? "▾" : "▸")</span>
                             <span class="workspace-name">@group.Workspace.Name</span>
                             @if (group.RootEmpty)
                             {
                                 <span class="workspace-empty-hint" title="This folder has no files yet — the agent will have nothing to read until you add some">empty</span>
                             }
+                            <span class="workspace-count" title="@(open ? "" : $"{group.Sessions.Count} session(s) — click to expand")">@group.Sessions.Count</span>
                             @if (group.Workspace.Id != UnfiledId)
                             {
                                 <span class="workspace-actions">
-                                    <button class="icon" title="New chat here" @onclick="() => NewSessionIn(group.Workspace.Id)">＋</button>
-                                    <button class="icon danger" title="Remove workspace (sessions stay on disk)" @onclick="() => RemoveWorkspace(group.Workspace)">✕</button>
+                                    <button class="icon" title="New chat here" @onclick="() => NewSessionIn(group.Workspace.Id)" @onclick:stopPropagation>＋</button>
+                                    <button class="icon danger" title="Remove workspace (sessions stay on disk)" @onclick="() => RemoveWorkspace(group.Workspace)" @onclick:stopPropagation>✕</button>
                                 </span>
                             }
                         </div>
-                        @foreach (var item in group.Sessions)
+                        @if (open)
                         {
-                            <div class="session-row">
-                                <a class="session-item @(item.Id == ActiveSessionId ? "active" : "")" href="@($"/session/{item.Id}")">
-                                    <span class="session-dot @(item.Running ? "running" : "")"></span>
-                                    <span class="session-title">@item.Title</span>
-                                </a>
-                                <button class="icon archive" title="@(item.Archived ? "Unarchive" : "Archive")" @onclick="() => ToggleArchive(item.Id, item.Archived)">
-                                    @(item.Archived ? "↩" : "🗄")
-                                </button>
-                                <button class="icon danger delete" title="Delete chat" @onclick="() => AskDelete(item)">🗑</button>
-                            </div>
-                        }
-                        @if (group.Sessions.Count == 0)
-                        {
-                            <div class="workspace-empty">no sessions yet</div>
+                            @foreach (var item in group.Sessions)
+                            {
+                                <div class="session-row">
+                                    <a class="session-item @(item.Id == ActiveSessionId ? "active" : "")" href="@($"/session/{item.Id}")">
+                                        <span class="session-dot @(item.Running ? "running" : "")"></span>
+                                        <span class="session-title">@item.Title</span>
+                                    </a>
+                                    <button class="icon archive" title="@(item.Archived ? "Unarchive" : "Archive")" @onclick="() => ToggleArchive(item.Id, item.Archived)">
+                                        @(item.Archived ? "↩" : "🗄")
+                                    </button>
+                                    <button class="icon danger delete" title="Delete chat" @onclick="() => AskDelete(item)">🗑</button>
+                                </div>
+                            }
+                            @if (group.Sessions.Count == 0)
+                            {
+                                <div class="workspace-empty">no sessions yet</div>
+                            }
                         }
                     </div>
                 }
@@ -283,6 +293,7 @@
     {
         if (firstRender)
         {
+            await LoadCollapsedGroupsAsync();
             try
             {
                 var theme = await Js.InvokeAsync<string>("blazorly.getTheme");
@@ -301,6 +312,56 @@
             _awaitFolderFocus = false;
             await FocusFolderInput();
         }
+    }
+
+    // ---- workspace-group collapse (fights sidebar clutter with many workspaces × sessions) ----
+
+    /// <summary>null = not loaded yet (treat as open); a saved preference or the smart default after that.</summary>
+    private HashSet<string>? _collapsedGroups;
+
+    private bool IsGroupOpen(WorkspaceGroup group)
+        => _collapsedGroups is null || !_collapsedGroups.Contains(group.Workspace.Id);
+
+    private void ToggleGroup(string workspaceId)
+    {
+        _collapsedGroups ??= new HashSet<string>(StringComparer.Ordinal);
+        if (!_collapsedGroups.Add(workspaceId)) _collapsedGroups.Remove(workspaceId);
+        try { _ = Js.InvokeVoidAsync("blazorly.sidebar.saveCollapsed", _collapsedGroups.ToArray()); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        catch (JSException) { }
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Restores the user's saved collapse state. With none saved and more than one workspace, the
+    /// smart default collapses every group except the active session's workspace — 5 × 15 sessions
+    /// becomes 5 one-liners plus one open list. Implicit defaults are not persisted, so moving
+    /// between workspaces re-defaults sensibly until the user chooses.
+    /// </summary>
+    private async Task LoadCollapsedGroupsAsync()
+    {
+        string[]? saved = null;
+        try { saved = await Js.InvokeAsync<string[]?>("blazorly.sidebar.loadCollapsed"); }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        catch (JSException) { }
+        if (saved is { Length: > 0 })
+        {
+            _collapsedGroups = new HashSet<string>(saved, StringComparer.Ordinal);
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        var groups = Groups();
+        if (groups.Count <= 1) { _collapsedGroups = []; return; } // single group: leave open
+        var activeWorkspace = Facade.Harness.Sessions.Get(ActiveSessionId ?? "") is { } session
+            ? Facade.WorkspaceOf(session)?.Id
+            : null;
+        _collapsedGroups = new HashSet<string>(
+            groups.Where(g => g.Workspace.Id != activeWorkspace && g.Sessions.Count > 0).Select(g => g.Workspace.Id),
+            StringComparer.Ordinal);
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task FocusFolderInput()

@@ -18,7 +18,7 @@ public static class EvalSandbox
     /// <summary>Remote E2B sandbox execution; requires an API key.</summary>
     public const string E2b = "e2b";
 
-    /// <summary>No confinement: tools run directly on the host (danger-full-access).</summary>
+    /// <summary>No confinement: tools run directly on the host (full-access).</summary>
     public const string None = "none";
 
     public static readonly IReadOnlyList<string> All = [Landlock, E2b, None];
@@ -88,6 +88,7 @@ public static class EvalSandbox
             // and non-comparable; pinned off regardless of the ambient settings.
             EnableSystemOne = false,
             EnableRiskGate = false,
+            EnableToolGate = false,
             // Third-party plugins would change the tool set under measurement.
             PluginDirs = [],
             DisabledPlugins = [],

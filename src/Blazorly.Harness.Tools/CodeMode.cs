@@ -14,7 +14,7 @@ namespace Blazorly.Harness.Tools;
 /// <summary>
 /// The host exposed to run_code scripts: every call goes through the full guarded pipeline
 /// (pre-execute, guards, timeout, post-execute) with the outer execution's agent forwarded.
-/// Used by the in-process danger-full-access path; confined runs forward from the child instead.
+/// Used by the in-process full-access path; confined runs forward from the child instead.
 /// </summary>
 public sealed class CodeModeToolHost(ToolRuntime tools, ToolRunContext exec)
 {
@@ -54,7 +54,7 @@ public sealed record RunCodeOutput(string Console, System.Text.Json.JsonElement 
 /// in a helper process (`Blazorly.Harness.ScriptRunner`) under landlock-exec, so direct
 /// filesystem writes cannot escape the session workspace even though the script language keeps
 /// full .NET API access. Tool calls round-trip to this process over JSON lines and go through
-/// the normal guarded pipeline. danger-full-access runs in-process (explicit opt-out).
+/// the normal guarded pipeline. full-access runs in-process (explicit opt-out).
 /// Fails closed when the helper cannot be built, exactly like bash.
 /// </summary>
 public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs, RunCodeOutput>
@@ -136,8 +136,8 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
             if (outcome is not ApprovalOutcome.AllowedOnce)
                 throw new ToolException("SANDBOX_DENIED",
                     $"[sandbox: run_code cannot run under '{mode}' — Linux Landlock is not available. "
-                    + "The user declined to run the code unconfined. Ask the user to switch to danger-full-access "
-                    + "(/permission danger-full-access) if they want run_code to run without prompting.]");
+                    + "The user declined to run the code unconfined. Ask the user to switch to full access "
+                    + "(/permission full-access) if they want run_code to run without prompting.]");
 
             return await ExecuteInProcessAsync(args, exec).ConfigureAwait(false);
         }
@@ -186,7 +186,7 @@ public sealed class RunCodeTool(ToolRuntime tools) : ToolDefinition<RunCodeArgs,
     }
 
     /// <summary>
-    /// danger-full-access: in-process execution. Directory.GetCurrentDirectory is process-global,
+    /// full-access: in-process execution. Directory.GetCurrentDirectory is process-global,
     /// so relative paths in a script would otherwise resolve against wherever the host binary was
     /// launched (the confined path gets this right through ProcessStartInfo.WorkingDirectory).
     /// Runs are serialized and the cwd is restored in a finally, which keeps `File.ReadAllText("src/x")`
@@ -481,7 +481,7 @@ public sealed class CodeModePlugin : HarnessPlugin
         var section = prompt.RegisterSection("tool:run-code", 107, _ =>
             "Code Mode (run_code): the code is the body of an async C# method — top-level await and return work, "
             + "and System, System.IO, System.Linq, System.Text.Json, System.Threading.Tasks and System.Collections.Generic are imported. "
-            + "Scripts run Landlock-confined to the session workspace (like bash); danger-full-access runs in-process. "
+            + "Scripts run Landlock-confined to the session workspace (like bash); full-access runs in-process. "
             + "Call tools with `await Tools.CallAsync(\"bash\", new { command = \"ls\", description = \"List files\" });` "
             + "— arguments are anonymous objects matching each tool's schema. Console output and the returned value are "
             + "both reported; return or print only what matters.");
