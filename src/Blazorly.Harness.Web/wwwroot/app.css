@@ -1776,6 +1776,11 @@ button.small { padding: 4px 10px; font-size: 12.5px; }
 .settings-toggles .toggle input { width: auto; }
 .settings-toggles .toggle span { display: inline; margin: 0; }
 
+.settings-advanced { margin: 14px 0 4px; border-top: 1px dashed var(--border); padding-top: 10px; }
+.settings-advanced summary { cursor: pointer; font-size: 12.5px; color: var(--text-dim); }
+.settings-advanced summary:hover { color: var(--text); }
+.settings-advanced[open] summary { margin-bottom: 4px; }
+
 .modal-field { display: block; margin: 12px 0; }
 .modal-field span { display: block; font-size: 12.5px; color: var(--text-dim); margin-bottom: 5px; }
 .modal-field input, .modal-field textarea {

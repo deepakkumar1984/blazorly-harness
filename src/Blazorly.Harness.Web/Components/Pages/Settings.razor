@@ -219,7 +219,7 @@
                     <div class="settings-toggles">
                         <label class="toggle">
                             <input type="checkbox" checked="@_settings.EnableSystemOne" @onchange="e => _settings.EnableSystemOne = e.Value is true" />
-                            <span>Ask a calibrated decision model instead of the built-in heuristics</span>
+                            <span>Use a small calibrated model for judgment calls</span>
                         </label>
                     </div>
                 </label>
@@ -231,30 +231,7 @@
                     </label>
                     <div class="discover-row"><span class="provider-meta-hint">or env <code>@_settings.SystemOneApiKeyEnv</code></span></div>
                     <label>
-                        <span>Base URL</span>
-                        <input type="text" @bind="_settings.SystemOneBaseUrl" @bind:event="oninput" />
-                    </label>
-                    <label>
-                        <span>Endpoint path</span>
-                        <input type="text" @bind="_settings.SystemOnePath" @bind:event="oninput" />
-                    </label>
-                    <label>
-                        <span>Model (blank = service default)</span>
-                        <input type="text" @bind="_settings.SystemOneModel" @bind:event="oninput" placeholder="jev-1" />
-                    </label>
-                    <label>
-                        <span>Auth header</span>
-                        <select @bind="_settings.SystemOneAuthStyle">
-                            <option value="bearer">Authorization: Bearer</option>
-                            <option value="apikey">X-API-Key</option>
-                        </select>
-                    </label>
-                    <label>
-                        <span>Timeout (ms)</span>
-                        <input type="number" min="100" max="10000" step="100" @bind="_settings.SystemOneTimeoutMs" />
-                    </label>
-                    <label>
-                        <span>Seams</span>
+                        <span>What it decides</span>
                         <div class="settings-toggles">
                             @foreach (var (key, label) in DecisionSeams)
                             {
@@ -265,61 +242,71 @@
                             }
                         </div>
                     </label>
-                    @if (SeamOn("auto-plan"))
-                    {
+                    <p class="settings-note">On timeout or error it silently falls back to the built-in heuristics, so a broken key never breaks a session. Verify the endpoint with <code>blazorly decisions probe</code>; changes apply after the app restarts.</p>
+                    <details class="settings-advanced">
+                        <summary>Advanced — endpoint &amp; calibration</summary>
                         <label>
-                            <span>Auto-plan: engage at P ≥</span>
+                            <span>Base URL</span>
+                            <input type="text" @bind="_settings.SystemOneBaseUrl" @bind:event="oninput" />
+                        </label>
+                        <label>
+                            <span>Endpoint path</span>
+                            <input type="text" @bind="_settings.SystemOnePath" @bind:event="oninput" />
+                        </label>
+                        <label>
+                            <span>Model (blank = service default)</span>
+                            <input type="text" @bind="_settings.SystemOneModel" @bind:event="oninput" placeholder="jev-1" />
+                        </label>
+                        <label>
+                            <span>Auth header</span>
+                            <select @bind="_settings.SystemOneAuthStyle">
+                                <option value="bearer">Authorization: Bearer</option>
+                                <option value="apikey">X-API-Key</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>Timeout (ms)</span>
+                            <input type="number" min="100" max="10000" step="100" @bind="_settings.SystemOneTimeoutMs" />
+                        </label>
+                        <label>
+                            <span>Auto-plan engages at P ≥</span>
                             <input type="number" min="0.5" max="1" step="0.05" @bind="_settings.AutoPlanEngageAt" />
                         </label>
                         <label>
-                            <span>Auto-plan: skip at P ≤</span>
+                            <span>Auto-plan skips at P ≤</span>
                             <input type="number" min="0" max="0.5" step="0.05" @bind="_settings.AutoPlanSkipAt" />
                         </label>
-                        <p class="settings-note">Between the two bands the model abstains and the @_settings.AutoPlanThreshold/100 heuristic scorer decides.</p>
-                    }
-                    @if (SeamOn("risk-gate"))
-                    {
                         <label>
-                            <span>Risk gate</span>
-                            <div class="settings-toggles">
-                                <label class="toggle">
-                                    <input type="checkbox" checked="@_settings.EnableRiskGate" @onchange="e => _settings.EnableRiskGate = e.Value is true" />
-                                    <span>Park risky tool calls for approval</span>
-                                </label>
-                            </div>
+                            <span>Risk gate parks calls at P(risky) ≥</span>
+                            <input type="number" min="0" max="1" step="0.05" @bind="_settings.RiskGateThreshold" />
                         </label>
-                        @if (_settings.EnableRiskGate)
-                        {
-                            <label>
-                                <span>Park at P(risky) ≥</span>
-                                <input type="number" min="0" max="1" step="0.05" @bind="_settings.RiskGateThreshold" />
-                            </label>
-                        }
-                        <p class="settings-note">Escalate-only: the model can turn an allowed call into an approval prompt, never the reverse. It stands down on timeout, on error, and in headless runs where nobody could answer.</p>
-                    }
-                    <p class="settings-note">Every decision is recorded as an ignorable <code>decision/result</code> event on the session. Verify the endpoint with <code>blazorly decisions probe</code>; changes apply after the app restarts.</p>
+                        <p class="settings-note">Between the two auto-plan bands the model abstains and the built-in heuristic decides. The risk gate is escalate-only: it can turn an allowed call into an approval prompt, never the reverse, and stands down on timeout, error, and in headless runs.</p>
+                    </details>
                 }
                 <label>
                     <span>Tool gate</span>
                     <div class="settings-toggles">
                         <label class="toggle">
                             <input type="checkbox" checked="@_settings.EnableToolGate" @onchange="e => _settings.EnableToolGate = e.Value is true" />
-                            <span>Prune the per-request tool list (hybrid selector)</span>
+                            <span>Prune the per-request tool list to what the task needs (large tool sets only)</span>
                         </label>
                     </div>
                 </label>
                 @if (_settings.EnableToolGate)
                 {
-                    <label>
-                        <span>Engage above</span>
-                        <input type="number" min="5" max="200" @bind="_settings.ToolGateMaxTools" />
-                    </label>
-                    <label>
-                        <span>Shortlist size</span>
-                        <input type="number" min="5" max="100" @bind="_settings.ToolGateKeep" />
-                    </label>
+                    <details class="settings-advanced">
+                        <summary>Advanced — gate sizing</summary>
+                        <label>
+                            <span>Engage above (visible tools)</span>
+                            <input type="number" min="5" max="200" @bind="_settings.ToolGateMaxTools" />
+                        </label>
+                        <label>
+                            <span>Shortlist size</span>
+                            <input type="number" min="5" max="100" @bind="_settings.ToolGateKeep" />
+                        </label>
+                    </details>
                 }
-                <p class="settings-note">Pure code by default: core tools + recently used + lexical relevance, no AI calls — big tool sets (MCP servers) stop paying full schema tokens on every request. @(SeamOn("tool-gate") ? "The ambiguous tail gets one System One choice." : "Add \"tool-gate\" to the System One seams to let the decision model handle the ambiguous tail.") Any failure sends the full tool list, exactly the pre-gate behaviour.</p>
+                <p class="settings-note">Pure code by default — no AI calls. Any failure sends the full tool list, exactly the pre-gate behaviour. Add <code>"tool-gate"</code> to the System One seams in <code>settings.json</code> to let the decision model handle ambiguous briefs.</p>
                 break;
 
             case "sandbox":
@@ -428,11 +415,19 @@
     /// <summary>The decision seams the settings expose; the service also accepts "*".</summary>
     private static readonly (string Key, string Label)[] DecisionSeams =
     [
-        ("auto-plan", "Auto-plan engagement (does this brief need a plan?)"),
-        ("risk-gate", "Risk gate (should this tool call be approved?)"),
+        ("auto-plan", "Plan first on complex briefs"),
+        ("risk-gate", "Ask before risky commands"),
     ];
 
+    /// <summary>
+    /// A seam reads on only when it actually works: risk-gate needs both its plugin mounted
+    /// (<see cref="HarnessSettings.EnableRiskGate"/>) and the seam listed, so the toggle never
+    /// shows a state the boot would not honour.
+    /// </summary>
     private bool SeamOn(string key)
+        => key == "risk-gate" && !_settings.EnableRiskGate ? false : SeamListed(key);
+
+    private bool SeamListed(string key)
         => _settings.SystemOneSeams.Count == 0
            || _settings.SystemOneSeams.Contains("*")
            || _settings.SystemOneSeams.Contains(key);
@@ -445,6 +440,8 @@
         if (on)
         {
             if (!_settings.SystemOneSeams.Contains(key)) _settings.SystemOneSeams.Add(key);
+            // risk-gate is a double switch (plugin mount + seam); one tick must close both.
+            if (key == "risk-gate") _settings.EnableRiskGate = true;
         }
         else
         {
