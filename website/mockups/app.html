@@ -39,8 +39,8 @@
         </div>
         <div class="actions">
           <div class="tabs">
-            <button class="tab on" type="button">Chat</button>
-            <button class="tab" type="button">Trajectory</button>
+            <button class="tab chat-tab on" type="button">Chat</button>
+            <button class="tab traj-tab" type="button">Trajectory</button>
           </div>
           <button class="ghost" type="button">Terminal</button>
           <button class="ghost" type="button">Stats</button>
@@ -77,6 +77,29 @@
               <pre>Passed!  — Failed: 0, Passed: 41, Skipped: 0, Total: 41</pre>
             </div>
           </article>
+        </div>
+
+        <div class="trajectory">
+          <div class="traj-toolbar"><button class="ghost" type="button">raw events ▶</button></div>
+          <div class="tl-turn">
+            <div class="tl-head"><span class="tl-title">turn 1</span><span class="tl-status">completed</span><span class="tl-dur">12.4s</span></div>
+            <div class="tl-steps">
+              <div class="tl-row user-row"><span class="tl-glyph">→</span><span class="tl-label">user</span><span class="tl-detail">Add a /health endpoint to the API, cover it with a test…</span></div>
+              <div class="tl-row"><span class="tl-glyph">·</span><span class="tl-label">assistant</span><span class="tl-detail">I'll inspect the current routing, add a health check…</span></div>
+              <div class="tl-row"><span class="tl-glyph">▣</span><span class="tl-label">read</span><span class="tl-detail">src/Api/Program.cs · 84ms</span></div>
+              <div class="tl-row"><span class="tl-glyph">✎</span><span class="tl-label">edit</span><span class="tl-detail">src/Api/Program.cs · MapGet /health</span></div>
+              <div class="tl-row"><span class="tl-glyph">✎</span><span class="tl-label">edit</span><span class="tl-detail">tests/Api.Tests/HealthTests.cs</span></div>
+              <div class="tl-row"><span class="tl-glyph">$</span><span class="tl-label">bash</span><span class="tl-detail">dotnet test · exit 0 · 1.1s</span></div>
+              <div class="tl-row"><span class="tl-glyph">✓</span><span class="tl-label">turn/end</span><span class="tl-detail">completed</span></div>
+            </div>
+          </div>
+          <div class="tl-turn">
+            <div class="tl-head"><span class="tl-title">turn 2</span><span class="tl-status run">running</span><span class="tl-dur">4.1s</span></div>
+            <div class="tl-steps">
+              <div class="tl-row user-row"><span class="tl-glyph">→</span><span class="tl-label">user</span><span class="tl-detail">Commit if the suite is green.</span></div>
+              <div class="tl-row"><span class="tl-glyph">$</span><span class="tl-label">bash</span><span class="tl-detail">git status --short</span></div>
+            </div>
+          </div>
         </div>
 
         <aside class="rail">

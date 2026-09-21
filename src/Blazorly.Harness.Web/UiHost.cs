@@ -109,6 +109,9 @@ public static class UiHost
             app.UseStaticFiles(new StaticFileOptions
             {
                 FileProvider = new PhysicalFileProvider(Path.Combine(AppContext.BaseDirectory, "wwwroot")),
+                // No fingerprint on this path: let the browser cache revalidate so
+                // upgraded binaries ship their new app.js instead of a stale copy.
+                OnPrepareResponse = ctx => ctx.Context.Response.Headers.CacheControl = "no-cache",
             });
 
     // ---- REST surface (mirrors dsh's apiproxy session domain) ----
@@ -130,7 +133,7 @@ public static class UiHost
         var body = await http.Request.ReadFromJsonAsync<PromptRequest>();
         if (body is null || string.IsNullOrWhiteSpace(body.SessionId) || string.IsNullOrWhiteSpace(body.Content))
             return Results.BadRequest(new { error = "sessionId and content are required" });
-        await facade.PromptAsync(body.SessionId, body.Content, string.IsNullOrWhiteSpace(body.Mode) ? "queue" : body.Mode);
+        await facade.PromptAsync(body.SessionId, body.Content, string.IsNullOrWhiteSpace(body.Mode) ? "queue" : body.Mode, body.AttachmentIds);
         await facade.FlushAsync(body.SessionId);
         return Results.Json(new { ok = true });
     });
@@ -320,6 +323,32 @@ public static class UiHost
         var files = facade.FileCandidates(sessionId, q);
         return Results.Json(new { files = files.Select(f => new { f.Path, isDir = f.IsDir, f.Size }) });
     });
+
+    app.MapPost("/api/session.uploadFile", async (HttpContext http, SessionFacade facade) =>
+    {
+        var form = await http.Request.ReadFormAsync();
+        var sessionId = form["sessionId"].FirstOrDefault();
+        var file = form.Files.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(sessionId) || file is null)
+            return Results.BadRequest(new { error = "sessionId and one file are required" });
+        const long maxBytes = 32 * 1024 * 1024;
+        if (file.Length > maxBytes)
+            return Results.BadRequest(new { error = $"file exceeds {maxBytes / (1024 * 1024)} MB cap" });
+        var mime = file.ContentType;
+        if (string.IsNullOrWhiteSpace(mime))
+            mime = ImageMimeHelper.Of(file.FileName);
+        using var ms = new System.IO.MemoryStream();
+        await file.CopyToAsync(ms);
+        var result = await facade.UploadFileAsync(sessionId, ms.ToArray(), mime, file.FileName);
+        return Results.Json(new
+        {
+            result.Id,
+            result.FileName,
+            result.MimeType,
+            result.Kind,
+            textIncluded = result.TextContent is { Length: > 0 },
+        });
+    }).DisableAntiforgery();
 
     // ---- credentials + jobs surface ----
 
@@ -537,7 +566,7 @@ public static class UiHost
     }
 }
 
-public sealed record PromptRequest(string? SessionId, string? Content, string? Mode);
+public sealed record PromptRequest(string? SessionId, string? Content, string? Mode, string[]? AttachmentIds);
 public sealed record ForkRequest(string? SessionId, int? AtSeq);
 public sealed record DocsRequest(string? SessionId, int? Depth, bool? Force);
 public sealed record AnswerRequest(string? Id, string? Answer);
@@ -545,3 +574,15 @@ public sealed record WorkspaceRequest(string? Id, string? Name, string? Root);
 public sealed record ArchiveRequest(string? SessionId, bool Archived);
 public sealed record CredentialRequest(string? Name, string? Value);
 public sealed record DiscoverRequest(string? Provider, string? BaseUrl = null, string? ApiKey = null);
+
+file static class ImageMimeHelper
+{
+    public static string Of(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".png" => "image/png",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        _ => "application/octet-stream",
+    };
+}

@@ -26,6 +26,53 @@
     <li>Model and reasoning-effort chips on the session header</li>
     <li>Permission preset chip, switchable mid-session</li>
   </ul>
+</article>
+
+<section>
+  <div class="wrap">
+    <div class="grid-2">
+      <figure class="shot">
+        <img src="/assets/img/ui-trajectory.webp" width="1440" height="900" loading="lazy" alt="Trajectory tab: turn 1 completed with read, edit, bash; turn 2 running.">
+        <figcaption>Trajectory tab — the same session as a timeline. Chat is the other tab.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="/assets/img/ui-settings-provider.webp" width="1440" height="900" loading="lazy" alt="Settings Model and API tab with DeepSeek and loaded models.">
+        <figcaption>Settings → Model &amp; API. Four more tabs sit beside it.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<article class="prose prose-wrap">
+  <h2>Settings tabs</h2>
+  <p>Settings is not one long form. It is five tabs. Screenshots and field-by-field notes are in <a href="/guides/settings/">the Settings guide</a>.</p>
+  <table>
+    <thead><tr><th>Tab</th><th>What you set</th></tr></thead>
+    <tbody>
+      <tr><td>Model &amp; API</td><td>Provider, model list from the API, base URL, key. Per-provider keys.</td></tr>
+      <tr><td>Custom providers</td><td>Extra OpenAI-compatible routes in the session picker.</td></tr>
+      <tr><td>Sessions &amp; context</td><td>JSONL vs SQLite, window size, compaction, spill, local telemetry.</td></tr>
+      <tr><td>Capabilities</td><td>Which plugins exist: web, MCP, terminals, teams, System One, tool-gate.</td></tr>
+      <tr><td>Permissions &amp; sandbox</td><td>Default preset for new sessions; optional E2B remote sandbox.</td></tr>
+    </tbody>
+  </table>
+</article>
+<section>
+  <div class="wrap grid-2">
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-capabilities.webp" width="1440" height="900" loading="lazy" alt="Capabilities tab with feature toggles.">
+      <figcaption>Capabilities — a plugin that is off is absent from the tool list.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-sandbox.webp" width="1440" height="900" loading="lazy" alt="Permissions and sandbox tab with workspace-write selected.">
+      <figcaption>Permissions &amp; sandbox — default for new chats. Live chats use /permission.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<article class="prose prose-wrap">
+  <h2>Session tabs</h2>
+  <p>Chat vs Trajectory, plus Terminal and Stats, are documented with screenshots in <a href="/guides/session-views/">session views</a>. Chat is the conversation. Trajectory is the durable log as a timeline, with a raw-events pager for the JSONL.</p>
 
   <h2>Workspace tools</h2>
   <p>The built-in toolset is what a coding agent needs to finish work, not a demo subset:</p>

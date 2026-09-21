@@ -14,6 +14,8 @@ Blazorly is the runtime around a coding model: tools, durable sessions, sandbox 
 ## Guides
 - [What is an agentic coding harness?](https://blazorly.dev/guides/what-is-an-agent-harness/)
 - [Getting started](https://blazorly.dev/guides/getting-started/)
+- [Settings tabs](https://blazorly.dev/guides/settings/): Model & API, custom providers, sessions, capabilities, sandbox
+- [Chat vs Trajectory](https://blazorly.dev/guides/session-views/)
 - [Multi-agent orchestration](https://blazorly.dev/guides/multi-agent/)
 - [Durable sessions](https://blazorly.dev/guides/durable-sessions/)
 - [Permissions and sandbox](https://blazorly.dev/guides/permissions/)

@@ -1509,6 +1509,51 @@ button.link:hover { text-decoration: underline; }
     flex: none;
 }
 
+/* ---- pending file chips (pasted/dropped/attached before the message is sent) ---- */
+
+.file-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: 920px;
+    margin: 0 auto 6px;
+}
+
+.file-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 3px 6px 3px 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+    transition: border-color 0.12s;
+}
+.file-chip:hover { border-color: var(--danger); }
+.file-chip-icon { font-size: 14px; line-height: 1; }
+.file-chip-label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip-remove { font-size: 10px; color: var(--text-faint); }
+.file-chip:hover .file-chip-remove { color: var(--danger); }
+
+/* ---- hidden file input for the paperclip button ---- */
+
+.composer-clip {
+    flex: none;
+    align-self: center;
+    position: relative;
+}
+.composer-clip .clip-input {
+    position: absolute;
+    top: 0; left: 0;
+    width: 0; height: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
 .composer .command-menu {
     max-width: 920px;
     width: 100%;

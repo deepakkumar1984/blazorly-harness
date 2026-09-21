@@ -1,0 +1,118 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Settings</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Settings tabs in Blazorly</h1>
+  <p class="muted">The Settings page is five tabs along the top, a Save button, and a file on disk at <code>~/.blazorly/settings.json</code>. Open it from the sidebar. Nothing here is a cloud console — the keys stay on this machine.</p>
+
+  <div class="answer">
+    <p>Blazorly Settings has five tabs: <strong>Model &amp; API</strong>, <strong>Custom providers</strong>, <strong>Sessions &amp; context</strong>, <strong>Capabilities</strong>, and <strong>Permissions &amp; sandbox</strong>. Model &amp; API is where a new install starts: pick a provider, load models from that provider’s API, paste a key. Custom providers add extra OpenAI-compatible routes. Sessions &amp; context chooses JSONL or SQLite and the compaction window. Capabilities toggles tools (web, MCP, terminals, teams, System One, tool-gate). Permissions &amp; sandbox sets the default preset for new sessions. Click Save. A live session can still switch model and permission from its own top bar without revisiting this page.</p>
+  </div>
+</article>
+
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-provider.webp" width="1440" height="900" alt="Blazorly Settings on the Model and API tab, with DeepSeek selected, models loaded from the API, and a masked API key.">
+      <figcaption>Model &amp; API — first tab after install. Load models from the provider, then Save.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<article class="prose prose-wrap">
+  <h2>Model &amp; API</h2>
+  <p>This tab is the default. It sets the provider and model used for <em>new</em> sessions. Keys are stored per provider, so you can keep DeepSeek, Anthropic, and a local Ollama endpoint configured at once and pick among them from the session chip.</p>
+  <ul>
+    <li><strong>Provider</strong> — grouped into cloud, local, and other. Changing it clears the model list until you load again.</li>
+    <li><strong>Model</strong> — filled by “Load models from the API”, not a hardcoded menu. Enter the key first if the provider needs one.</li>
+    <li><strong>Base URL</strong> — override the default endpoint; a chip resets it.</li>
+    <li><strong>API key</strong> — password field. The matching environment variable wins if this field is empty. A DeepSeek key is never sent to an OpenAI route.</li>
+  </ul>
+  <p>Local setups (Ollama, LM Studio) show a “runs on your machine” chip and treat the key as optional.</p>
+
+  <h2>Custom providers</h2>
+</article>
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-custom.webp" width="1440" height="900" loading="lazy" alt="Blazorly Settings Custom providers tab listing a local LM Studio route and an office OpenAI-compatible gateway.">
+      <figcaption>Custom providers — extra OpenAI-compatible routes next to the built-ins.</figcaption>
+    </figure>
+  </div>
+</section>
+<article class="prose prose-wrap">
+  <p>Use this tab when the model is behind a proxy, a company gateway, or a local server that speaks the OpenAI protocol but is not in the built-in catalog. Each row is a name, a base URL (include <code>/v1</code>), an optional key or env var, and a list of model ids. After Save, the name appears in the session model picker beside DeepSeek and the rest.</p>
+  <p>Name must be unique and must not collide with a built-in provider id. Discover models after saving if you would rather not type ids by hand.</p>
+
+  <h2>Sessions &amp; context</h2>
+</article>
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-context.webp" width="1440" height="900" loading="lazy" alt="Blazorly Settings Sessions and context tab with sqlite persistence, 65536 context tokens, and local telemetry enabled.">
+      <figcaption>Sessions &amp; context — where the log lives, and when compaction kicks in.</figcaption>
+    </figure>
+  </div>
+</section>
+<article class="prose prose-wrap">
+  <ul>
+    <li><strong>Persistence</strong> — <code>jsonl</code> (one file per session) or <code>sqlite</code> (one database). Existing sessions stay where they were; <code>blazorly sessions import</code> migrates JSONL into SQLite.</li>
+    <li><strong>Context window tokens</strong> — fallback only. If the provider catalog or API reports a window, that wins.</li>
+    <li><strong>Max output tokens</strong> — clamped to the model’s own ceiling when known.</li>
+    <li><strong>Compaction threshold</strong> — fraction of the window at which older turns get compacted. The log on disk is not rewritten; compaction is a surface projection.</li>
+    <li><strong>Spill threshold</strong> — huge tool output is written to <code>~/.blazorly/spills</code> instead of stuffing the prompt.</li>
+    <li><strong>Telemetry</strong> — local aggregates of turns, tokens, and tool calls. Nothing leaves the machine.</li>
+  </ul>
+
+  <h2>Capabilities</h2>
+</article>
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-capabilities.webp" width="1440" height="900" loading="lazy" alt="Blazorly Settings Capabilities tab with toggles for web tools, skills, plan mode, terminals, MCP, System One, and the tool gate.">
+      <figcaption>Capabilities — turn tools and features on or off. Disabled plugins never reach the model.</figcaption>
+    </figure>
+  </div>
+</section>
+<article class="prose prose-wrap">
+  <p>Each checkbox is a plugin. Off means the tools are not in the schema, not “present but denied.” That is how you keep a small tool list without the tool-gate.</p>
+  <table>
+    <thead><tr><th>Toggle</th><th>What you get</th></tr></thead>
+    <tbody>
+      <tr><td>Web tools</td><td><code>web_search</code> and <code>web_fetch</code>. Backend: DuckDuckGo (no key), Tavily, or Brave.</td></tr>
+      <tr><td>Skills</td><td>Load skill instructions into a turn.</td></tr>
+      <tr><td>ask_user_question</td><td>The agent can pose multiple-choice questions. Delegated children answer themselves.</td></tr>
+      <tr><td>Session-query</td><td>Search and trace the durable log.</td></tr>
+      <tr><td>Plan mode / Auto plan</td><td>Plan before the first mutation; auto-plan can engage from System One.</td></tr>
+      <tr><td>Persistent terminals</td><td>The session terminal drawer.</td></tr>
+      <tr><td>Agent teams</td><td>Experimental teammate tools.</td></tr>
+      <tr><td>MCP servers</td><td>Tools from <code>~/.blazorly/mcp.json</code>.</td></tr>
+      <tr><td>Project instructions</td><td>Reads AGENTS.md / CLAUDE.md from the workspace.</td></tr>
+      <tr><td>System One</td><td>Optional decision model for auto-plan and risk-gate.</td></tr>
+      <tr><td>Tool gate</td><td>Prune the per-request tool list. Failure returns the full list.</td></tr>
+    </tbody>
+  </table>
+  <p>Web-search backend and System One endpoint changes apply after the app restarts. Probe the decision endpoint with <code>blazorly decisions probe</code>.</p>
+
+  <h2>Permissions &amp; sandbox</h2>
+</article>
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-sandbox.webp" width="1440" height="900" loading="lazy" alt="Blazorly Settings Permissions and sandbox tab with workspace-write as the default preset and E2B remote sandbox off.">
+      <figcaption>Permissions &amp; sandbox — default preset for new sessions. A live chat still uses /permission.</figcaption>
+    </figure>
+  </div>
+</section>
+<article class="prose prose-wrap">
+  <p>This tab sets the <em>default</em> for new sessions:</p>
+  <ul>
+    <li><code>full-access</code> — tools run on the host.</li>
+    <li><code>workspace-write</code> — writes confined to the session folder. Linux Landlock jails <code>bash</code> and <code>run_code</code>.</li>
+    <li><code>read-only</code> — mutations denied.</li>
+  </ul>
+  <p>An already-open session does not jump when you Save here. Change that session from the lock chip on its header, or with <code>/permission workspace-write</code>. Optional: fail closed on macOS/Windows where Landlock does not exist, and an E2B remote sandbox if you want tools off this machine. E2B changes need a restart. More in <a href="/guides/permissions/">permissions and sandbox</a>.</p>
+
+  <h2>What this page is not</h2>
+  <p>Settings does not start a chat. It does not pick the workspace — that is the sidebar “New chat” menu. It does not switch Chat vs Trajectory — those tabs live on the session header. See <a href="/guides/session-views/">session views and tabs</a>.</p>
+</article>

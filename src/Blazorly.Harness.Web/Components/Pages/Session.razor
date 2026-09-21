@@ -577,7 +577,28 @@
     <footer class="composer">
         <div class="command-menu" style="display:none" @ref="_slashMenu"></div>
         <div class="command-menu mention-menu" style="display:none" @ref="_mentionMenu"></div>
+        @if (_pendingFiles.Count > 0)
+        {
+            <div class="file-chips">
+                @foreach (var f in _pendingFiles)
+                {
+                    <span class="file-chip" title="@f.FileName — click to remove" @onclick="() => RemoveFile(f.Id)">
+                        <span class="file-chip-icon">@FileChipIcon(f.Kind)</span>
+                        <span class="file-chip-label">@f.FileName</span>
+                        <span class="file-chip-remove">✕</span>
+                    </span>
+                }
+            </div>
+        }
         <div class="composer-bar">
+            <span class="composer-clip">
+                <input type="file" class="clip-input"
+                       @ref="_clipInput" @onchange="OnClipInput" />
+                <button class="ghost" title="Attach a file — screenshot, PDF, document, or text (paste and drop also work)"
+                        aria-label="Attach file" @onclick="OpenClipInput">
+                    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5v4.2h4.2M9.5 2.5H3.8v11.2h8.4V6.7L9.5 2.5z"/></svg>
+                </button>
+            </span>
             <span class="composer-cwd" title="@(_session?.Header.Cwd)">@WorkspaceLabel</span>
             <div class="composer-input">
                 <textarea
@@ -591,13 +612,13 @@
             <div class="composer-actions">
                 @if (_running)
                 {
-                    <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">Queue<span class="send-kbd"> (⏎)</span></button>
-                    <button class="ghost" disabled="@(_draft.Length == 0)" @onclick="SendSteer">Steer</button>
+                    <button class="primary" disabled="@(!CanSend)" @onclick="SendQueue">Queue<span class="send-kbd"> (⏎)</span></button>
+                    <button class="ghost" disabled="@(!CanSend)" @onclick="SendSteer">Steer</button>
                     <button class="danger" @onclick="CancelTurn">Stop</button>
                 }
                 else
                 {
-                    <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">@(_draft.StartsWith('/') ? "Run" : "Send")<span class="send-kbd"> (⏎)</span></button>
+                    <button class="primary" disabled="@(!CanSend)" @onclick="SendQueue">@(_draft.StartsWith('/') ? "Run" : (_draft.Length == 0 && _pendingFiles.Count > 0 ? "Send file" : "Send"))<span class="send-kbd"> (⏎)</span></button>
                 }
             </div>
         </div>
@@ -783,6 +804,11 @@
     private string? _copiedKey;
     private System.Timers.Timer? _copyFlash;
 
+    // ---- pending file attachments (paste, drop, or the paperclip button) ----
+    private readonly List<(string Id, string FileName, string Kind)> _pendingFiles = [];
+    private ElementReference _clipInput;
+    private Microsoft.JSInterop.DotNetObjectReference<Session>? _imageRef;
+
     private bool ShowTodos => _view == "chat" && !_todosCollapsed && (_snapshot?.Todos.Count ?? 0) > 0;
 
     /// <summary>Delegated agents (subagents, teammates, swarm workers) run inside THIS chat:
@@ -821,7 +847,7 @@
     private string WorkspaceLabel => _session is not null && Facade.WorkspaceOf(_session) is { } ws ? ws.Name : Path.GetFileName(_session?.Header.Cwd ?? "");
     private string Placeholder => _running
         ? "Queue for the next turn (⏎) or type and hit Steer…"
-        : "Describe a task… or type / for commands";
+        : "Describe a task… paste or drop files, @reference paths, or type / for commands";
 
     private string? _loadedSessionId;
     private bool _pendingScroll;
@@ -960,6 +986,7 @@
         _rawEvents = new RawTrajectoryPage();
         _pendingApproval = null;
         _pendingQuestion = null;
+        _pendingFiles.Clear();
         _transcriptTake = TranscriptInitialTake;
         _lastSurfacedFailedTurn = _session is null ? null : ConversationAssembler.LatestFailedTurn(_session);
         _dirty = false;
@@ -1011,6 +1038,8 @@
             _topGrowRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
             await TryJs("blazorly.attachTopGrow", _transcript, _topGrowRef);
             await TryJs("blazorly.composer.attach", _composerTa);
+            _imageRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
+            await TryJs("blazorly.composer.attachImagePaste", _composerTa, _imageRef, _clipInput, SessionId);
             // Phones: keep the transcript as the primary surface. Tasks stay one tap away.
             try
             {
@@ -1139,16 +1168,19 @@
     private async Task SendQueue()
     {
         var text = _draft.Trim();
-        if (text.Length == 0) return;
+        if (text.Length == 0 && _pendingFiles.Count == 0) return;
         if (text.StartsWith('/'))
         {
             _draft = "";
+            _pendingFiles.Clear();
             Facade.TryCommand(SessionId, text);
         }
         else
         {
             _draft = "";
-            await Facade.PromptAsync(SessionId, text, "queue");
+            var ids = _pendingFiles.Select(f => f.Id).ToArray();
+            _pendingFiles.Clear();
+            await Facade.PromptAsync(SessionId, text.Length > 0 ? text : "Attached.", "queue", ids.Length > 0 ? ids : null);
         }
         _dirty = true;
     }
@@ -1156,11 +1188,52 @@
     private async Task SendSteer()
     {
         var text = _draft.Trim();
-        if (text.Length == 0) return;
+        if (text.Length == 0 && _pendingFiles.Count == 0) return;
         _draft = "";
-        await Facade.PromptAsync(SessionId, text, "steer");
+        var ids = _pendingFiles.Select(f => f.Id).ToArray();
+        _pendingFiles.Clear();
+        await Facade.PromptAsync(SessionId, text.Length > 0 ? text : "Attached.", "steer", ids.Length > 0 ? ids : null);
         _dirty = true;
     }
+
+    // ---- image attachments (paste, drop, paperclip) ----
+
+    /// <summary>Called from JS after a paste/drop/paperclip file has been uploaded over
+    /// HTTP. Only the resulting id/name/kind strings cross the circuit — the bytes went
+    /// through the REST endpoint, because interop messages cap at 32KB.</summary>
+    [JSInvokable]
+    public Task OnFileUploaded(string id, string fileName, string kind)
+    {
+        _pendingFiles.Add((id, fileName, kind));
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private void OpenClipInput()
+    {
+        try { _ = _clipInput; /* noop: Blazor doesn't expose click() on ElementReference */ }
+        catch { }
+        // The hidden file input is triggered via JS interop.
+        _ = TryJs("blazorly.clickElement", _clipInput);
+    }
+
+    private void OnClipInput(ChangeEventArgs args)
+    {
+        // The JS change handler reads the file and calls OnImagePasted — this Blazor
+        // event fires too but carries no file data in server-side rendering.
+    }
+
+    private void RemoveFile(string id)
+    {
+        _pendingFiles.RemoveAll(f => f.Id == id);
+    }
+
+    private static string FileChipIcon(string kind) => kind switch
+    {
+        "image" => "🖼",
+        "text" => "📄",
+        "document" => "📑",
+        _ => "📎",
+    };
 
     /// <summary>Slash-command vocabulary for the JS autocomplete (name, arg hint, description).</summary>
     internal static readonly (string Name, string Args, string Description)[] SlashCommands =
@@ -1573,6 +1646,8 @@
         _pendingChanged = true;
     }
 
+    private bool CanSend => _draft.Length > 0 || _pendingFiles.Count > 0;
+
     private bool CanFork => !_running && _session?.LatestTurnEndSeq() is not null;
 
     private void OpenDocsModal()
@@ -1723,5 +1798,6 @@
         _terminalPoll?.Dispose();
         _slashRef?.Dispose();
         _topGrowRef?.Dispose();
+        _imageRef?.Dispose();
     }
 }

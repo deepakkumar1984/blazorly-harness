@@ -139,7 +139,77 @@ window.blazorly = {
             });
             // Rewrap on viewport changes needs a fresh measure even with same-length text.
             window.addEventListener("resize", () => this.grow(ta, true));
-        }
+        },
+        /// Paste or drop any file (image, PDF, doc, text) anywhere in the app. Files
+        /// upload over HTTP to /api/session.uploadFile — NEVER through JS interop, whose
+        /// SignalR messages cap at 32KB and would silently drop every real screenshot.
+        /// Only the tiny result (id/name/kind strings) crosses the circuit afterward.
+        /// Paste is claimed ONLY when the clipboard carries a file item — plain text
+        /// pastes fall through untouched.
+        attachImagePaste: function (ta, dotnetRef, clipInput, sessionId) {
+            if (!ta || !dotnetRef) return;
+            // Navigation re-creates the session component and its ref; the document-
+            // level listeners are bound once, so they must always reach the live one.
+            const holder = (this._holder ??= { ref: null });
+            holder.ref = dotnetRef;
+            const upload = (file) => {
+                if (!file) return false;
+                const form = new FormData();
+                form.append("sessionId", sessionId);
+                form.append("file", file, file.name || "pasted-file");
+                fetch("/api/session.uploadFile", { method: "POST", body: form })
+                    .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(new Error("upload " + r.status + ": " + t))))
+                    .then(j => holder.ref.invokeMethodAsync("OnFileUploaded", j.id, j.fileName, j.kind)
+                        .catch(() => { /* circuit gone mid-upload; nothing to do */ }))
+                    .catch(err => console.error("[blazorly] attach failed:", err));
+                return true;
+            };
+            const hasFileItem = (e) => {
+                const items = e.clipboardData?.items;
+                if (!items) return false;
+                for (let i = 0; i < items.length; i++) if (items[i].kind === "file") return true;
+                return false;
+            };
+            if (!this._pasteBound) {
+                this._pasteBound = true;
+                // Paste bubbles to document from wherever it lands (composer, transcript,
+                // anywhere), so one listener covers the focused AND the unfocused case.
+                document.addEventListener("paste", (e) => {
+                    if (!hasFileItem(e)) return; // text paste: let the browser handle it
+                    const items = e.clipboardData.items;
+                    for (let i = 0; i < items.length; i++) {
+                        if (items[i].kind === "file") upload(items[i].getAsFile());
+                    }
+                    e.preventDefault();
+                    ta.focus(); // the next action is typing a note or hitting Send
+                });
+            }
+            if (!this._dropBound) {
+                this._dropBound = true;
+                // Dropping a file on the page would otherwise navigate away from the app;
+                // claim the gesture and upload every dropped file instead.
+                document.addEventListener("dragover", (e) => {
+                    if (e.dataTransfer?.types?.includes("Files")) {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "copy";
+                    }
+                });
+                document.addEventListener("drop", (e) => {
+                    if (!e.dataTransfer?.files?.length) return;
+                    e.preventDefault();
+                    for (const file of e.dataTransfer.files) upload(file);
+                    ta.focus();
+                });
+            }
+            // File input (paperclip button)
+            if (clipInput && !clipInput.dataset.clipBound) {
+                clipInput.dataset.clipBound = "1";
+                clipInput.addEventListener("change", () => {
+                    const file = clipInput.files?.[0];
+                    if (upload(file)) clipInput.value = "";
+                });
+            }
+        },
     },
     // Drag handle that resizes the terminal drawer between min and max pixels.
     attachTerminalResize: function (handle, drawer, min, max) {
@@ -183,6 +253,9 @@ window.blazorly = {
     },
     viewportWidth: function () {
         return window.innerWidth || document.documentElement.clientWidth || 0;
+    },
+    clickElement: function (el) {
+        if (el && typeof el.click === "function") el.click();
     },
     getTheme: function () {
         return localStorage.getItem("blazorly.theme") || "dark";

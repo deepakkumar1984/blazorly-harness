@@ -34,13 +34,24 @@
   </ul>
 
   <h2>Set a provider</h2>
-  <p>Open Settings in the UI — it discovers models live from each provider — or write the file:</p>
+  <p>Open <strong>Settings</strong> from the sidebar. Stay on the <strong>Model &amp; API</strong> tab, pick a provider, load models from that API, paste a key, Save. The other tabs (custom providers, sessions, capabilities, sandbox) are optional on day one — see <a href="/guides/settings/">Settings tabs</a>.</p>
+</article>
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-provider.webp" width="1440" height="900" alt="Blazorly Settings Model and API tab used to configure a provider after install.">
+      <figcaption>First run: Model &amp; API, then Save. You do not need the other four tabs yet.</figcaption>
+    </figure>
+  </div>
+</section>
+<article class="prose prose-wrap">
+  <p>Or write the file:</p>
   <pre><code>{
   "provider": "deepseek",
   "model": "deepseek-v4-flash",
   "apiKey": "sk-…"
 }</code></pre>
-  <p>Works with DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, and any OpenAI-compatible endpoint. Custom routes live under Settings → Routes.</p>
+  <p>Works with DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, and any OpenAI-compatible endpoint. Extra routes live under Settings → Custom providers.</p>
   <p>API keys resolve per request. Environment variables (<code>DEEPSEEK_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, <code>XAI_API_KEY</code>, <code>GEMINI_API_KEY</code>, …) take precedence if the settings field is empty. A provider’s key is never sent to another route.</p>
 
   <h2>Headless, from a repo</h2>

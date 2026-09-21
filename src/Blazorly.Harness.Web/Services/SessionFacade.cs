@@ -1,4 +1,5 @@
 using Blazorly.Harness.Core.Agent;
+using Blazorly.Harness.Core.Attachments;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Llm;
 using Blazorly.Harness.Tools;
@@ -92,23 +93,155 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         _ = workspace;
     }
 
-    public async Task PromptAsync(string sessionId, string text, string mode)
+    /// <summary>Uploads any file to the attachment store and returns its id, classified kind,
+    /// and text content for text files (capped at 256 KB, the same limit as @file references).
+    /// The promise that this store is local-only and never leaves the harness home.</summary>
+    public sealed record FileUploadResult(string Id, string FileName, string MimeType, string Kind, string? TextContent);
+
+    private static string Classify(string mime, string fileName)
+    {
+        if (mime.StartsWith("image/", StringComparison.Ordinal)) return "image";
+        var ext = Path.GetExtension(fileName).ToLowerInvariant();
+        return ext switch
+        {
+            ".txt" or ".md" or ".json" or ".xml" or ".csv" or ".log" or ".yaml" or ".yml"
+                or ".html" or ".css" or ".js" or ".ts" or ".py" or ".cs" or ".java" or ".go"
+                or ".rs" or ".toml" or ".ini" or ".cfg" or ".sh" or ".bash" or ".zsh"
+                or ".sql" or ".rb" or ".php" or ".swift" or ".kt" => "text",
+            ".pdf" or ".docx" or ".doc" or ".xlsx" or ".xls" or ".pptx" or ".ppt" => "document",
+            _ => "binary",
+        };
+    }
+
+    private static bool ContainsNullBytes(string text, int snip)
+    {
+        for (var i = 0; i < Math.Min(text.Length, snip); i++)
+            if (text[i] == '\0') return true;
+        return false;
+    }
+
+    /// <summary>Decodes UTF-8 text for fallback attachment classification (REST callers
+    /// that reference ids this process never uploaded).</summary>
+    private static string? DecodeText(byte[] data)
+    {
+        if (data.Length == 0 || data.Length > Core.Context.FileReferences.MaxTextBytes) return null;
+        var text = System.Text.Encoding.UTF8.GetString(data);
+        return ContainsNullBytes(text, Math.Min(data.Length, 8192)) ? null : text;
+    }
+
+    /// <summary>Drops a copy of a binary attachment under the session workspace, keeping
+    /// the original extension so shell tools recognize the format.</summary>
+    private static async Task<string> SaveToWorkspaceAsync(string? cwd, AttachmentContent content, string fileName)
+    {
+        var root = string.IsNullOrWhiteSpace(cwd) ? Directory.GetCurrentDirectory() : cwd;
+        var dir = Path.Combine(root, ".blazorly-uploads");
+        Directory.CreateDirectory(dir);
+        var ext = Path.GetExtension(fileName);
+        var safe = Path.GetFileName(fileName.Trim());
+        if (safe.Length == 0 || safe == ".") safe = "attached" + ext;
+        else if (!safe.EndsWith(ext, StringComparison.OrdinalIgnoreCase) && ext.Length > 0) safe += ext;
+        // De-dupe collisions from repeated pastes of the same name.
+        var path = Path.Combine(dir, safe);
+        for (var i = 2; File.Exists(path); i++)
+            path = Path.Combine(dir, $"{Path.GetFileNameWithoutExtension(safe)}-{i}{ext}");
+        await File.WriteAllBytesAsync(path, content.Data);
+        return path;
+    }
+
+    public async Task PromptAsync(string sessionId, string text, string mode, string[]? attachmentIds = null)
     {
         var agent = harness.Agents.Get(sessionId) ?? throw new InvalidOperationException("unknown session");
-        var message = await BuildUserMessageAsync(sessionId, agent, text);
+        var message = await BuildUserMessageAsync(sessionId, agent, text, attachmentIds);
         if (mode == "steer") agent.Steer(message);
         else agent.Followup(message);
+    }
+
+    /// <summary>Upload classification remembered per attachment id: browsers paste text
+    /// files with an empty or octet-stream MIME, so the filename-based kind decided at
+    /// upload time is the one that matters at send time.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, FileUploadResult> _uploads = new();
+
+    public async Task<FileUploadResult> UploadFileAsync(string sessionId, byte[] data, string mimeType, string fileName)
+    {
+        if (harness.Attachments is null)
+            throw new InvalidOperationException("attachments are not mounted");
+        var id = await harness.Attachments.SaveAsync(sessionId, data, mimeType);
+        var kind = Classify(mimeType, fileName);
+        string? textContent = null;
+        if (kind == "text" && data.Length <= Core.Context.FileReferences.MaxTextBytes)
+        {
+            textContent = System.Text.Encoding.UTF8.GetString(data);
+            if (ContainsNullBytes(textContent, Math.Min(data.Length, 8192)))
+            {
+                textContent = null;
+                kind = "binary";
+            }
+        }
+        var result = new FileUploadResult(id, fileName, mimeType, kind, textContent);
+        _uploads[id] = result;
+        return result;
     }
 
     /// <summary>Builds the user message, expanding "@path" references into content blocks
     /// (file bodies, images via the attachment store, or notices). Expansion failures fall
     /// back to the plain text — a bad reference must never block sending.</summary>
-    private async Task<Llm.Message> BuildUserMessageAsync(string sessionId, Agent agent, string text)
+    private async Task<Llm.Message> BuildUserMessageAsync(string sessionId, Agent agent, string text, string[]? attachmentIds = null)
     {
         try
         {
             var cwd = agent.Session.Header.Cwd ?? Directory.GetCurrentDirectory();
             var expanded = await Core.Context.FileReferences.ExpandAsync(text, cwd, sessionId, harness.Attachments);
+            if (attachmentIds is { Length: > 0 })
+            {
+                var blocks = new List<Llm.ContentBlock>(expanded.Blocks.Count + attachmentIds.Length);
+                blocks.AddRange(expanded.Blocks);
+                foreach (var id in attachmentIds)
+                {
+                    // One bad attachment degrades to a notice; it must never take the
+                    // other attachments or the whole message down with it.
+                    try
+                    {
+                        if (harness.Attachments is null) continue;
+                        var uploaded = _uploads.GetValueOrDefault(id);
+                        var content = await harness.Attachments.ReadAsync(id);
+                        if (content is null)
+                        {
+                            blocks.Add(new Llm.TextBlock($"\n[Attachment {id} is no longer readable — it was not included.]\n"));
+                            continue;
+                        }
+                        var name = uploaded?.FileName is { Length: > 0 } n ? n : "attached file";
+                        var sizeLabel = $"{content.Data.Length / 1024.0:0.#} KB";
+                        // Prefer the upload-time classification (filename-aware); REST
+                        // callers that never uploaded fall back to the stored MIME type.
+                        var kind = uploaded?.Kind
+                            ?? (content.MimeType.StartsWith("image/", StringComparison.Ordinal) ? "image"
+                                : content.MimeType.StartsWith("text/", StringComparison.Ordinal) ? "text" : "binary");
+                        if (kind == "image")
+                        {
+                            blocks.Add(new Llm.ImageBlock(id, content.MimeType));
+                        }
+                        else if (kind == "text" && (uploaded?.TextContent ?? DecodeText(content.Data)) is { Length: > 0 } body)
+                        {
+                            blocks.Add(new Llm.TextBlock($"\n[Attached file: {name} ({sizeLabel})]\n{body}\n[End of {name}]\n"));
+                        }
+                        else
+                        {
+                            // Binary/document (PDF, DOCX, XLSX…) — drop a copy into the
+                            // workspace so the agent's tools can open it.
+                            var savedPath = await SaveToWorkspaceAsync(agent.Session.Header.Cwd, content, name);
+                            blocks.Add(new Llm.TextBlock(
+                                $"\n[Attached file: {name} ({sizeLabel}) — binary format]\n"
+                                + $"Saved to: {savedPath}\n"
+                                + $"Use bash tools to inspect it (e.g. pdftotext, python, unzip -p, libreoffice --headless).\n"));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        blocks.Add(new Llm.TextBlock($"\n[Attachment {id} failed to attach: {ex.Message}]\n"));
+                    }
+                }
+                return Llm.Message.CreateUser(blocks);
+            }
             return expanded.Attached.Count == 0
                 ? Llm.Message.CreateUserText(text)
                 : Llm.Message.CreateUser(expanded.Blocks);

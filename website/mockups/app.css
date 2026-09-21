@@ -30,6 +30,30 @@ body[data-scene="cli"] .cli { display: flex; }
 body[data-scene="agents"] .rail { display: flex; }
 body[data-scene="terminal"] .term-dock { display: block; }
 body[data-scene="chat"] .rail { display: none; }
+body[data-scene="trajectory"] .transcript { display: none; }
+body[data-scene="trajectory"] .trajectory { display: block; }
+body[data-scene="trajectory"] .chat-tab { background: transparent; color: var(--text-dim); }
+body[data-scene="trajectory"] .traj-tab { background: var(--bg-overlay); color: var(--text); }
+.trajectory { display: none; padding: 8px 22px 16px; overflow: hidden; }
+.traj-toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+.tl-turn {
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 10px;
+  margin-bottom: 12px; overflow: hidden;
+}
+.tl-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; background: var(--bg-overlay); border-bottom: 1px solid var(--border);
+}
+.tl-title { font-weight: 600; }
+.tl-status { font-size: 12px; color: var(--success); }
+.tl-status.run { color: var(--accent); }
+.tl-dur { margin-left: auto; color: var(--text-faint); font-size: 12px; font-family: var(--mono); }
+.tl-steps { padding: 6px 8px 10px; }
+.tl-row { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; }
+.tl-glyph { width: 16px; text-align: center; color: var(--text-faint); flex: none; }
+.tl-label { font-family: var(--mono); font-size: 12px; width: 74px; flex: none; color: var(--text-dim); }
+.tl-detail { font-family: var(--mono); font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-row.user-row .tl-detail { color: var(--text); font-family: var(--sans); }
 
 .sidebar {
   background: var(--bg-raised);

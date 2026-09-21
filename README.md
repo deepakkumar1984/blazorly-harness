@@ -91,6 +91,18 @@ Everything else (feature toggles, retry policy, MCP servers, System One, custom 
 
 ---
 
+## 🎯 Skills
+
+Skills are reusable instruction packs the model loads when your task matches. Drop a `SKILL.md` folder into any of these — the harness scans **all three**:
+
+| Location | Scope |
+|---|---|
+| `~/.blazorly/skills/` | global, harness-native (wins name collisions) |
+| `~/.agents/skills/` | the shared convention other agent tools read — one collection serves them all |
+| `<workspace>/.blazorly/skills/` | this project only |
+
+Each skill is a folder with a `SKILL.md`: `name` + `description` frontmatter, markdown body with the instructions. Descriptions ride in the system prompt every turn; when your brief matches one, the model calls the `skill` tool itself and follows the loaded instructions — you never invoke anything manually.
+
 ## 🤖 Multi-agent & delegation
 
 Blazorly runs sub-agents — each with its own session, provider, and workspace — behind these surfaces:
