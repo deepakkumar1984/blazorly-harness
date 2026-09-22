@@ -2,7 +2,7 @@
 
 An agentic coding harness — give it a task and it reads, writes, runs commands, searches the web, and orchestrates sub-agents to get it done. Serves a web UI you use from any browser, or runs headless for automation and CI.
 
-Site: [blazorly.dev](https://blazorly.dev) — features, install, and guides.
+Site: [Blazorly Harness](https://harness.blazorly.com/) — features, install, and guides.
 
 > **🔒 Permission presets** control what the agent can touch:
 > `full-access` (default) runs tools directly on your host; `workspace-write` confines writes
