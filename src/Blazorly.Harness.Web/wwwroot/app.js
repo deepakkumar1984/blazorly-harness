@@ -348,12 +348,10 @@ window.blazorly = {
         if (el && typeof el.click === "function") el.click();
     },
     getTheme: function () {
-        return localStorage.getItem("blazorly.theme") || "dark";
+        return window.blazorlyAppearance.get().preferences.theme;
     },
     setTheme: function (theme) {
-        localStorage.setItem("blazorly.theme", theme);
-        document.documentElement.dataset.theme = theme;
-        return theme;
+        return window.blazorlyAppearance.update({ theme }).preferences.theme;
     },
     // Slash-command autocomplete: runs entirely in the browser (no round-trip per
     // keystroke). The server is contacted only when a command is picked.

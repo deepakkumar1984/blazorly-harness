@@ -1,52 +1,4 @@
-/* ============================= tokens ============================= */
-:root {
-    --bg: #0d1117;
-    --bg-raised: #151b23;
-    --bg-overlay: #1f2630;
-    --border: #2d333b;
-    --border-strong: #3d444d;
-    --text: #e6edf3;
-    --text-dim: #9aa4b2;
-    --text-faint: #6e7681;
-    --accent: #4f8ff7;
-    --accent-strong: #2f6fe0;
-    --accent-soft: rgba(79, 143, 247, 0.14);
-    --danger: #f85149;
-    --danger-soft: rgba(248, 81, 73, 0.12);
-    --success: #3fb950;
-    --success-soft: rgba(63, 185, 80, 0.12);
-    --warn: #d29922;
-    --warn-soft: rgba(210, 153, 34, 0.1);
-    --radius: 10px;
-    --radius-sm: 7px;
-    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.5);
-    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
-    color-scheme: dark;
-}
-
-html[data-theme="light"] {
-    --bg: #f6f8fa;
-    --bg-raised: #ffffff;
-    --bg-overlay: #e9edf3;
-    --border: #d1d9e0;
-    --border-strong: #b7c0ca;
-    --text: #1f2328;
-    --text-dim: #57606a;
-    --text-faint: #808fa0;
-    --accent: #2f6fe0;
-    --accent-strong: #1f5ed0;
-    --accent-soft: rgba(47, 111, 224, 0.1);
-    --danger: #cf222e;
-    --danger-soft: rgba(207, 34, 46, 0.08);
-    --success: #1a7f37;
-    --success-soft: rgba(26, 127, 55, 0.09);
-    --warn: #9a6700;
-    --warn-soft: rgba(154, 103, 0, 0.09);
-    --shadow-1: 0 1px 2px rgba(31, 35, 40, 0.08);
-    --shadow-2: 0 12px 32px rgba(31, 35, 40, 0.18);
-    color-scheme: light;
-}
+/* Theme tokens and font faces are defined in appearance.css. */
 
 /* ============================= base ============================= */
 * { box-sizing: border-box; }
@@ -59,7 +11,7 @@ html, body, #app, .app-shell {
 body {
     background: var(--bg);
     color: var(--text);
-    font: 14px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 14px/1.55 var(--font-ui);
     -webkit-font-smoothing: antialiased;
 }
 
@@ -354,8 +306,6 @@ button.icon:disabled { opacity: 0.35; }
 
 .sidebar-link:hover { background: var(--bg-overlay); color: var(--text); }
 .sidebar-link-icon { width: 18px; text-align: center; flex: none; font-size: 13px; }
-
-.theme-toggle { justify-content: flex-start; }
 
 /* ============================= chat pane ============================= */
 .chat-pane {
@@ -1684,6 +1634,8 @@ button.danger:hover:not(:disabled) { background: var(--danger-soft); border-colo
 
 /* ============================= settings ============================= */
 .settings-page {
+    /* Keep absolutely positioned labels inside this scroll container. */
+    position: relative;
     max-width: 760px;
     margin: 0 auto;
     padding: 0 20px 40px;
@@ -1809,7 +1761,6 @@ button.small { padding: 4px 10px; font-size: 12.5px; }
     z-index: 100;
     padding: 20px;
 }
-html[data-theme="light"] .modal-overlay { background: rgba(31, 35, 40, 0.4); }
 
 .modal {
     width: min(620px, 94vw);

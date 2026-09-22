@@ -1,0 +1,296 @@
+@inject IJSRuntime Js
+@implements IAsyncDisposable
+
+<div class="appearance-heading">
+    <div>
+        <h2>Make yourself at home.</h2>
+        <p>Choose the colors and typography for your workspace.</p>
+    </div>
+    <span class="appearance-saved">
+        <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="14" height="11" rx="2" /><path d="M7 17h6M10 14v3" /></svg>
+        This browser only
+    </span>
+</div>
+
+@if (_state is null)
+{
+    <div class="appearance-loading" role="status">@(_error ?? "Loading your appearance…")</div>
+}
+else
+{
+    <div class="appearance-layout">
+        <div class="appearance-controls">
+            <fieldset class="appearance-section">
+                <legend>Color theme</legend>
+                <div class="appearance-section-intro">
+                    <p>A different atmosphere. The same workspace.</p>
+                    <label class="device-theme @(_state.Preferences.Theme == "system" ? "selected" : "")">
+                        <input type="radio" name="appearance-theme" value="system" checked="@(_state.Preferences.Theme == "system")" @onchange='() => Update(new { theme = "system" })' />
+                        Follow device
+                    </label>
+                </div>
+                <div class="theme-grid">
+                    @foreach (var theme in _state.Themes)
+                    {
+                        <label class="theme-card @(_state.Preferences.Theme == theme.Id ? "selected" : "")">
+                            <input class="visually-hidden" type="radio" name="appearance-theme" value="@theme.Id" checked="@(_state.Preferences.Theme == theme.Id)" @onchange="() => Update(new { theme = theme.Id })" />
+                            <span class="theme-preview" data-theme="@theme.Id" aria-hidden="true">
+                                <span class="theme-preview-sidebar"><i></i><i></i><i></i></span>
+                                <span class="theme-preview-content">
+                                    <span class="theme-preview-dots"><i></i><i></i><i></i></span>
+                                    <span class="theme-preview-line"></span>
+                                    <span class="theme-preview-line short"></span>
+                                    <span class="theme-preview-message"></span>
+                                    <span class="theme-preview-input"><i></i></span>
+                                </span>
+                            </span>
+                            <span class="theme-card-caption">
+                                <span><strong>@theme.Name</strong><small>@theme.Description</small></span>
+                                <span class="theme-check" aria-hidden="true">✓</span>
+                            </span>
+                        </label>
+                    }
+                </div>
+            </fieldset>
+
+            <section class="appearance-section" aria-labelledby="typography-title">
+                <h3 id="typography-title">Typography</h3>
+                <p class="appearance-help">A comfortable read, down to the last line of code.</p>
+                <div class="font-fields">
+                    <div class="appearance-field">
+                        <label for="interface-font">Interface font</label>
+                        <select id="interface-font" value="@_state.Preferences.InterfaceFont" @onchange="e => Update(new { interfaceFont = e.Value?.ToString() })">
+                            @foreach (var font in _state.InterfaceFonts)
+                            {
+                                <option value="@font.Id">@font.Name</option>
+                            }
+                        </select>
+                        <div class="font-specimen interface-specimen"><span>Aa</span><span>The space to build.<small>@InterfaceFont.Description</small></span></div>
+                    </div>
+                    <div class="appearance-field">
+                        <label for="code-font">Code &amp; terminal font</label>
+                        <select id="code-font" value="@_state.Preferences.CodeFont" @onchange="e => Update(new { codeFont = e.Value?.ToString() })">
+                            @foreach (var font in _state.CodeFonts)
+                            {
+                                <option value="@font.Id">@font.Name</option>
+                            }
+                        </select>
+                        <div class="font-specimen code-specimen"><span>{ }</span><span>const idea = 1;<small>0 1 2 3 4 letters IlO</small></span></div>
+                    </div>
+                </div>
+                <p class="appearance-footnote">Inter, Manrope, and JetBrains Mono are bundled for offline use. Other choices use fonts on your device.</p>
+            </section>
+
+            <section class="appearance-section" aria-labelledby="accent-title">
+                <div class="appearance-section-title">
+                    <div><h3 id="accent-title">A personal touch</h3><p class="appearance-help">Pick an accent for buttons, links, and highlights.</p></div>
+                    <button type="button" class="appearance-text-button" disabled="@string.IsNullOrEmpty(_state.Preferences.Accent)" @onclick='() => Update(new { accent = "" })'>Use theme color</button>
+                </div>
+                <div class="accent-controls">
+                    <div class="accent-swatches" aria-label="Accent colors">
+                        @foreach (var (color, name) in Accents)
+                        {
+                            <button type="button" class="accent-swatch" style="@($"--swatch: {color}")" aria-label="@($"{name} accent")" aria-pressed="@(Accent == color ? "true" : "false")" title="@name" @onclick="() => Update(new { accent = color })">
+                                <span aria-hidden="true">@(Accent == color ? "✓" : "")</span>
+                            </button>
+                        }
+                    </div>
+                    <label class="custom-accent">
+                        <input type="color" value="@Accent" aria-label="Custom accent color" @onchange="e => Update(new { accent = e.Value?.ToString() })" />
+                        <span>Custom <code>@Accent.ToUpperInvariant()</code></span>
+                    </label>
+                </div>
+            </section>
+
+            <section class="appearance-section custom-css-section" aria-labelledby="custom-css-title">
+                <div class="appearance-section-title">
+                    <div><h3 id="custom-css-title">Custom CSS <span class="appearance-badge">Advanced</span></h3><p class="appearance-help">Fine-tune the details with your own stylesheet.</p></div>
+                    <label class="appearance-toggle">
+                        <input type="checkbox" checked="@_state.Preferences.CustomCssEnabled" @onchange="e => Update(new { customCssEnabled = e.Value is true })" />
+                        <span>Enable</span>
+                    </label>
+                </div>
+                <label class="visually-hidden" for="custom-css">Custom stylesheet</label>
+                <textarea id="custom-css" class="custom-css-editor" spellcheck="false" autocapitalize="off" autocomplete="off" rows="7" maxlength="20000" placeholder="@CssExample" @bind="_cssDraft" @bind:event="oninput" aria-describedby="custom-css-help"></textarea>
+                <p id="custom-css-help" class="appearance-footnote">Applied after your theme. Try the <code>--bg</code>, <code>--text</code>, <code>--accent</code>, and <code>--radius</code> variables on <code>:root</code>.</p>
+                <div class="custom-css-actions">
+                    <span class="css-draft-status">@(CssDirty ? "Unapplied changes" : _state.Preferences.CustomCss.Length > 0 ? (_state.Preferences.CustomCssEnabled ? "Styles applied" : "Styles disabled") : "No custom styles")</span>
+                    <button type="button" class="ghost small" disabled="@(string.IsNullOrEmpty(_cssDraft) && string.IsNullOrEmpty(_state.Preferences.CustomCss))" @onclick="ClearCss">Clear</button>
+                    <button type="button" class="primary small" disabled="@(!CssDirty)" @onclick="ApplyCss">Apply CSS</button>
+                </div>
+                <details class="appearance-recovery">
+                    <summary>Need to undo a style?</summary>
+                    <p>Disable custom CSS to keep your code for later. If the controls are hidden, open <a href="/settings?tab=appearance&amp;reset-appearance=1" data-enhance-nav="false">the appearance reset link</a> to restore all defaults.</p>
+                </details>
+            </section>
+        </div>
+
+        <aside class="appearance-preview-column" aria-label="Appearance preview">
+            <div class="appearance-preview-sticky">
+                <div class="preview-heading"><span class="preview-live-dot"></span>Live preview<span>@Theme.Name</span></div>
+                <div class="workspace-preview">
+                    <div class="preview-window-bar"><span class="preview-logo">b<span>.</span></span><span>my-workspace</span><span class="preview-window-dots" aria-hidden="true">···</span></div>
+                    <div class="preview-chat">
+                        <span class="preview-label">YOUR WORKSPACE</span>
+                        <h3>Room for your next idea.</h3>
+                        <p>A little focus. A fresh perspective. Everything you need to get started.</p>
+                        <div class="preview-user">Let's build something great.</div>
+                        <div class="preview-assistant"><span class="preview-assistant-icon" aria-hidden="true">✦</span><div>Ready when you are.<small>Here's a good place to start.</small></div></div>
+                        <div class="preview-code"><div>workspace.ts <span>TypeScript</span></div><pre><span class="preview-keyword">const</span> workspace = {
+  theme: <span class="preview-string">"@Theme.Name.ToLowerInvariant()"</span>,
+  ready: <span class="preview-keyword">true</span>
+};</pre></div>
+                        <div class="preview-composer"><span>Ask anything…</span><span class="preview-send" aria-hidden="true">↑</span></div>
+                    </div>
+                    <div class="preview-status"><span><i></i>Ready to create</span><span>⌘ ↵</span></div>
+                </div>
+                <p class="preview-caption">Your style follows you through chats, files, and the terminal.</p>
+                <div class="appearance-summary">
+                    <div><span>Theme</span><strong>@(_state.Preferences.Theme == "system" ? $"Device · {Theme.Name}" : Theme.Name)</strong></div>
+                    <div><span>Interface</span><strong>@InterfaceFont.Name</strong></div>
+                    <div><span>Code</span><strong>@CodeFont.Name</strong></div>
+                </div>
+            </div>
+        </aside>
+    </div>
+    <div class="appearance-footer">
+        <span class="appearance-status @(_error is not null || !_state.Persisted ? "appearance-status-warning" : "")" role="status" aria-live="polite">@(_error ?? (!_state.Persisted ? "Applied for this visit. Browser storage is unavailable." : _notice))</span>
+        <button type="button" class="ghost small" @onclick="Reset">Reset appearance</button>
+    </div>
+}
+
+@code {
+    private AppearanceSnapshot? _state;
+    private string _cssDraft = "";
+    private string _notice = "Changes are saved automatically in this browser.";
+    private string? _error;
+    private DotNetObjectReference<AppearanceSettings>? _reference;
+    private int? _subscription;
+    private bool _disposed;
+    private bool CssDirty => _cssDraft != _state?.Preferences.CustomCss;
+    private AppearanceOption Theme => _state!.Themes.First(t => t.Id == _state.ResolvedTheme);
+    private AppearanceOption InterfaceFont => _state!.InterfaceFonts.First(f => f.Id == _state.Preferences.InterfaceFont);
+    private AppearanceOption CodeFont => _state!.CodeFonts.First(f => f.Id == _state.Preferences.CodeFont);
+    private string Accent => string.IsNullOrEmpty(_state!.Preferences.Accent) ? Theme.Accent : _state.Preferences.Accent;
+    private static readonly (string Color, string Name)[] Accents =
+    [
+        ("#91b0ff", "Blue"), ("#baa5f7", "Violet"), ("#f09cba", "Rose"),
+        ("#e5b887", "Amber"), ("#82d4a8", "Green"), ("#79cdd5", "Teal")
+    ];
+    private const string CssExample = """
+        :root {
+          --radius: 14px;
+        }
+
+        .bubble { line-height: 1.8; }
+        """;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            _state = await Js.InvokeAsync<AppearanceSnapshot>("blazorlyAppearance.get");
+            if (_disposed) return;
+            _cssDraft = _state.Preferences.CustomCss;
+            _reference = DotNetObjectReference.Create(this);
+            _subscription = await Js.InvokeAsync<int>("blazorlyAppearance.subscribe", _reference);
+            // Navigation can dispose the component while the interop call is in flight.
+            if (_disposed) await Js.InvokeVoidAsync("blazorlyAppearance.unsubscribe", _subscription.Value);
+        }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or ObjectDisposedException)
+        {
+            _error = "Appearance settings could not load. Reload the page to try again.";
+        }
+        if (!_disposed) await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task Update(object patch)
+    {
+        try
+        {
+            _state = await Js.InvokeAsync<AppearanceSnapshot>("blazorlyAppearance.update", patch);
+            _error = null;
+            _notice = "Appearance saved to this browser.";
+        }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or ObjectDisposedException)
+        {
+            _error = "The change could not be applied. Please try again.";
+        }
+    }
+
+    private async Task ApplyCss()
+    {
+        await Update(new { customCss = _cssDraft, customCssEnabled = true });
+    }
+
+    private async Task ClearCss()
+    {
+        await Update(new { customCss = "" });
+        if (_error is null) _cssDraft = "";
+    }
+
+    private async Task Reset()
+    {
+        try
+        {
+            _state = await Js.InvokeAsync<AppearanceSnapshot>("blazorlyAppearance.reset");
+            _cssDraft = _state.Preferences.CustomCss;
+            _error = null;
+            _notice = "Default appearance restored.";
+        }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or ObjectDisposedException)
+        {
+            _error = "Appearance could not be reset. Please try again.";
+        }
+    }
+
+    [JSInvokable]
+    public Task OnAppearanceChanged(AppearanceSnapshot snapshot) => InvokeAsync(() =>
+    {
+        if (_disposed) return;
+        // Keep an unapplied draft when another tab updates a theme or font.
+        if (!CssDirty) _cssDraft = snapshot.Preferences.CustomCss;
+        _state = snapshot;
+        StateHasChanged();
+    });
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        try
+        {
+            if (_subscription is { } id) await Js.InvokeVoidAsync("blazorlyAppearance.unsubscribe", id);
+        }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or ObjectDisposedException) { }
+        _reference?.Dispose();
+    }
+
+    public sealed class AppearanceSnapshot
+    {
+        public AppearancePreferences Preferences { get; set; } = new();
+        public string ResolvedTheme { get; set; } = "dark";
+        public bool Persisted { get; set; }
+        public List<AppearanceOption> Themes { get; set; } = [];
+        public List<AppearanceOption> InterfaceFonts { get; set; } = [];
+        public List<AppearanceOption> CodeFonts { get; set; } = [];
+    }
+
+    public sealed class AppearancePreferences
+    {
+        public string Theme { get; set; } = "dark";
+        public string InterfaceFont { get; set; } = "inter";
+        public string CodeFont { get; set; } = "jetbrains";
+        public string Accent { get; set; } = "";
+        public string CustomCss { get; set; } = "";
+        public bool CustomCssEnabled { get; set; } = true;
+    }
+
+    public sealed class AppearanceOption
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Accent { get; set; } = "";
+    }
+}

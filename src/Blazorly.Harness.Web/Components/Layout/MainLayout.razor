@@ -8,12 +8,12 @@
 <div class="app-shell">
     <div class="mobile-bar">
         <button class="icon mobile-menu" title="Toggle navigation" aria-label="Toggle navigation" @onclick='() => _drawerOpen = !_drawerOpen'>☰</button>
-        <span class="mobile-title">⚡ Blazorly Harness</span>
+        <span class="mobile-title">Blazorly <span>Harness</span></span>
     </div>
     <aside class="sidebar @(_drawerOpen ? "open" : "")" aria-label="Workspace navigation" @onkeydown="OnSidebarKey">
         <div class="brand">
-            <span class="brand-mark">⚡</span>
-            <span class="brand-name">Blazorly Harness</span>
+            <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m13 3-8 10h6l-1 8 9-11h-6z" /></svg></span>
+            <span class="brand-name">Blazorly <span>Harness</span></span>
         </div>
         <div class="ws-switch">
             <button type="button" class="ws-current" title="Switch workspace" aria-haspopup="menu" aria-expanded="@(_switcherOpen ? "true" : "false")" @onclick="ToggleSwitcher">
@@ -135,11 +135,16 @@
             <WorkspaceExplorer Root="@ExplorerRoot" SelectedPath="@WorkspaceUi.ActiveFile" Visible="@(WorkspaceUi.SidebarTab == "files")" OnOpenFile="OpenWorkspaceFile" />
         </section>
         <div class="sidebar-foot">
-            <button class="sidebar-link" @onclick="OpenAddWorkspace"><span class="sidebar-link-icon">📁</span>Add workspace</button>
-            <a class="sidebar-link" href="/settings"><span class="sidebar-link-icon">⚙️</span>Settings</a>
-            <button class="sidebar-link theme-toggle" title="Toggle dark/light theme" @onclick="ToggleTheme">
-                <span class="sidebar-link-icon">@(_theme == "light" ? "🌙" : "☀️")</span>@(_theme == "light" ? "Dark" : "Light") theme
+            <button class="sidebar-link" @onclick="OpenAddWorkspace">
+                <svg class="sidebar-link-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 5.5h6l2 2h7v9h-15zM2.5 5.5V3.5h6l2 2h6v2M10 10v4M8 12h4" /></svg>Add workspace
             </button>
+            <a class="sidebar-link" href="/settings">
+                <svg class="sidebar-link-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" /><rect x="6" y="3" width="3" height="4" rx="1" fill="var(--bg-raised)" /><rect x="12" y="8" width="3" height="4" rx="1" fill="var(--bg-raised)" /><rect x="6" y="13" width="3" height="4" rx="1" fill="var(--bg-raised)" /></svg>Settings
+            </a>
+            <a class="sidebar-link appearance-link" href="/settings?tab=appearance">
+                <svg class="sidebar-link-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M10 2.5a7.5 7.5 0 1 0 0 15h1a2 2 0 0 0 1.3-3.5.8.8 0 0 1 .5-1.4H15a2.5 2.5 0 0 0 2.5-2.5A7.5 7.5 0 0 0 10 2.5Z" /><circle cx="6" cy="7" r=".8" fill="currentColor" /><circle cx="10" cy="5.5" r=".8" fill="currentColor" /><circle cx="14" cy="7.5" r=".8" fill="currentColor" /></svg>Appearance
+                <span class="sidebar-palette" aria-hidden="true"><i></i><i></i><i></i></span>
+            </a>
         </div>
     </aside>
     <main class="chat-pane">@Body</main>
@@ -299,7 +304,6 @@
     private string _workspaceName = "";
     private string _workspaceError = "";
     private System.Timers.Timer? _refresh;
-    private string _theme = "dark";
     private bool _drawerOpen;
     private bool _startChatAfterAdd = true;
     private bool _switcherOpen;
@@ -383,21 +387,6 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
-        {
-            try
-            {
-                var theme = await Js.InvokeAsync<string>("blazorly.getTheme");
-                if (theme != _theme)
-                {
-                    _theme = theme;
-                    await InvokeAsync(StateHasChanged);
-                }
-            }
-            catch (JSDisconnectedException) { }
-            catch (ObjectDisposedException) { }
-            catch (JSException) { }
-        }
         if (_awaitFolderFocus && _showAddWorkspace)
         {
             _awaitFolderFocus = false;
@@ -558,17 +547,6 @@
         try { await _folderInput.FocusAsync(); }
         catch (JSDisconnectedException) { }
         catch (ObjectDisposedException) { }
-    }
-
-    private async Task ToggleTheme()
-    {
-        _theme = _theme == "dark" ? "light" : "dark";
-        try
-        {
-            await Js.InvokeAsync<string>("blazorly.setTheme", _theme);
-        }
-        catch (JSDisconnectedException) { }
-        catch (JSException) { }
     }
 
     private string? CurrentSessionId()

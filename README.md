@@ -14,6 +14,7 @@ Site: [blazorly.dev](https://blazorly.dev) — features, install, and guides.
 ## ✨ Features
 
 - **Chat web UI** — streaming agent turns, live tool cards, tasks, context usage, and delegated agents. The resizable Terminal / Run panel sits below the chat composer
+- **Personal appearance** — six theme presets or your device theme, interface and code fonts, custom accents, and optional CSS with a live preview. Open **Appearance** in the sidebar; preferences are saved in this browser and bundled fonts work offline
 - **Workspace navigation** — one sidebar with Chats / Files tabs, workspace switching, rename, and workspace-scoped search. Folders are registered explicitly; the harness installation is never added as a default workspace
 - **Workspace deletion** — confirmation shows the local folder and session count, then stops owned work and permanently deletes the folder, chats, child sessions, and attachments
 - **Open chats and files** — one tab strip with individual close buttons and Close all. Chat drafts, attachments, and file edits survive tab switches; closing a chat tab preserves its saved history. Close all offers save or discard for unsaved files
@@ -66,6 +67,8 @@ Open the browser. The first run creates a settings file at `~/.blazorly/settings
 ```
 
 Works with DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, and any OpenAI-compatible endpoint (custom routes in Settings → Routes).
+
+Personalize the UI in **Settings → Appearance**. Theme, font, and accent changes save automatically; custom CSS uses **Apply CSS** and can be disabled without losing your code. **Reset appearance** restores defaults. If a custom style hides the controls, open `/settings?tab=appearance&reset-appearance=1` on your running instance to reset them.
 
 ```
 blazorly run "summarize this repo"      # headless task (current directory becomes the workspace)
@@ -159,6 +162,8 @@ dotnet test
 dotnet run --project src/Blazorly.Harness.Web          # UI at http://localhost:5080
 dotnet run --project src/Blazorly.Harness.Cli -- run "hello"
 ```
+
+Browser appearance logic also has dependency-free JavaScript tests: `node --test tests/web/appearance.test.mjs` (Node.js 18+).
 
 ---
 
