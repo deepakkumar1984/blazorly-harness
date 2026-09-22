@@ -29,11 +29,14 @@ public sealed class JobsRuntime
         public readonly StringBuilder Output = new();
         public readonly object OutputGate = new();
         public Process? Process;
+        public WindowsProcessJob? ProcessJob;
+        public string? OwnerSessionId;
         public CancellationTokenSource? Kill;
 
         public async ValueTask DisposeAsync()
         {
             Kill?.Cancel();
+            ProcessJob?.Dispose();
             if (Process is not null)
             {
                 try { if (!Process.HasExited) Process.Kill(entireProcessTree: true); } catch { }
@@ -65,14 +68,30 @@ public sealed class JobsRuntime
             Kind = kind,
             Description = description,
             StartedAt = DateTimeOffset.UtcNow,
+            OwnerSessionId = owner?.Id,
         };
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         job.Process = process;
         job.Kill = new CancellationTokenSource();
         lock (_gate) _jobs[job.Id] = job;
 
-        process.Exited += (_, _) => Settle(job, process.ExitCode, owner);
-        process.Start();
+        try
+        {
+            job.ProcessJob = WindowsProcessJob.Create();
+            process.Exited += (_, _) => Settle(job, process.ExitCode, owner);
+            process.Start();
+            job.ProcessJob?.Assign(process);
+        }
+        catch
+        {
+            job.ProcessJob?.Dispose();
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { }
+            process.Dispose();
+            job.Kill.Dispose();
+            lock (_gate) _jobs.Remove(job.Id);
+            throw;
+        }
         _ = PumpAsync(process, job);
         return job.Id;
     }
@@ -151,7 +170,27 @@ public sealed class JobsRuntime
         lock (_gate) _jobs.TryGetValue(id, out job);
         if (job is null) return false;
         job.Kill?.Cancel();
-        try { if (job.Process is { HasExited: false } p) p.Kill(entireProcessTree: true); } catch { }
+        try
+        {
+            if (job.ProcessJob is not null) job.ProcessJob.Terminate();
+            else if (job.Process is { HasExited: false } p) p.Kill(entireProcessTree: true);
+        }
+        catch { }
         return true;
+    }
+
+    public async Task StopForSessionsAsync(IReadOnlySet<string> sessionIds, CancellationToken ct = default)
+    {
+        Job[] jobs;
+        lock (_gate) jobs = _jobs.Values.Where(j => j.OwnerSessionId is { } id && sessionIds.Contains(id)).ToArray();
+        foreach (var job in jobs)
+        {
+            if (job.Process is not { } process) continue;
+            if (job.ProcessJob is not null) job.ProcessJob.Terminate();
+            else if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+            if (job.ProcessJob is not null) await job.ProcessJob.WaitForEmptyAsync(ct).ConfigureAwait(false);
+            job.Kill?.Cancel();
+        }
     }
 }

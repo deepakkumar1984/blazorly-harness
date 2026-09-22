@@ -1,0 +1,465 @@
+@inject IJSRuntime Js
+@inject NavigationManager Navigation
+@inject SessionFacade Facade
+@inject WorkspaceUiState WorkspaceUi
+@implements IDisposable
+
+<NavigationLock ConfirmExternalNavigation="@HasUnsavedChanges" OnBeforeInternalNavigation="BeforeNavigation" />
+
+<section class="code-editor" aria-label="Code editor" hidden="@(!Visible)">
+    @if (_openError is not null)
+    {
+        <div class="editor-alert" role="alert">@_openError</div>
+    }
+    @if (Active is null)
+    {
+        <div class="code-placeholder">
+            <svg viewBox="0 0 48 48" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m17 14-10 10 10 10m14-20 10 10-10 10M28 8l-8 32" /></svg>
+            <h2>Your workspace, ready to edit</h2>
+            <p>Choose a file from the Files tab on the left. Your open files stay here when you return to chat.</p>
+            <button type="button" class="ghost" @onclick="WorkspaceUi.ShowFiles">Browse workspace files</button>
+            <p class="code-placeholder-hint">Ctrl+S / ⌘S to save · Tab to indent</p>
+        </div>
+    }
+    else if (Active.Binary || Active.TooLarge)
+    {
+        <div class="code-placeholder">
+            <p>@(Active.Binary ? "This file is binary or uses an unsupported text encoding." : "This file exceeds the editor's 512 KB limit.")</p>
+        </div>
+    }
+    else
+    {
+        <div class="editor-frame" @key="Active.Relative">
+            <pre class="editor-gutter" aria-hidden="true" @ref="_gutter"></pre>
+            <textarea class="editor-text" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="@($"Editor for {Active.Relative}")" @ref="_editor"></textarea>
+        </div>
+    }
+    @if (Active is { } active)
+    {
+        <div class="editor-status">
+            <span class="editor-path" title="@active.Relative">@active.Relative</span>
+            <span class="editor-lang">@Language(active.Relative)</span>
+            <span class="editor-note @(active.Conflict ? "conflict" : "")" role="status">@active.Status</span>
+            <span class="editor-status-actions">
+                <button type="button" class="ghost small" @onclick="AskReload">Reload</button>
+                <button type="button" class="primary small" disabled="@(!active.Dirty || active.Binary || active.TooLarge)" @onclick="SaveFromButton">Save</button>
+            </span>
+        </div>
+    }
+</section>
+
+@if (_pendingDiscard is { } pending)
+{
+    <div class="modal-overlay" @onclick="CancelDiscard">
+        <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Unsaved changes" @onclick:stopPropagation="true">
+            <div class="modal-head">
+                <h3>Unsaved changes</h3>
+                <button class="icon modal-close" title="Cancel" @onclick="CancelDiscard">×</button>
+            </div>
+            <p class="confirm-text">@Path.GetFileName(pending) has unsaved edits. @(_discardReload ? "Reloading replaces your edits with the version on disk." : "Save your changes before closing this file?")</p>
+            <div class="modal-actions">
+                <button class="ghost" @onclick="CancelDiscard">Cancel</button>
+                <button class="danger" @onclick="DiscardConfirmed">@(_discardReload ? "Discard and reload" : "Discard and close")</button>
+                @if (!_discardReload)
+                {
+                    <button class="primary" @onclick="SaveAndClose">Save and close</button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@if (_pendingCloseAll)
+{
+    <div class="modal-overlay" @onclick="CancelCloseAll">
+        <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Close all tabs" @onclick:stopPropagation="true">
+            <div class="modal-head"><h3>Save changes before closing?</h3></div>
+            <p class="confirm-text">These files have unsaved edits. All open chat and file tabs will close.</p>
+            <ul class="unsaved-file-list">
+                @foreach (var tab in _tabs.Where(t => t.Dirty)) { <li>@tab.Relative</li> }
+            </ul>
+            @if (_closeAllError is not null) { <div class="form-error" role="alert">@_closeAllError</div> }
+            <div class="modal-actions">
+                <button class="ghost" disabled="@_savingAll" @onclick="CancelCloseAll">Cancel</button>
+                <button class="danger" disabled="@_savingAll" @onclick="CloseAllFiles">Discard and close all</button>
+                <button class="primary" disabled="@_savingAll" @onclick="SaveAllAndClose">@(_savingAll ? "Saving…" : "Save all and close")</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string? Root { get; set; }
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public WorkspaceFileRequest? Request { get; set; }
+
+    private string? _root;
+    private string? _active;
+    private string? _boundFile;
+    private string? _openError;
+    private string? _pendingDiscard;
+    private bool _discardReload;
+    private bool _pendingCloseAll;
+    private bool _savingAll;
+    private string? _closeAllError;
+    private bool _bindEditor;
+    private bool _disposed;
+    private long _requestVersion;
+    private readonly List<EditorTab> _tabs = [];
+    private ElementReference _editor;
+    private ElementReference _gutter;
+    private DotNetObjectReference<CodeWorkspace>? _self;
+    private System.Timers.Timer? _poll;
+    private EditorTab? Active => _tabs.FirstOrDefault(t => t.Relative == _active);
+    private bool HasUnsavedChanges => !WorkspaceUi.WasDeleted(Root) && _tabs.Any(t => t.Dirty);
+
+    protected override void OnInitialized()
+    {
+        _self = DotNetObjectReference.Create(this);
+        _poll = new System.Timers.Timer(2000);
+        _poll.Elapsed += (_, _) => _ = InvokeAsync(async () =>
+        {
+            if (_disposed || !Visible) return;
+            await RefreshActive();
+        });
+        _poll.Start();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_root != Root && !WorkspaceFiles.SameRoot(_root, Root))
+        {
+            _root = Root;
+            _tabs.Clear();
+            _active = null;
+            _boundFile = null;
+            _pendingDiscard = null;
+            _pendingCloseAll = false;
+            _openError = null;
+            WorkspaceUi.SelectFile(null);
+        }
+        if (Request is { } request && request.Version != _requestVersion && WorkspaceFiles.SameRoot(request.Root, Root))
+        {
+            _requestVersion = request.Version;
+            await OpenFile(request.RelativePath);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_bindEditor || Active is not { Binary: false, TooLarge: false } tab) return;
+        _bindEditor = false;
+        try
+        {
+            await Js.InvokeVoidAsync("blazorly.editor.bind", _editor, _gutter, _self, tab.Relative);
+            await Js.InvokeVoidAsync("blazorly.editor.setText", _editor, tab.Text, tab.Dirty);
+            _boundFile = tab.Relative;
+        }
+        catch (Exception ex) when (ex is JSDisconnectedException or ObjectDisposedException or JSException)
+        {
+            _openError = "The editor could not initialize. Refresh the page and try again.";
+        }
+    }
+
+    private async Task OpenFile(string relative)
+    {
+        await CaptureActive();
+        _openError = null;
+        var existing = _tabs.FirstOrDefault(t => t.Relative == relative);
+        if (existing is null)
+        {
+            if (string.IsNullOrWhiteSpace(Root)) return;
+            try
+            {
+                var document = WorkspaceFiles.Read(Root, relative);
+                existing = new EditorTab(document);
+                _tabs.Add(existing);
+            }
+            catch (Exception ex) when (IsFileError(ex))
+            {
+                _openError = ex.Message;
+                return;
+            }
+        }
+        if (_active != existing.Relative || _boundFile is null)
+        {
+            _active = existing.Relative;
+            _boundFile = null;
+            _bindEditor = true;
+        }
+        WorkspaceUi.FileOpened(existing.Relative, existing.Dirty);
+    }
+
+    public async Task AskCloseTab(string relative)
+    {
+        await CaptureActive();
+        if (_tabs.FirstOrDefault(t => t.Relative == relative) is { Dirty: true })
+        {
+            _pendingDiscard = relative;
+            _discardReload = false;
+        }
+        else CloseTab(relative);
+        StateHasChanged();
+    }
+
+    private void CloseTab(string relative)
+    {
+        _tabs.RemoveAll(t => t.Relative == relative);
+        if (_active == relative)
+        {
+            _active = _tabs.LastOrDefault()?.Relative;
+            _boundFile = null;
+            _bindEditor = _active is not null;
+        }
+        WorkspaceUi.CloseTab(WorkspaceTab.FileKey(relative));
+    }
+
+    private async Task<bool> CaptureActive()
+    {
+        if (Active is not { Binary: false, TooLarge: false } tab) return true;
+        if (_boundFile != tab.Relative) return false;
+        try
+        {
+            tab.Text = await Js.InvokeAsync<string>("blazorly.editor.getText", _editor);
+            tab.Dirty = tab.Text != tab.SavedText;
+            WorkspaceUi.SetFileDirty(tab.Relative, tab.Dirty);
+            return true;
+        }
+        catch (Exception ex) when (ex is JSDisconnectedException or ObjectDisposedException or JSException or InvalidOperationException) { return false; }
+    }
+
+    [JSInvokable]
+    public Task MarkDirty(string relative)
+    {
+        if (_disposed || _tabs.FirstOrDefault(t => t.Relative == relative) is not { } tab) return Task.CompletedTask;
+        tab.Dirty = true;
+        WorkspaceUi.SetFileDirty(tab.Relative, true);
+        if (!tab.Conflict) tab.Status = "Unsaved changes";
+        return InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public async Task SaveFromEditor(string relative)
+    {
+        if (_active == relative) await Save();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SaveFromButton() => await Save();
+
+    private async Task<bool> Save(EditorTab? target = null)
+    {
+        var captured = await CaptureActive();
+        if ((target ?? Active) is not { Binary: false, TooLarge: false } tab || string.IsNullOrWhiteSpace(Root)) return false;
+        if (tab == Active && !captured)
+        {
+            tab.Status = "Could not read your edits. Wait for the connection to recover and try saving again.";
+            return false;
+        }
+        try
+        {
+            var document = WorkspaceFiles.Write(Root, tab.Relative, tab.Text.Replace("\n", tab.NewLine), tab.Version);
+            tab.Version = document.Version;
+            tab.SavedText = tab.Text;
+            tab.Conflict = false;
+            tab.Dirty = tab == Active && !await Js.InvokeAsync<bool>("blazorly.editor.saved", _editor, tab.Text);
+            tab.Status = tab.Dirty ? "Unsaved changes" : "Saved";
+            return !tab.Dirty;
+        }
+        catch (Exception ex) when (IsFileError(ex) || ex is JSException or JSDisconnectedException)
+        {
+            tab.Conflict = ex is WorkspaceConflictException;
+            tab.Status = ex.Message;
+            return false;
+        }
+        finally { WorkspaceUi.SetFileDirty(tab.Relative, tab.Dirty); }
+    }
+
+    private async Task AskReload()
+    {
+        await CaptureActive();
+        if (Active is not { } tab) return;
+        if (tab.Dirty)
+        {
+            _pendingDiscard = tab.Relative;
+            _discardReload = true;
+        }
+        else Reload(tab);
+    }
+
+    private void Reload(EditorTab tab)
+    {
+        if (string.IsNullOrWhiteSpace(Root)) return;
+        try
+        {
+            tab.Load(WorkspaceFiles.Read(Root, tab.Relative));
+            WorkspaceUi.SetFileDirty(tab.Relative, false);
+            tab.Status = "Reloaded from disk";
+            _boundFile = null;
+            _bindEditor = true;
+        }
+        catch (Exception ex) when (IsFileError(ex)) { tab.Status = ex.Message; }
+    }
+
+    private void CancelDiscard() => _pendingDiscard = null;
+
+    private void DiscardConfirmed()
+    {
+        if (_pendingDiscard is not { } relative) return;
+        if (_discardReload && _tabs.FirstOrDefault(t => t.Relative == relative) is { } tab) Reload(tab);
+        else CloseTab(relative);
+        CancelDiscard();
+    }
+
+    private async Task SaveAndClose()
+    {
+        if (_pendingDiscard is not { } relative) return;
+        if (_tabs.FirstOrDefault(t => t.Relative == relative) is { } tab && await Save(tab))
+        {
+            CloseTab(relative);
+            CancelDiscard();
+        }
+        else CancelDiscard();
+    }
+
+    public async Task AskCloseAll()
+    {
+        await CaptureActive();
+        _pendingDiscard = null;
+        _closeAllError = null;
+        if (HasUnsavedChanges) _pendingCloseAll = true;
+        else CloseAllFiles();
+        StateHasChanged();
+    }
+
+    private void CancelCloseAll()
+    {
+        if (!_savingAll) _pendingCloseAll = false;
+    }
+
+    private void CloseAllFiles()
+    {
+        _tabs.Clear();
+        _active = _boundFile = _pendingDiscard = _openError = null;
+        _bindEditor = _pendingCloseAll = false;
+        WorkspaceUi.CloseAllTabs();
+        StateHasChanged();
+    }
+
+    private async Task SaveAllAndClose()
+    {
+        _savingAll = true;
+        _closeAllError = null;
+        try
+        {
+            foreach (var tab in _tabs.Where(t => t.Dirty).ToArray())
+            {
+                if (await Save(tab)) continue;
+                _closeAllError = $"{tab.Relative}: {tab.Status}";
+                return;
+            }
+            CloseAllFiles();
+        }
+        finally { _savingAll = false; }
+    }
+
+    private async Task RefreshActive()
+    {
+        if (Active is not { } tab || string.IsNullOrWhiteSpace(Root)) return;
+        await CaptureActive();
+        try
+        {
+            var document = WorkspaceFiles.Read(Root, tab.Relative);
+            if (document.Version == tab.Version && document.Binary == tab.Binary && document.TooLarge == tab.TooLarge) return;
+            if (tab.Dirty)
+            {
+                if (tab.Conflict) return;
+                tab.Conflict = true;
+                tab.Status = "Changed on disk · reload to review";
+            }
+            else
+            {
+                tab.Load(document);
+                WorkspaceUi.SetFileDirty(tab.Relative, false);
+                tab.Status = "Updated from disk";
+                _boundFile = null;
+                _bindEditor = true;
+            }
+            StateHasChanged();
+        }
+        catch (Exception ex) when (IsFileError(ex))
+        {
+            if (tab.Status == ex.Message) return;
+            tab.Status = ex.Message;
+            tab.Conflict = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task BeforeNavigation(LocationChangingContext context)
+    {
+        await CaptureActive();
+        if (!HasUnsavedChanges) return;
+        // Blazor reuses Session (and this editor) for chats in the same workspace.
+        var target = Navigation.ToBaseRelativePath(Navigation.ToAbsoluteUri(context.TargetLocation).AbsoluteUri).Split('?', '#')[0];
+        if (target.StartsWith("session/", StringComparison.Ordinal)
+            && Facade.Harness.Sessions.Get(target["session/".Length..]) is { } session
+            && WorkspaceFiles.SameRoot(Root, session.Header.Cwd)) return;
+        try
+        {
+            if (!await Js.InvokeAsync<bool>("confirm", "Leave this workspace and discard your unsaved file edits?"))
+                context.PreventNavigation();
+        }
+        catch (Exception ex) when (ex is JSDisconnectedException or JSException or ObjectDisposedException)
+        {
+            context.PreventNavigation();
+        }
+    }
+
+    private static bool IsFileError(Exception ex) => ex is IOException or UnauthorizedAccessException
+        or InvalidOperationException or ArgumentException;
+
+    private static string Language(string relative) => Path.GetExtension(relative).ToLowerInvariant() switch
+    {
+        ".cs" => "C#", ".razor" => "Razor", ".js" or ".mjs" or ".cjs" => "JavaScript",
+        ".ts" or ".tsx" => "TypeScript", ".json" => "JSON", ".py" => "Python", ".php" => "PHP",
+        ".go" => "Go", ".rs" => "Rust", ".css" => "CSS", ".html" => "HTML",
+        ".md" => "Markdown", ".xml" or ".csproj" => "XML", _ => "Text",
+    };
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _poll?.Dispose();
+        _self?.Dispose();
+    }
+
+    private sealed class EditorTab
+    {
+        public EditorTab(WorkspaceDocument document)
+        {
+            Relative = document.RelativePath;
+            Load(document);
+        }
+        public string Relative { get; }
+        public string Name => Path.GetFileName(Relative);
+        public string Text { get; set; } = "";
+        public string SavedText { get; set; } = "";
+        public string Version { get; set; } = "";
+        public string NewLine { get; private set; } = "\n";
+        public bool Binary { get; set; }
+        public bool TooLarge { get; set; }
+        public bool Dirty { get; set; }
+        public bool Conflict { get; set; }
+        public string Status { get; set; } = "";
+        public void Load(WorkspaceDocument document)
+        {
+            NewLine = document.Text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+            Text = SavedText = document.Text.Replace("\r\n", "\n");
+            Version = document.Version;
+            Binary = document.Binary;
+            TooLarge = document.TooLarge;
+            Dirty = Conflict = false;
+        }
+    }
+}

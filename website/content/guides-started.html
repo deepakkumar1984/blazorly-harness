@@ -17,7 +17,18 @@
   <p>A browser tab opens on port 5080. The first run writes <code>~/.blazorly/settings.json</code>. The URL includes a console token unless you passed <code>--token</code>.</p>
 
   <h2>3. Configure a provider</h2>
-  <p>Settings discovers models from the provider API. Or write the file:</p>
+  <p>Open <strong>Settings</strong> in the sidebar. The first tab is <strong>Model &amp; API</strong>: pick a provider, paste a key, click “Load models from the API”, pick a model, Save. Keys stay per provider. The other four tabs (custom providers, sessions &amp; context, capabilities, permissions) are covered in <a href="/guides/settings/">Settings tabs</a>.</p>
+</article>
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-settings-provider.webp" width="1440" height="900" alt="Settings Model and API tab after loading DeepSeek models from the API.">
+      <figcaption>Settings → Model &amp; API. This is the whole first-run configuration for most people.</figcaption>
+    </figure>
+  </div>
+</section>
+<article class="prose prose-wrap">
+  <p>Or write the file:</p>
   <pre><code>{
   "provider": "deepseek",
   "model": "deepseek-v4-flash",
@@ -31,7 +42,8 @@
 blazorly run "summarize this repo"</code></pre>
 
   <h2>5. Ask for a change you can verify</h2>
-  <p>Good first briefs are small and checkable: add a health endpoint, rename a symbol, write a missing test. Watch the tool cards. If the model heads the wrong way, hit Stop. Partial text stays; the next message continues from a truthful log. That behaviour is documented in <a href="/guides/durable-sessions/">durable sessions</a>.</p>
+  <p>Good first briefs are small and checkable: add a health endpoint, rename a symbol, write a missing test. You are on the <strong>Chat</strong> tab. The other tab, <strong>Trajectory</strong>, is the same turn as a timeline of tools — useful once something has run. Header chips switch model and permission without going back to Settings. Details in <a href="/guides/session-views/">session views</a>.</p>
+  <p>If the model heads the wrong way, hit Stop. Partial text stays; the next message continues from a truthful log. That behaviour is documented in <a href="/guides/durable-sessions/">durable sessions</a>.</p>
 
   <h2>6. Tighten the sandbox once you trust the loop</h2>
   <p>Default is <code>full-access</code>. For a repo you do not want the agent roaming around in, switch to <code>workspace-write</code> with <code>/permission workspace-write</code>. Read-only is there for “explain this tree, do not touch it.” See <a href="/guides/permissions/">permissions</a>.</p>
@@ -46,6 +58,8 @@ blazorly run "summarize this repo"</code></pre>
 
   <h2>Next</h2>
   <ul>
+    <li><a href="/guides/settings/">Walk the five Settings tabs</a></li>
+    <li><a href="/guides/session-views/">Chat vs Trajectory</a></li>
     <li><a href="/guides/multi-agent/">Run a swarm without cluttering the sidebar</a></li>
     <li><a href="/guides/headless-ci/">Wire <code>blazorly run</code> into CI</a></li>
     <li><a href="/features/">Feature list</a></li>

@@ -118,6 +118,46 @@
 <section>
   <div class="wrap">
     <div class="section-head">
+      <h2>Settings is five tabs</h2>
+      <p>Open Settings from the sidebar. Save writes <code>~/.blazorly/settings.json</code>. A live session still switches model and permission from its own header — this page is the default for new chats.</p>
+    </div>
+    <div class="grid-2">
+      <figure class="shot">
+        <img src="/assets/img/ui-settings-provider.webp" width="1440" height="900" loading="lazy" alt="Settings, Model and API tab: DeepSeek provider, models loaded from the API, masked key.">
+        <figcaption>Model &amp; API — pick a provider, load models, paste a key.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="/assets/img/ui-settings-capabilities.webp" width="1440" height="900" loading="lazy" alt="Settings, Capabilities tab with web tools, plan mode, terminals, MCP, and System One enabled.">
+        <figcaption>Capabilities — toggle tools. Off means they are not in the schema.</figcaption>
+      </figure>
+    </div>
+    <p style="margin-top:16px"><a href="/guides/settings/">Every Settings tab, with screenshots →</a></p>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Chat and Trajectory are tabs, not two apps</h2>
+      <p>Top-right of a session: Chat or Trajectory. Same log. Chat is the conversation; Trajectory is the timeline of tools and turn endings.</p>
+    </div>
+    <div class="grid-2">
+      <figure class="shot">
+        <img src="/assets/img/ui-chat.webp" width="1440" height="900" loading="lazy" alt="Chat tab selected on a running session with live tool cards.">
+        <figcaption>Chat — streaming text and tool cards.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="/assets/img/ui-trajectory.webp" width="1440" height="900" loading="lazy" alt="Trajectory tab selected, showing completed turn 1 and running turn 2 as a timeline.">
+        <figcaption>Trajectory — turns, tools, durations. Raw events pages the JSONL.</figcaption>
+      </figure>
+    </div>
+    <p style="margin-top:16px"><a href="/guides/session-views/">Session chrome explained →</a></p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
       <h2>Capabilities, not a feature dump</h2>
     </div>
     <div class="grid-2">

@@ -81,6 +81,28 @@ public sealed class AttachmentService
         }
     }
 
+    public Task DeleteSessionAsync(string sessionId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) || sessionId is "." or ".."
+            || sessionId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || sessionId.Contains('/') || sessionId.Contains('\\'))
+            throw new ArgumentException("Invalid session id.", nameof(sessionId));
+        return WrapIo(() =>
+        {
+            var root = Path.GetFullPath(_root);
+            var directory = Path.GetFullPath(Path.Combine(root, sessionId));
+            if (Directory.GetParent(directory)?.FullName != Path.TrimEndingDirectorySeparator(root))
+                throw new InvalidOperationException("Attachment path escapes its store.");
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: (File.GetAttributes(directory) & FileAttributes.ReparsePoint) == 0);
+            lock (_indexGate)
+            {
+                if (_index is not null)
+                    foreach (var id in _index.Where(p => p.Value.SessionId == sessionId).Select(p => p.Key).ToArray()) _index.Remove(id);
+            }
+            return Task.CompletedTask;
+        }, ct);
+    }
+
     /// <summary>id → meta, built lazily by scanning meta files; ids are unique so later writes only add.</summary>
     private Dictionary<string, AttachmentMeta> Index()
     {

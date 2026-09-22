@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Blazorly settings mockup</title>
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body data-tab="provider">
+  <div class="shell settings-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="mark">B</span> Blazorly Harness</div>
+      <div class="search">Search sessions…</div>
+      <button class="new-chat" type="button">＋ New chat</button>
+      <nav class="sessions">
+        <div class="ws-head">▾ <span>blazorly-harness</span> <em>4</em></div>
+        <a class="sess" href="#"><i class="dot"></i> Add health endpoint</a>
+        <a class="sess" href="#"><i class="dot"></i> Compact session log</a>
+        <a class="sess foot-link on" href="#"><i class="dot"></i> Settings</a>
+      </nav>
+    </aside>
+    <section class="settings-page">
+      <div class="settings-topbar">
+        <div class="settings-title">
+          <button class="back" type="button">←</button>
+          <h1>Settings</h1>
+        </div>
+        <button class="save" type="button">Save</button>
+      </div>
+      <nav class="settings-tabs" role="tablist">
+        <button class="settings-tab" data-tab="provider" type="button">Model &amp; API</button>
+        <button class="settings-tab" data-tab="custom" type="button">Custom providers</button>
+        <button class="settings-tab" data-tab="context" type="button">Sessions &amp; context</button>
+        <button class="settings-tab" data-tab="capabilities" type="button">Capabilities</button>
+        <button class="settings-tab" data-tab="sandbox" type="button">Permissions &amp; sandbox</button>
+      </nav>
+
+      <div class="panel" data-panel="provider">
+        <p class="note">Provider, model and API key for new sessions. Keys are kept per provider — configure several and every one of them stays selectable from the session topbar. Saved to <code>~/.blazorly/settings.json</code>.</p>
+        <label><span>Provider</span>
+          <div class="field">deepseek</div>
+        </label>
+        <div class="meta"><span class="hint">key or env <code>DEEPSEEK_API_KEY</code></span><span class="hint">default <code>https://api.deepseek.com</code></span></div>
+        <label><span>Model — 12 loaded from the DeepSeek API</span>
+          <div class="field">deepseek-v4-flash</div>
+        </label>
+        <label><span>Base URL</span>
+          <div class="field">https://api.deepseek.com</div>
+        </label>
+        <label><span>API key</span>
+          <div class="field">••••••••••••••••</div>
+        </label>
+        <div class="discover"><button class="ghost" type="button">Reload models</button><span class="ok">12 models: deepseek-v4-flash, deepseek-v4, deepseek-chat, …</span></div>
+      </div>
+
+      <div class="panel" data-panel="custom">
+        <p class="note">Extra OpenAI-compatible routes registered beside the built-ins; each appears in the per-session model picker.</p>
+        <div class="custom-row">
+          <div class="custom-main"><span class="custom-name">lm-studio-local</span><code>http://127.0.0.1:1234/v1</code></div>
+          <span class="muted">8 models</span>
+          <button class="ghost small" type="button">Edit</button>
+        </div>
+        <div class="custom-row">
+          <div class="custom-main"><span class="custom-name">office-gateway</span><code>https://gateway.example.com/v1</code></div>
+          <span class="muted">3 models</span>
+          <button class="ghost small" type="button">Edit</button>
+        </div>
+        <div class="discover"><button class="ghost" type="button">＋ Add custom provider</button></div>
+      </div>
+
+      <div class="panel" data-panel="context">
+        <label><span>Session persistence backend</span>
+          <div class="field">sqlite (single database)</div>
+        </label>
+        <label><span>Context window tokens — fallback only; per-model info (API/catalog) takes priority</span>
+          <div class="field">65536</div>
+        </label>
+        <label><span>Max output tokens per request — clamped to the model's own ceiling when known</span>
+          <div class="field">8192</div>
+        </label>
+        <label><span>Compaction threshold (fraction of the window)</span>
+          <div class="field">0.75</div>
+        </label>
+        <label><span>Tool-output spill threshold (characters)</span>
+          <div class="field">80000</div>
+        </label>
+        <label><span>Usage telemetry</span>
+          <label class="toggle"><input type="checkbox" checked disabled><span>Local-only usage aggregates (turns/tokens/tool calls); nothing leaves the machine</span></label>
+        </label>
+      </div>
+
+      <div class="panel" data-panel="capabilities">
+        <label><span>Capabilities</span>
+          <div class="toggles">
+            <label class="toggle"><input type="checkbox" checked disabled><span>Web tools (web_search, web_fetch)</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>Skills</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>ask_user_question tool</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>Session-query tools</span></label>
+            <label class="toggle"><input type="checkbox" disabled><span>Goals</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>Plan mode</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>Auto plan mode (complex briefs plan first)</span></label>
+            <label class="toggle"><input type="checkbox" disabled><span>run_code (C# scripting)</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>Persistent terminals</span></label>
+            <label class="toggle"><input type="checkbox" disabled><span>Workflows + ralph</span></label>
+            <label class="toggle"><input type="checkbox" disabled><span>Agent teams (experimental)</span></label>
+            <label class="toggle"><input type="checkbox" disabled><span>LSP (requires BLAZORLY_LSP command)</span></label>
+            <label class="toggle"><input type="checkbox" disabled><span>Hooks bridge (~/.blazorly/hooks.json)</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>Project instructions (AGENTS.md / CLAUDE.md)</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>Auto session titles</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>Tool-output spill (~/.blazorly/spills)</span></label>
+            <label class="toggle"><input type="checkbox" disabled><span>Schedule reminders</span></label>
+            <label class="toggle"><input type="checkbox" checked disabled><span>MCP servers (~/.blazorly/mcp.json)</span></label>
+          </div>
+        </label>
+        <label><span>Web search backend</span>
+          <div class="field">DuckDuckGo (keyless)</div>
+        </label>
+        <p class="note">Search backend changes apply after the app restarts.</p>
+        <label><span>Decision model (System One)</span>
+          <label class="toggle"><input type="checkbox" checked disabled><span>Ask a calibrated decision model instead of the built-in heuristics</span></label>
+        </label>
+        <label><span>Tool gate</span>
+          <label class="toggle"><input type="checkbox" checked disabled><span>Prune the per-request tool list (hybrid selector)</span></label>
+        </label>
+        <p class="note">Pure code by default: core tools + recently used + lexical relevance. Any failure sends the full tool list.</p>
+      </div>
+
+      <div class="panel" data-panel="sandbox">
+        <label><span>Default permission preset (new sessions)</span>
+          <div class="field">workspace-write</div>
+        </label>
+        <label><span>Hosts that cannot confine (no Linux Landlock)</span>
+          <label class="toggle"><input type="checkbox" disabled><span>Fail closed instead of running tools unconfined</span></label>
+          <p class="note">Off by default: an unconfigured sandbox runs tools directly on macOS/Windows. Explicit per-session overrides always fail closed.</p>
+        </label>
+        <label><span>Remote sandbox (E2B)</span>
+          <label class="toggle"><input type="checkbox" disabled><span>Run tools on E2B sandboxes instead of this machine</span></label>
+        </label>
+        <p class="note">Remote-sandbox changes apply after the app restarts. Switch a live session with <code>/permission</code>.</p>
+      </div>
+    </section>
+  </div>
+  <script>
+    const apply = (tab) => {
+      document.body.dataset.tab = tab;
+      document.querySelectorAll(".settings-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+    };
+    const q = new URLSearchParams(location.search).get("tab");
+    apply(q || document.body.dataset.tab);
+  </script>
+</body>
+</html>

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace Blazorly.Harness.Web.Services;
@@ -24,6 +23,7 @@ public sealed class WorkspaceRegistry
 
     private readonly string _path;
     private readonly object _gate = new();
+    private readonly HashSet<string> _deleting = new(StringComparer.Ordinal);
     private Store _store = new();
 
     public WorkspaceRegistry(string home)
@@ -31,6 +31,14 @@ public sealed class WorkspaceRegistry
         _path = Path.Combine(home, "workspaces.json");
         Directory.CreateDirectory(home);
         Load();
+        // Old versions registered the harness's working/bin directory on startup.
+        // Forget only that synthetic entry; this migration never removes its files or chats.
+        if (_store.Workspaces.RemoveAll(w => w.Id == "ws-default") > 0)
+        {
+            if (_store.DefaultWorkspaceId == "ws-default")
+                _store.DefaultWorkspaceId = _store.Workspaces.OrderBy(w => w.Order).FirstOrDefault()?.Id;
+            Save();
+        }
     }
 
     private void Load()
@@ -60,22 +68,6 @@ public sealed class WorkspaceRegistry
         File.WriteAllText(_path, JsonSerializer.Serialize(_store, Json));
     }
 
-    /// <summary>Ensures a default workspace exists for the given root; returns the registry.</summary>
-    public WorkspaceRegistry EnsureDefault(string root)
-    {
-        lock (_gate)
-        {
-            if (_store.Workspaces.Count == 0)
-            {
-                var workspace = new Workspace("ws-default", "default", Path.GetFullPath(root), 0);
-                _store.Workspaces.Add(workspace);
-                _store.DefaultWorkspaceId = workspace.Id;
-                Save();
-            }
-            return this;
-        }
-    }
-
     /// <summary>
     /// Ensures a workspace exists for the given root (canonical path is the uniqueness key),
     /// returning the existing record when present. Used by the CLI, whose invoking directory
@@ -83,10 +75,11 @@ public sealed class WorkspaceRegistry
     /// </summary>
     public Workspace Ensure(string root, string? name = null)
     {
-        var full = Path.GetFullPath(root);
+        var full = WorkspaceFiles.NormalizeRoot(root);
         lock (_gate)
         {
-            var existing = _store.Workspaces.FirstOrDefault(w => string.Equals(Path.GetFullPath(w.Root), full, StringComparison.Ordinal));
+            ThrowIfDeleting(full);
+            var existing = _store.Workspaces.FirstOrDefault(w => WorkspaceFiles.SameRoot(w.Root, full));
             if (existing is not null) return existing;
             var workspace = new Workspace($"ws-{Guid.NewGuid().ToString("N")[..8]}", string.IsNullOrWhiteSpace(name) ? Path.GetFileName(full) : name, full, _store.Workspaces.Count);
             _store.Workspaces.Add(workspace);
@@ -110,17 +103,18 @@ public sealed class WorkspaceRegistry
         // Sessions may carry no cwd (foreign logs, hand-crafted seeds) — that is "no
         // workspace", not a crash: the sidebar groups them under "unfiled".
         if (string.IsNullOrWhiteSpace(root)) return null;
-        var full = Path.GetFullPath(root);
-        lock (_gate) return _store.Workspaces.FirstOrDefault(w => string.Equals(Path.GetFullPath(w.Root), full, StringComparison.Ordinal));
+        var full = WorkspaceFiles.NormalizeRoot(root);
+        lock (_gate) return _store.Workspaces.FirstOrDefault(w => WorkspaceFiles.SameRoot(w.Root, full));
     }
 
     public Workspace Add(string name, string root)
     {
-        var full = Path.GetFullPath(root);
+        var full = WorkspaceFiles.NormalizeRoot(root);
         if (!Directory.Exists(full)) throw new InvalidOperationException($"folder does not exist: {full}");
         lock (_gate)
         {
-            if (_store.Workspaces.Any(w => string.Equals(Path.GetFullPath(w.Root), full, StringComparison.Ordinal)))
+            ThrowIfDeleting(full);
+            if (_store.Workspaces.Any(w => WorkspaceFiles.SameRoot(w.Root, full)))
             {
                 throw new InvalidOperationException($"workspace already exists for {full}");
             }
@@ -134,11 +128,12 @@ public sealed class WorkspaceRegistry
 
     public void Rename(string id, string name)
     {
+        if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("Enter a workspace name.");
         lock (_gate)
         {
             var workspace = _store.Workspaces.FirstOrDefault(w => w.Id == id) ?? throw new InvalidOperationException("unknown workspace");
             _store.Workspaces.Remove(workspace);
-            _store.Workspaces.Add(workspace with { Name = name });
+            _store.Workspaces.Add(workspace with { Name = name.Trim() });
             Save();
         }
     }
@@ -150,6 +145,25 @@ public sealed class WorkspaceRegistry
             _store.Workspaces.RemoveAll(w => w.Id == id);
             if (_store.DefaultWorkspaceId == id) _store.DefaultWorkspaceId = _store.Workspaces.OrderBy(w => w.Order).FirstOrDefault()?.Id;
             Save();
+        }
+    }
+
+    public void SetDeleting(string id, bool deleting)
+    {
+        lock (_gate)
+        {
+            if (deleting) _deleting.Add(id);
+            else _deleting.Remove(id);
+        }
+    }
+
+    public void ThrowIfDeleting(string? root)
+    {
+        if (string.IsNullOrWhiteSpace(root)) return;
+        lock (_gate)
+        {
+            if (_store.Workspaces.Any(w => _deleting.Contains(w.Id) && WorkspaceFiles.IsInside(w.Root, root)))
+                throw new InvalidOperationException("This workspace is being deleted. Wait for deletion to finish.");
         }
     }
 

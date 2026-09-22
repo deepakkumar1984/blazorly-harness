@@ -15,9 +15,14 @@ public sealed class SkillsService(params string[] roots)
 {
     public IReadOnlyList<string> Roots { get; } = roots;
 
+    /// <summary>Skill discovery roots, in precedence order (first hit wins on name
+    /// collisions): the harness-native folder, the shared ~/.agents convention (the
+    /// same SKILL.md format other agent tools read, so one collection serves them all),
+    /// and a project-local folder.</summary>
     public static string[] DefaultRoots() =>
     [
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".blazorly", "skills"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agents", "skills"),
         Path.Combine(Environment.CurrentDirectory, ".blazorly", "skills"),
     ];
 

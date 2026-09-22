@@ -8,10 +8,12 @@
 @inject UiEventBroker Broker
 @inject UiInteractions Interactions
 @inject ConversationAssembler Assembler
+@inject RunSupervisor Runs
+@inject WorkspaceUiState WorkspaceUi
 @implements IDisposable
 
-<div class="session-view @(ShowTodos ? "with-todos" : "") @(ShowDelegations ? "with-delegations" : "") @(_terminalOpen ? "with-terminal" : "")">
-    @if (_permissionMenu || _ctxMenu)
+<div class="session-view @(ShowTodos ? "with-todos" : "") @(ShowDelegations ? "with-delegations" : "") @(DockOpen ? "with-dock" : "")">
+    @if (_permissionMenu || _ctxMenu || _runMenu)
     {
         <div class="menu-backdrop" @onclick="CloseMenus"></div>
     }
@@ -32,15 +34,55 @@
             </div>
             <div class="session-header-actions">
                 <div class="view-tabs" role="tablist" aria-label="Session view">
-                    <button class="@TabClass("chat")" role="tab" aria-selected="@(_view == "chat")" aria-label="Chat" data-tip="Chat view" @onclick='() => SwitchView("chat")'>
+                    <button class="@TabClass("chat")" role="tab" aria-selected="@(_view == "chat" ? "true" : "false")" aria-label="Chat" data-tip="Chat view" @onclick='() => SwitchView("chat")'>
                         <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3h11v7H9L5.5 13v-3H2.5V3z" /></svg>
                     </button>
-                    <button class="@TabClass("trajectory")" role="tab" aria-selected="@(_view == "trajectory")" aria-label="Trajectory" data-tip="Trajectory view" @onclick='() => SwitchView("trajectory")'>
+                    <button class="@TabClass("trajectory")" role="tab" aria-selected="@(_view == "trajectory" ? "true" : "false")" aria-label="Trajectory" data-tip="Trajectory view" @onclick='() => SwitchView("trajectory")'>
                         <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="3.5" cy="12.5" r="1.6" /><circle cx="12.5" cy="3.5" r="1.6" /><path d="M4.9 11.3 8 8.4h3.4V4.6" /></svg>
+                    </button>
+                    <button class="@TabClass("code")" role="tab" aria-selected="@(_view == "code" ? "true" : "false")" aria-label="Code" data-tip="@(DocsRoot is null ? "No workspace folder for this chat" : "Browse and edit files in this workspace")" @onclick='() => SwitchView("code")' disabled="@(DocsRoot is null)">
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.2 4.2 2.4 8l2.8 3.8" /><path d="M10.8 4.2 13.6 8l-2.8 3.8" /><path d="M9 2.8 7 13.2" /></svg>
                     </button>
                 </div>
                 <div class="session-toolbar">
-                    <button class="ghost dock-toggle @(_terminalOpen ? "on" : "")" aria-label="Terminal" data-tip="Run commands in a persistent shell for this session" @onclick="ToggleTerminal">
+                    <div class="chip-anchor">
+                        <button class="ghost dock-toggle @(_runMenu || (_runOpen && _dockTab == "run") ? "on" : "")" aria-label="Run" aria-haspopup="menu" data-tip="Run a command detected from this workspace — package.json, dotnet, python, and others" @onclick="ToggleRunMenu" disabled="@(DocsRoot is null)">
+                            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 2.8v10.4L13 8 4.2 2.8z" /></svg>
+                            @if (RunningCount > 0)
+                            {
+                                <span class="toolbar-count">@RunningCount</span>
+                            }
+                        </button>
+                        @if (_runMenu)
+                        {
+                            <div class="popover anchored run-menu" role="menu" aria-label="Run commands">
+                                <button type="button" class="popover-item" role="menuitem" @onclick="ShowRunPanel">View runs @(_runs.Count > 0 ? $"({_runs.Count})" : "")</button>
+                                @if (_runError is { Length: > 0 })
+                                {
+                                    <div class="popover-empty">@_runError</div>
+                                }
+                                else if (_runTargets.Count == 0)
+                                {
+                                    <div class="popover-empty">No package.json, project file, or entry point in this workspace.</div>
+                                }
+                                else
+                                {
+                                    @foreach (var group in _runTargets.GroupBy(c => c.Group))
+                                    {
+                                        <div class="popover-group">@group.Key</div>
+                                        @foreach (var command in group)
+                                        {
+                                            <button type="button" class="popover-item run-item" role="menuitem" @onclick="() => StartRun(command.Id)">
+                                                <span>@command.Label</span>
+                                                <span class="run-cmd">@command.Detail</span>
+                                            </button>
+                                        }
+                                    }
+                                }
+                            </div>
+                        }
+                    </div>
+                    <button class="ghost dock-toggle @(_terminalOpen ? "on" : "")" aria-label="Terminal" data-tip="Open the shell dock below the chat" @onclick="ToggleTerminal">
                         <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v9h-11z" /><path d="m5 6.2 2.2 2.2L5 10.6" /><path d="M9.3 10.6H12" /></svg>
                     </button>
                     <button class="ghost dock-toggle @(_statsOpen ? "on" : "")" aria-label="Stats" data-tip="Session statistics: turns, tokens, duration, tool usage" @onclick='() => _statsOpen = !_statsOpen'>
@@ -151,6 +193,7 @@
             </div>
         </div>
     </header>
+    <WorkspaceTabs OnActivate="ActivateWorkspaceTab" OnClose="CloseWorkspaceTab" OnCloseAll="CloseAllWorkspaceTabs" />
 
     @if (_statsOpen && _session is not null)
     {
@@ -176,6 +219,7 @@
 
     <div class="session-body">
     <div class="session-main">
+    <CodeWorkspace @ref="_codeWorkspace" Root="@DocsRoot" Visible="@(_view == "code" && _loadError is null)" Request="@WorkspaceUi.FileRequest" />
     @if (_loadError is not null)
     {
         <div class="empty">
@@ -186,6 +230,17 @@
                 <p style="margin:12px 0 0;color:var(--muted)">This session no longer exists on disk (its harness home was moved or deleted). Retry will not restore it.</p>
             }
             <a href="/" style="display:inline-block;margin-top:12px">Go to latest session →</a>
+        </div>
+    }
+    else if (_view == "empty")
+    {
+        <div class="code-placeholder workspace-tabs-empty">
+            <h2>@WorkspaceLabel</h2>
+            <p>Open a chat or a file from the sidebar. Your chat history stays available there.</p>
+            <div class="workspace-empty-actions">
+                <button class="ghost" @onclick="WorkspaceUi.ShowChats">Browse chats</button>
+                <button class="ghost" @onclick="WorkspaceUi.ShowFiles">Browse files</button>
+            </div>
         </div>
     }
     else if (_view == "trajectory" && _session is not null)
@@ -274,7 +329,7 @@
     }
     else
     {
-        <div class="transcript" @ref="_transcript">
+        <div class="transcript" hidden="@(_view != "chat")" @ref="_transcript">
             @if (_snapshot is null)
             {
                 <div class="empty">Loading…</div>
@@ -494,30 +549,6 @@
         }
     }
 
-    @if (_terminalOpen)
-    {
-        <div class="terminal-resize" title="Drag to resize the terminal" @ref="_terminalResizeHandle"></div>
-        <section class="terminal-drawer" aria-label="Session terminal" @ref="_terminalDrawer">
-            <div class="terminal-head">
-                <span class="terminal-title">&gt;_ shell · @WorkspaceLabel</span>
-                <span class="terminal-actions">
-                    <button class="link" title="Interrupt the running command (SIGINT)" @onclick="TerminalInterrupt">Ctrl+C</button>
-                    <button class="link" @onclick="TerminalClearView">clear</button>
-                    <button class="link danger" title="Kill the shell; Terminal reopens a fresh one" @onclick="TerminalKillShell">kill shell</button>
-                    <button class="icon terminal-close" title="Close terminal" aria-label="Close terminal" @onclick="ToggleTerminal">✕</button>
-                </span>
-            </div>
-            <pre class="terminal-output" @ref="_terminalOut">@(_terminalOutput.Length > 0 ? _terminalOutput : "(empty shell — type a command below)")</pre>
-            <div class="terminal-input-row">
-                <span class="terminal-prompt">$</span>
-                <input class="terminal-input" value="@_terminalInput"
-                       @oninput="OnTerminalInput"
-                       @onkeydown="OnTerminalKey"
-                       placeholder="type a command… (Enter runs, ↑ recalls)"
-                       spellcheck="false" />
-            </div>
-        </section>
-    }
     </div>
 
     @if (ShowTodos)
@@ -574,10 +605,31 @@
     }
     </div>
 
-    <footer class="composer">
+    <footer class="composer" hidden="@(_view is "code" or "empty" || _sessionLoading || _loadError is not null)" aria-label="Chat message" data-session-id="@(_sessionLoading ? null : _loadedSessionId)">
         <div class="command-menu" style="display:none" @ref="_slashMenu"></div>
         <div class="command-menu mention-menu" style="display:none" @ref="_mentionMenu"></div>
+        @if (_pendingFiles.Count > 0)
+        {
+            <div class="file-chips">
+                @foreach (var f in _pendingFiles)
+                {
+                    <span class="file-chip" title="@f.FileName — click to remove" @onclick="() => RemoveFile(f.Id)">
+                        <span class="file-chip-icon">@FileChipIcon(f.Kind)</span>
+                        <span class="file-chip-label">@f.FileName</span>
+                        <span class="file-chip-remove">✕</span>
+                    </span>
+                }
+            </div>
+        }
         <div class="composer-bar">
+            <span class="composer-clip">
+                <input type="file" class="clip-input"
+                       @ref="_clipInput" @onchange="OnClipInput" />
+                <button class="ghost" title="Attach a file — screenshot, PDF, document, or text (paste and drop also work)"
+                        aria-label="Attach file" @onclick="OpenClipInput">
+                    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5v4.2h4.2M9.5 2.5H3.8v11.2h8.4V6.7L9.5 2.5z"/></svg>
+                </button>
+            </span>
             <span class="composer-cwd" title="@(_session?.Header.Cwd)">@WorkspaceLabel</span>
             <div class="composer-input">
                 <textarea
@@ -591,17 +643,86 @@
             <div class="composer-actions">
                 @if (_running)
                 {
-                    <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">Queue<span class="send-kbd"> (⏎)</span></button>
-                    <button class="ghost" disabled="@(_draft.Length == 0)" @onclick="SendSteer">Steer</button>
+                    <button class="primary" disabled="@(!CanSend)" @onclick="SendQueue">Queue<span class="send-kbd"> (⏎)</span></button>
+                    <button class="ghost" disabled="@(!CanSend)" @onclick="SendSteer">Steer</button>
                     <button class="danger" @onclick="CancelTurn">Stop</button>
                 }
                 else
                 {
-                    <button class="primary" disabled="@(_draft.Length == 0)" @onclick="SendQueue">@(_draft.StartsWith('/') ? "Run" : "Send")<span class="send-kbd"> (⏎)</span></button>
+                    <button class="primary" disabled="@(!CanSend)" @onclick="SendQueue">@(_draft.StartsWith('/') ? "Run" : (_draft.Length == 0 && _pendingFiles.Count > 0 ? "Send file" : "Send"))<span class="send-kbd"> (⏎)</span></button>
                 }
             </div>
         </div>
     </footer>
+
+    @if (DockOpen)
+    {
+        <div class="terminal-resize" title="Drag to resize the panel below the chat" @ref="_terminalResizeHandle"></div>
+        <section class="bottom-dock terminal-drawer" aria-label="Terminal and run panel" @ref="_terminalDrawer">
+            <div class="dock-head terminal-head">
+                <div class="dock-tabs" role="tablist" aria-label="Bottom panel">
+                    <button type="button" class="dock-tab @(_dockTab == "terminal" ? "on" : "")" role="tab" aria-selected="@(_dockTab == "terminal" ? "true" : "false")" @onclick='() => SelectDock("terminal")'>Terminal</button>
+                    <button type="button" class="dock-tab @(_dockTab == "run" ? "on" : "")" role="tab" aria-selected="@(_dockTab == "run" ? "true" : "false")" @onclick='() => SelectDock("run")'>
+                        Run @if (RunningCount > 0) { <span class="toolbar-count">@RunningCount</span> }
+                    </button>
+                </div>
+                <span class="terminal-actions">
+                    @if (_dockTab == "terminal" && _terminalId is not null)
+                    {
+                        <button class="link" title="Interrupt the running command (SIGINT)" @onclick="TerminalInterrupt">Ctrl+C</button>
+                        <button class="link" @onclick="TerminalClearView">clear</button>
+                        <button class="link danger" title="Kill the shell; Terminal reopens a fresh one" @onclick="TerminalKillShell">kill shell</button>
+                    }
+                    else if (_dockTab == "run" && SelectedRun is { Running: true } running)
+                    {
+                        <button class="link danger" title="Stop this run and its child processes" @onclick="() => StopRun(running.Id)">Stop</button>
+                    }
+                    <button class="icon terminal-close" title="Hide this panel" aria-label="Hide terminal and run panel" @onclick="CloseDock">✕</button>
+                </span>
+            </div>
+            @if (_dockTab == "run")
+            {
+                <div class="run-dock">
+                    <div class="run-list" aria-label="Tracked runs">
+                        @if (_runs.Count == 0)
+                        {
+                            <div class="run-empty">No runs yet. Use Run in the header to start one.</div>
+                        }
+                        @foreach (var run in _runs)
+                        {
+                            <button type="button" class="run-row @(_selectedRunId == run.Id ? "active" : "") @(run.Running ? "running" : "")" @onclick="() => _selectedRunId = run.Id">
+                                <span class="run-row-label">@run.Label</span>
+                                <span class="run-row-state">@(run.Running ? (run.StopRequested ? "stopping" : "running") : run.StopRequested ? "stopped" : run.ExitCode is { } code ? $"exited {code}" : "finished")</span>
+                            </button>
+                        }
+                    </div>
+                    <div class="run-details">
+                        @if (SelectedRun is { } selected)
+                        {
+                            <div class="run-detail-head"><code>@selected.CommandLine</code><span title="@selected.WorkingDirectory">@selected.WorkingDirectory</span></div>
+                        }
+                        <pre class="terminal-output run-output">@(SelectedRun?.Output is { Length: > 0 } output ? output : "Output from the selected command appears here.")</pre>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <pre class="terminal-output" @ref="_terminalOut">@(_terminalOutput.Length > 0 ? _terminalOutput : "Shell ready. Enter a command below.")</pre>
+                @if (_terminalId is not null)
+                {
+                    <div class="terminal-input-row">
+                        <span class="terminal-prompt">$</span>
+                        <input class="terminal-input" value="@_terminalInput"
+                               @oninput="OnTerminalInput"
+                               @onkeydown="OnTerminalKey"
+                               placeholder="shell command — Enter runs, ↑ recalls"
+                               aria-label="Shell command"
+                               spellcheck="false" />
+                    </div>
+                }
+            }
+        </section>
+    }
 </div>
 
 @if (_modelMenu)
@@ -750,7 +871,7 @@
     private Core.Instructions.DocsInitService.InitPreview? _docsPreview;
     private string? _docsResult;
     private bool _docsGenerating;
-    private string? DocsRoot => string.IsNullOrWhiteSpace(_session?.Header.Cwd) ? null : _session.Header.Cwd;
+    private string? DocsRoot => _session is null ? null : Facade.WorkspaceOf(_session)?.Root;
     private string _modelSearch = "";
     private bool _focusModelSearch;
     private ElementReference _modelSearchInput;
@@ -783,6 +904,11 @@
     private string? _copiedKey;
     private System.Timers.Timer? _copyFlash;
 
+    // ---- pending file attachments (paste, drop, or the paperclip button) ----
+    private readonly List<(string Id, string FileName, string Kind)> _pendingFiles = [];
+    private ElementReference _clipInput;
+    private Microsoft.JSInterop.DotNetObjectReference<Session>? _imageRef;
+
     private bool ShowTodos => _view == "chat" && !_todosCollapsed && (_snapshot?.Todos.Count ?? 0) > 0;
 
     /// <summary>Delegated agents (subagents, teammates, swarm workers) run inside THIS chat:
@@ -790,6 +916,25 @@
     private bool ShowDelegations => _view == "chat" && !_delegationsCollapsed && (_snapshot?.Delegations.Count ?? 0) > 0;
 
     // ---- ui terminal state ----
+    private bool DockOpen => _terminalOpen || _runOpen;
+    private int RunningCount => _runs.Count(r => r.Running);
+    private RunSnapshot? SelectedRun => _runs.FirstOrDefault(r => r.Id == _selectedRunId) ?? _runs.FirstOrDefault();
+
+    private bool _runMenu;
+    private bool _disposed;
+    private long _fileRequestVersion;
+    private long _chatRequestVersion;
+    private long _tabSelectionVersion;
+    private CodeWorkspace? _codeWorkspace;
+    private readonly Dictionary<string, (string Text, (string Id, string FileName, string Kind)[] Files)> _chatDrafts = new();
+    private bool _runOpen;
+    private string _dockTab = "terminal";
+    private string? _runError;
+    private string? _selectedRunId;
+    private List<ProjectCommand> _runTargets = [];
+    private List<RunSnapshot> _runs = [];
+    private System.Timers.Timer? _runPoll;
+
     private bool _terminalOpen;
     private string? _terminalId;
     private string _terminalOutput = "";
@@ -818,12 +963,15 @@
     private string SandboxTitle => SandboxDegraded
         ? $"'{EffectiveSandbox}' cannot confine spawned commands on this host (no Linux Landlock); bash/run_code execute unconfined while file writes stay inside the workspace. Pick a preset to override — read-only/workspace-write fail closed for commands here."
         : "Switch permission preset (/permission)";
-    private string WorkspaceLabel => _session is not null && Facade.WorkspaceOf(_session) is { } ws ? ws.Name : Path.GetFileName(_session?.Header.Cwd ?? "");
+    private string WorkspaceLabel => _session is not null && Facade.WorkspaceOf(_session) is { } ws ? ws.Name : "Unfiled";
     private string Placeholder => _running
         ? "Queue for the next turn (⏎) or type and hit Steer…"
-        : "Describe a task… or type / for commands";
+        : "Describe a task… paste or drop files, @reference paths, or type / for commands";
 
     private string? _loadedSessionId;
+    private string? _boundComposerSessionId;
+    private bool _sessionLoading;
+    private long _sessionLoadVersion;
     private bool _pendingScroll;
     private bool _pendingScrollForce;
     private int? _lastSurfacedFailedTurn;
@@ -852,6 +1000,7 @@
 
     protected override Task OnInitializedAsync()
     {
+        WorkspaceUi.Changed += OnWorkspaceUiChanged;
         _coalesce = new System.Timers.Timer(120);
         _coalesce.Elapsed += (_, _) =>
         {
@@ -912,6 +1061,10 @@
 
     private async Task LoadSessionAsync()
     {
+        if (!_sessionLoading && _loadedSessionId is { } previous)
+            _chatDrafts[previous] = (_draft, _pendingFiles.ToArray());
+        _sessionLoading = true;
+        var loadVersion = ++_sessionLoadVersion;
         _loadedSessionId = SessionId;
         var sessionId = SessionId;
         _subscription?.Dispose();
@@ -920,11 +1073,15 @@
         _sessionMissing = false;
         try
         {
-            _session = await Facade.OpenSessionAsync(sessionId);
+            var session = await Facade.OpenSessionAsync(sessionId);
+            if (_disposed || loadVersion != _sessionLoadVersion) return;
+            _session = session;
             _agent = Facade.EnsureAgent(_session);
         }
         catch (Blazorly.Harness.Kernel.HarnessException ex) when (ex.Code == "SESSION_NOT_FOUND")
         {
+            if (_disposed || loadVersion != _sessionLoadVersion) return;
+            _sessionLoading = false;
             _session = null;
             _agent = null;
             _snapshot = null;
@@ -936,6 +1093,8 @@
         }
         catch (Exception ex)
         {
+            if (_disposed || loadVersion != _sessionLoadVersion) return;
+            _sessionLoading = false;
             _session = null;
             _agent = null;
             _snapshot = null;
@@ -944,10 +1103,15 @@
             StateHasChanged();
             return;
         }
+        _sessionLoading = false;
         _folder = Assembler.CreateFolder(_session);
+        if (Facade.WorkspaceOf(_session) is { } workspace && Facade.Harness.Workspaces.Default().Id != workspace.Id)
+            Facade.Harness.Workspaces.SetDefault(workspace.Id);
+        OpenLoadedChat();
+        ApplyRequestedFile();
         _snapshot = _folder.Update(_agent);
         _running = _agent.Status == "running";
-        _draft = "";
+        _draft = _chatDrafts.TryGetValue(sessionId, out var savedDraft) ? savedDraft.Text : "";
         _modelMenu = false;
         _permissionMenu = false;
         _ctxMenu = false;
@@ -960,6 +1124,8 @@
         _rawEvents = new RawTrajectoryPage();
         _pendingApproval = null;
         _pendingQuestion = null;
+        _pendingFiles.Clear();
+        if (savedDraft.Files is not null) _pendingFiles.AddRange(savedDraft.Files);
         _transcriptTake = TranscriptInitialTake;
         _lastSurfacedFailedTurn = _session is null ? null : ConversationAssembler.LatestFailedTurn(_session);
         _dirty = false;
@@ -973,6 +1139,13 @@
         _terminalDead = false;
         _terminalHistory.Clear();
         _terminalHistoryAt = 0;
+        _runMenu = false;
+        _runOpen = false;
+        _dockTab = "terminal";
+        _selectedRunId = null;
+        _runs = [];
+        SyncRuns();
+        EnsureRunPoll();
 
         _subscription = Broker.Subscribe(frame =>
         {
@@ -1007,10 +1180,10 @@
             await TryJs("blazorly.slash.attach", _composerTa, _slashMenu,
                 SlashCommands.Select(c => new { name = c.Name, args = c.Args, description = c.Description }),
                 _slashRef);
-            await TryJs("blazorly.mention.attach", _composerTa, _mentionMenu, SessionId);
             _topGrowRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
             await TryJs("blazorly.attachTopGrow", _transcript, _topGrowRef);
             await TryJs("blazorly.composer.attach", _composerTa);
+            _imageRef = Microsoft.JSInterop.DotNetObjectReference.Create(this);
             // Phones: keep the transcript as the primary surface. Tasks stay one tap away.
             try
             {
@@ -1024,16 +1197,26 @@
             catch (JSDisconnectedException) { }
             catch (JSException) { }
         }
+        if (!_sessionLoading && _loadError is null && _loadedSessionId is { } composerSession
+            && _boundComposerSessionId != composerSession)
+        {
+            _boundComposerSessionId = composerSession;
+            await TryJs("blazorly.mention.attach", _composerTa, _mentionMenu, composerSession);
+            await TryJs("blazorly.composer.attachImagePaste", _composerTa, _imageRef, _clipInput, composerSession);
+        }
         if (_pendingScroll)
         {
             _pendingScroll = false;
             if (_pendingScrollForce) await TryJs("blazorly.settleBottom", _transcript);
             else await ScrollToBottom();
         }
+        if (_view == "chat" && _topGrowRef is not null)
+            await TryJs("blazorly.attachTopGrow", _transcript, _topGrowRef);
+
         // Programmatic draft changes (send clears it, slash completion fills it) fire
         // no DOM input event — re-measure so the composer height tracks the text.
         await TryJs("blazorly.composer.grow", _composerTa);
-        if (_permissionMenu || _ctxMenu)
+        if (_permissionMenu || _ctxMenu || _runMenu)
         {
             // keep an open dropdown inside the viewport (chips near the right edge on
             // narrow screens would otherwise push the menu off-screen)
@@ -1056,13 +1239,13 @@
             catch (JSDisconnectedException) { }
             catch (JSException) { }
         }
-        if (_terminalOpen && !_terminalResizeAttached)
+        if (DockOpen && !_terminalResizeAttached)
         {
             _terminalResizeAttached = true;
             await TryJs("blazorly.attachTerminalResize", _terminalResizeHandle, _terminalDrawer,
-                140 /* min px */, 640 /* max px */);
+                160 /* min px */, 640 /* max px */, true);
         }
-        if (!_terminalOpen) _terminalResizeAttached = false;
+        if (!DockOpen) _terminalResizeAttached = false;
     }
 
     /// <summary>
@@ -1138,29 +1321,84 @@
 
     private async Task SendQueue()
     {
+        if (_sessionLoading || _loadError is not null) return;
         var text = _draft.Trim();
-        if (text.Length == 0) return;
+        if (text.Length == 0 && _pendingFiles.Count == 0) return;
         if (text.StartsWith('/'))
         {
             _draft = "";
+            _pendingFiles.Clear();
             Facade.TryCommand(SessionId, text);
         }
         else
         {
             _draft = "";
-            await Facade.PromptAsync(SessionId, text, "queue");
+            var ids = _pendingFiles.Select(f => f.Id).ToArray();
+            _pendingFiles.Clear();
+            await Facade.PromptAsync(SessionId, text.Length > 0 ? text : "Attached.", "queue", ids.Length > 0 ? ids : null);
         }
         _dirty = true;
     }
 
     private async Task SendSteer()
     {
+        if (_sessionLoading || _loadError is not null) return;
         var text = _draft.Trim();
-        if (text.Length == 0) return;
+        if (text.Length == 0 && _pendingFiles.Count == 0) return;
         _draft = "";
-        await Facade.PromptAsync(SessionId, text, "steer");
+        var ids = _pendingFiles.Select(f => f.Id).ToArray();
+        _pendingFiles.Clear();
+        await Facade.PromptAsync(SessionId, text.Length > 0 ? text : "Attached.", "steer", ids.Length > 0 ? ids : null);
         _dirty = true;
     }
+
+    // ---- image attachments (paste, drop, paperclip) ----
+
+    /// <summary>Called from JS after a paste/drop/paperclip file has been uploaded over
+    /// HTTP. Only the resulting id/name/kind strings cross the circuit — the bytes went
+    /// through the REST endpoint, because interop messages cap at 32KB.</summary>
+    [JSInvokable]
+    public Task OnFileUploaded(string sessionId, string id, string fileName, string kind)
+    {
+        if (_disposed) return Task.CompletedTask;
+        if (!_sessionLoading && sessionId == _loadedSessionId)
+            _pendingFiles.Add((id, fileName, kind));
+        else
+        {
+            // Uploads may finish after the user selects another chat. Keep each
+            // attachment with the session that owned the upload when it started.
+            _chatDrafts.TryGetValue(sessionId, out var draft);
+            _chatDrafts[sessionId] = (draft.Text ?? "", [.. draft.Files ?? [], (id, fileName, kind)]);
+        }
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private void OpenClipInput()
+    {
+        try { _ = _clipInput; /* noop: Blazor doesn't expose click() on ElementReference */ }
+        catch { }
+        // The hidden file input is triggered via JS interop.
+        _ = TryJs("blazorly.clickElement", _clipInput);
+    }
+
+    private void OnClipInput(ChangeEventArgs args)
+    {
+        // The JS change handler reads the file and calls OnImagePasted — this Blazor
+        // event fires too but carries no file data in server-side rendering.
+    }
+
+    private void RemoveFile(string id)
+    {
+        _pendingFiles.RemoveAll(f => f.Id == id);
+    }
+
+    private static string FileChipIcon(string kind) => kind switch
+    {
+        "image" => "🖼",
+        "text" => "📄",
+        "document" => "📑",
+        _ => "📎",
+    };
 
     /// <summary>Slash-command vocabulary for the JS autocomplete (name, arg hint, description).</summary>
     internal static readonly (string Name, string Args, string Description)[] SlashCommands =
@@ -1201,28 +1439,135 @@
 
     // ---- ui terminal ----
 
-    private async Task ToggleTerminal()
+    private void ToggleRunMenu()
     {
-        if (_terminalOpen)
+        _runMenu = !_runMenu;
+        _permissionMenu = false;
+        _ctxMenu = false;
+        _modelMenu = false;
+        if (!_runMenu) return;
+        _runError = null;
+        try
         {
-            _terminalOpen = false;
-            _terminalPoll?.Stop();
+            _runTargets = DocsRoot is null ? [] : [.. ProjectCommandDiscovery.Discover(DocsRoot)];
+        }
+        catch (Exception ex)
+        {
+            _runTargets = [];
+            _runError = ex.Message;
+        }
+    }
+
+    private void StartRun(string id)
+    {
+        _runMenu = false;
+        if (DocsRoot is null) return;
+        try
+        {
+            var command = ProjectCommandDiscovery.Find(DocsRoot, id)
+                ?? throw new InvalidOperationException("That command is no longer in the workspace. Refresh the Run menu.");
+            var started = Runs.Start(command);
+            _selectedRunId = started.Id;
+            ShowRunPanel();
+        }
+        catch (Exception ex)
+        {
+            _runError = ex.Message;
+            _runMenu = true;
+        }
+    }
+
+    private void StopRun(string id)
+    {
+        try { Runs.Stop(id); }
+        catch (Exception ex) { _runError = ex.Message; _runMenu = true; }
+        SyncRuns();
+    }
+
+    private void ShowRunPanel()
+    {
+        _runMenu = false;
+        _terminalOpen = false;
+        _terminalPoll?.Stop();
+        _runOpen = true;
+        _dockTab = "run";
+        SyncRuns();
+    }
+
+    private async Task SelectDock(string tab)
+    {
+        if (tab == "terminal" && !_terminalOpen) await ToggleTerminal();
+        if (tab == "run") ShowRunPanel();
+    }
+
+    private void CloseDock()
+    {
+        _terminalOpen = false;
+        _runOpen = false;
+        _terminalPoll?.Stop();
+    }
+
+    private void SyncRuns()
+    {
+        _runs = DocsRoot is null ? [] : [.. Runs.ForRoot(DocsRoot)];
+        if (_selectedRunId is null || _runs.All(r => r.Id != _selectedRunId))
+            _selectedRunId = _runs.FirstOrDefault()?.Id;
+    }
+
+    private void EnsureRunPoll()
+    {
+        if (_runPoll is not null)
+        {
+            _runPoll.Start();
             return;
         }
+        _runPoll = new System.Timers.Timer(750);
+        _runPoll.Elapsed += (_, _) => _ = InvokeAsync(() =>
+        {
+            if (_disposed) return;
+            var before = SelectedRun?.Output;
+            var wasRunning = _runs.Count(r => r.Running);
+            var previousCount = _runs.Count;
+            var previousExit = SelectedRun?.ExitCode;
+            SyncRuns();
+            var running = _runs.Count(r => r.Running);
+            if (running != wasRunning || previousCount != _runs.Count || previousExit != SelectedRun?.ExitCode
+                || (DockOpen && _dockTab == "run" && SelectedRun?.Output != before)) StateHasChanged();
+        });
+        _runPoll.Start();
+    }
+
+    private async Task ToggleTerminal()
+    {
+        if (_terminalOpen && _dockTab == "terminal")
+        {
+            CloseDock();
+            return;
+        }
+        _dockTab = "terminal";
+        _runOpen = false;
+        if (_terminalOpen) return;
         try
         {
             _terminalId = Facade.UiTerminalOpen(SessionId);
             _terminalDead = false;
             _terminalOutput = Facade.UiTerminalRead(SessionId, _terminalId);
             _terminalOpen = true;
-            _terminalPoll ??= new System.Timers.Timer(400);
-            _terminalPoll.Elapsed += (_, _) => _ = InvokeAsync(TerminalPollAsync);
+            if (_terminalPoll is null)
+            {
+                _terminalPoll = new System.Timers.Timer(400);
+                _terminalPoll.Elapsed += (_, _) => _ = InvokeAsync(TerminalPollAsync);
+            }
             _terminalPoll.Start();
             await ScrollTerminal();
         }
         catch (Exception ex)
         {
-            _terminalOutput = $"cannot open a shell here: {ex.Message}";
+            _terminalId = null;
+            _terminalPoll?.Stop();
+            _terminalOutput = OperatingSystem.IsWindows()
+                ? "The interactive terminal is not available on Windows yet. Use Run in the header to start and stop project commands."
+                : $"Cannot open a shell here: {ex.Message}";
             _terminalOpen = true;
         }
     }
@@ -1453,6 +1798,7 @@
         _permissionMenu = false;
         _ctxMenu = false;
         _docsOpen = false;
+        _runMenu = false;
     }
 
     private void SelectModel(string provider, string model)
@@ -1494,7 +1840,85 @@
 
     private void ReloadPage() => Navigation.NavigateTo($"/session/{SessionId}", forceLoad: true);
 
-    private void SwitchView(string view) => _view = view;
+    private void SwitchView(string view)
+    {
+        if (view is "chat" or "trajectory") OpenLoadedChat();
+        if (view == "code")
+        {
+            WorkspaceUi.ShowFiles();
+            var file = WorkspaceUi.Tabs.LastOrDefault(t => t.RelativePath == WorkspaceUi.ActiveFile)
+                ?? WorkspaceUi.Tabs.LastOrDefault(t => !t.IsChat);
+            if (file?.RelativePath is { } path && DocsRoot is { } root) WorkspaceUi.OpenFile(root, path);
+        }
+        _view = view;
+        if (view == "chat") { _pendingScroll = true; _pendingScrollForce = false; }
+    }
+
+    private void OnWorkspaceUiChanged() => _ = InvokeAsync(() =>
+    {
+        if (_disposed) return;
+        if (_sessionLoading) { StateHasChanged(); return; }
+        if (WorkspaceUi.ChatRequest is { } chat && chat.Version != _chatRequestVersion && chat.SessionId == _loadedSessionId)
+        {
+            _chatRequestVersion = chat.Version;
+            OpenLoadedChat();
+        }
+        ApplyRequestedFile();
+        if (_tabSelectionVersion != WorkspaceUi.SelectionVersion)
+        {
+            _tabSelectionVersion = WorkspaceUi.SelectionVersion;
+            if (WorkspaceUi.ActiveTab is { SessionId: { } id })
+            {
+                if (id == _loadedSessionId)
+                {
+                    _view = "chat";
+                    _pendingScroll = true;
+                }
+                else Navigation.NavigateTo($"/session/{id}");
+            }
+            else _view = WorkspaceUi.ActiveTab is null ? "empty" : "code";
+        }
+        StateHasChanged();
+    });
+
+    private void OpenLoadedChat()
+    {
+        if (_session is null || _sessionLoading) return;
+        WorkspaceUi.OpenChat(DocsRoot, _session.Id, SessionFacade.DeriveTitle(_session));
+        _tabSelectionVersion = WorkspaceUi.SelectionVersion;
+        _view = "chat";
+    }
+
+    private void ActivateWorkspaceTab(WorkspaceTab tab)
+    {
+        if (tab.SessionId is { } id)
+        {
+            WorkspaceUi.RequestChat(id);
+            if (id != _loadedSessionId) Navigation.NavigateTo($"/session/{id}");
+        }
+        else if (tab.RelativePath is { } path && DocsRoot is { } root) WorkspaceUi.OpenFile(root, path);
+    }
+
+    private async Task CloseWorkspaceTab(WorkspaceTab tab)
+    {
+        if (tab.IsChat) WorkspaceUi.CloseTab(tab.Key);
+        else if (_codeWorkspace is not null && tab.RelativePath is { } path) await _codeWorkspace.AskCloseTab(path);
+    }
+
+    private async Task CloseAllWorkspaceTabs()
+    {
+        if (_codeWorkspace is not null) await _codeWorkspace.AskCloseAll();
+        else WorkspaceUi.CloseAllTabs();
+    }
+
+    private bool ApplyRequestedFile()
+    {
+        if (WorkspaceUi.FileRequest is not { } request || request.Version == _fileRequestVersion
+            || !WorkspaceFiles.SameRoot(request.Root, DocsRoot)) return false;
+        _fileRequestVersion = request.Version;
+        _view = "code";
+        return true;
+    }
 
     private Task CopyNode(ConversationNode node)
     {
@@ -1572,6 +1996,8 @@
         _questionAnswers.Clear();
         _pendingChanged = true;
     }
+
+    private bool CanSend => !_sessionLoading && _loadError is null && (_draft.Length > 0 || _pendingFiles.Count > 0);
 
     private bool CanFork => !_running && _session?.LatestTurnEndSeq() is not null;
 
@@ -1717,11 +2143,15 @@
 
     public void Dispose()
     {
+        _disposed = true;
+        WorkspaceUi.Changed -= OnWorkspaceUiChanged;
         _coalesce?.Dispose();
         _copyFlash?.Dispose();
         _subscription?.Dispose();
         _terminalPoll?.Dispose();
+        _runPoll?.Dispose();
         _slashRef?.Dispose();
         _topGrowRef?.Dispose();
+        _imageRef?.Dispose();
     }
 }

@@ -754,6 +754,7 @@ public class SessionReattachTests : BootstrapperTestBase
         await first.StartAsync(CancellationToken.None);
         try
         {
+            first.Workspaces.Ensure(Home);
             var facade = new SessionFacade(first, new UiEventBroker());
             var session = facade.CreateSession();
             sessionId = session.Id;

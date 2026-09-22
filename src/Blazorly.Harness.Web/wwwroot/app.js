@@ -20,6 +20,24 @@ function blazorlyTrackPin(element) {
 }
 
 window.blazorly = {
+    focusById: function (id) { document.getElementById(id)?.focus(); },
+    revealWorkspaceTab: function (list) {
+        if (!list) return;
+        const reveal = () => {
+            if (!list.isConnected) { list._tabResize?.disconnect(); return; }
+            const active = list.querySelector(".code-tab.active");
+            if (!active) return;
+            const tabBounds = active.getBoundingClientRect();
+            const listBounds = list.getBoundingClientRect();
+            if (tabBounds.left < listBounds.left) list.scrollLeft += tabBounds.left - listBounds.left;
+            else if (tabBounds.right > listBounds.right) list.scrollLeft += tabBounds.right - listBounds.right;
+        };
+        if (!list._tabResize) {
+            list._tabResize = new ResizeObserver(reveal);
+            list._tabResize.observe(list);
+        }
+        reveal();
+    },
     scrollBottom: function (element, force) {
         if (!element) return;
         blazorlyTrackPin(element);
@@ -101,8 +119,71 @@ window.blazorly = {
             if (overflow > 0) el.style.transform = "translateX(" + (-overflow) + "px)";
         });
     },
-    // Sidebar workspace-group collapse state, persisted across reloads. Safe no-ops when
-    // localStorage is unavailable (private mode, embedded webviews).
+    // In-app editor: the textarea owns the text so keystrokes stay in the page.
+    // Blazor only hears dirty/save, and reads the value back when saving or switching tabs.
+    editor: {
+        bind: function (ta, gutter, dotNetRef, relativePath) {
+            if (!ta) return;
+            ta.editorState = { dotNetRef, relativePath, dirty: false };
+            if (ta.dataset.editorBound) return;
+            ta.dataset.editorBound = "1";
+            const notify = method => {
+                const state = ta.editorState;
+                state.dotNetRef?.invokeMethodAsync(method, state.relativePath).catch(() => {});
+            };
+            const paint = () => {
+                if (!gutter) return;
+                const n = Math.max(1, ta.value.split("\n").length);
+                if (gutter.dataset.n !== String(n)) {
+                    gutter.dataset.n = String(n);
+                    let text = "";
+                    for (let i = 1; i <= n; i++) text += i + "\n";
+                    gutter.textContent = text;
+                }
+                gutter.scrollTop = ta.scrollTop;
+            };
+            ta.addEventListener("scroll", paint);
+            ta.addEventListener("editor-sync", paint);
+            ta.addEventListener("input", () => {
+                paint();
+                if (!ta.editorState.dirty) {
+                    ta.editorState.dirty = true;
+                    notify("MarkDirty");
+                }
+            });
+            ta.addEventListener("keydown", e => {
+                if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+                    e.preventDefault();
+                    notify("SaveFromEditor");
+                    return;
+                }
+                if (e.key !== "Tab" || e.ctrlKey || e.metaKey || e.altKey) return;
+                e.preventDefault();
+                const start = ta.selectionStart, end = ta.selectionEnd;
+                ta.setRangeText("  ", start, end, "end");
+                ta.dispatchEvent(new Event("input", { bubbles: true }));
+            });
+            paint();
+        },
+        setText: function (ta, text, dirty) {
+            if (!ta) return;
+            if (ta.value !== (text ?? "")) ta.value = text ?? "";
+            if (ta.editorState) ta.editorState.dirty = !!dirty;
+            ta.dispatchEvent(new Event("editor-sync"));
+        },
+        saved: function (ta, text) {
+            if (!ta) return false;
+            const unchanged = ta.value === text;
+            if (ta.editorState) ta.editorState.dirty = !unchanged;
+            return unchanged;
+        },
+        getText: function (ta) {
+            return ta ? ta.value : "";
+        },
+        repaint: function (ta) {
+            if (ta) ta.dispatchEvent(new Event("editor-sync"));
+        }
+    },
     sidebar: {
         loadCollapsed: function () {
             try { return JSON.parse(localStorage.getItem("blazorly.sidebar.collapsed") ?? "null"); }
@@ -139,10 +220,88 @@ window.blazorly = {
             });
             // Rewrap on viewport changes needs a fresh measure even with same-length text.
             window.addEventListener("resize", () => this.grow(ta, true));
-        }
+        },
+        /// Paste or drop any file (image, PDF, doc, text) anywhere in the app. Files
+        /// upload over HTTP to /api/session.uploadFile — NEVER through JS interop, whose
+        /// SignalR messages cap at 32KB and would silently drop every real screenshot.
+        /// Only the tiny result (id/name/kind strings) crosses the circuit afterward.
+        /// Paste is claimed ONLY when the clipboard carries a file item — plain text
+        /// pastes fall through untouched.
+        attachImagePaste: function (ta, dotnetRef, clipInput, sessionId) {
+            if (!ta || !dotnetRef) return;
+            // One document listener serves every chat. Read its current destination
+            // for each upload, then retain that destination until the upload finishes.
+            const holder = (this._holder ??= {});
+            holder.ref = dotnetRef;
+            holder.ta = ta;
+            holder.sessionId = sessionId;
+            holder.upload = (file) => {
+                if (!file || !holder.ta?.isConnected || !holder.ta.getClientRects().length) return false;
+                const destination = holder.sessionId;
+                const receiver = holder.ref;
+                const form = new FormData();
+                form.append("sessionId", destination);
+                form.append("file", file, file.name || "pasted-file");
+                fetch("/api/session.uploadFile", { method: "POST", body: form })
+                    .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(new Error("upload " + r.status + ": " + t))))
+                    .then(j => receiver.invokeMethodAsync("OnFileUploaded", destination, j.id, j.fileName, j.kind)
+                        .catch(() => { /* circuit gone mid-upload; nothing to do */ }))
+                    .catch(err => console.error("[blazorly] attach failed:", err));
+                return true;
+            };
+            const hasFileItem = (e) => {
+                const items = e.clipboardData?.items;
+                if (!items) return false;
+                for (let i = 0; i < items.length; i++) if (items[i].kind === "file") return true;
+                return false;
+            };
+            if (!this._pasteBound) {
+                this._pasteBound = true;
+                // Paste bubbles to document from wherever it lands (composer, transcript,
+                // anywhere), so one listener covers the focused AND the unfocused case.
+                document.addEventListener("paste", (e) => {
+                    if (!hasFileItem(e)) return; // text paste: let the browser handle it
+                    const items = e.clipboardData.items;
+                    let uploaded = false;
+                    for (let i = 0; i < items.length; i++) {
+                        if (items[i].kind === "file") uploaded = holder.upload(items[i].getAsFile()) || uploaded;
+                    }
+                    if (!uploaded) return;
+                    e.preventDefault();
+                    holder.ta.focus(); // the next action is typing a note or hitting Send
+                });
+            }
+            if (!this._dropBound) {
+                this._dropBound = true;
+                // Dropping a file on the page would otherwise navigate away from the app;
+                // claim the gesture and upload every dropped file instead.
+                document.addEventListener("dragover", (e) => {
+                    if (e.dataTransfer?.types?.includes("Files")) {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "copy";
+                    }
+                });
+                document.addEventListener("drop", (e) => {
+                    if (!e.dataTransfer?.files?.length) return;
+                    e.preventDefault();
+                    let uploaded = false;
+                    for (const file of e.dataTransfer.files) uploaded = holder.upload(file) || uploaded;
+                    if (uploaded) holder.ta.focus();
+                });
+            }
+            // File input (paperclip button)
+            if (clipInput && !clipInput.dataset.clipBound) {
+                clipInput.dataset.clipBound = "1";
+                clipInput.addEventListener("change", () => {
+                    const file = clipInput.files?.[0];
+                    if (holder.upload(file)) clipInput.value = "";
+                });
+            }
+        },
     },
     // Drag handle that resizes the terminal drawer between min and max pixels.
-    attachTerminalResize: function (handle, drawer, min, max) {
+    // upward: the dock sits under the chat, so dragging the handle up grows it.
+    attachTerminalResize: function (handle, drawer, min, max, upward) {
         if (!handle || !drawer || handle.dataset.bound) return;
         handle.dataset.bound = "1";
         let dragging = false, startY = 0, startH = 0;
@@ -156,7 +315,8 @@ window.blazorly = {
         });
         handle.addEventListener("pointermove", e => {
             if (!dragging) return;
-            const h = Math.min(max, Math.max(min, startH + (e.clientY - startY)));
+            const delta = upward ? (startY - e.clientY) : (e.clientY - startY);
+            const h = Math.min(max, Math.max(min, startH + delta));
             drawer.style.height = h + "px";
         });
         const stop = () => { dragging = false; document.body.style.cursor = ""; };
@@ -183,6 +343,9 @@ window.blazorly = {
     },
     viewportWidth: function () {
         return window.innerWidth || document.documentElement.clientWidth || 0;
+    },
+    clickElement: function (el) {
+        if (el && typeof el.click === "function") el.click();
     },
     getTheme: function () {
         return localStorage.getItem("blazorly.theme") || "dark";
@@ -289,6 +452,10 @@ window.blazorly = {
         attach: function (ta, menu, sessionId) {
             if (!ta || !menu) return;
             if (this._s && this._s.ta === ta) {
+                if (this._s.sessionId !== sessionId) {
+                    this._hide(this._s);
+                    this._s.cache.clear();
+                }
                 this._s.sessionId = sessionId;
                 return;
             }

@@ -13,7 +13,12 @@ Site: [blazorly.dev](https://blazorly.dev) — features, install, and guides.
 
 ## ✨ Features
 
-- **Chat-first web UI** — streaming agent turns, live tool cards, terminal drawer, task list, context meter, and a delegations panel tracking every sub-agent in flight
+- **Chat web UI** — streaming agent turns, live tool cards, tasks, context usage, and delegated agents. The resizable Terminal / Run panel sits below the chat composer
+- **Workspace navigation** — one sidebar with Chats / Files tabs, workspace switching, rename, and workspace-scoped search. Folders are registered explicitly; the harness installation is never added as a default workspace
+- **Workspace deletion** — confirmation shows the local folder and session count, then stops owned work and permanently deletes the folder, chats, child sessions, and attachments
+- **Open chats and files** — one tab strip with individual close buttons and Close all. Chat drafts, attachments, and file edits survive tab switches; closing a chat tab preserves its saved history. Close all offers save or discard for unsaved files
+- **Workspace editor** — text editing with Ctrl+S / Cmd+S, unsaved-change prompts, automatic file refresh, and protection against overwriting external edits. Supports UTF-8 files up to 512 KB; syntax highlighting and IntelliSense are still pending
+- **Run controls** — start and stop commands detected from package.json, plain Node entry points, .NET, Python, PHP, Go, Rust, and Make, including nested projects. Processes remain tracked across browser refreshes while the host runs; Windows job objects keep child processes under the host's control. The interactive Terminal still requires bash; native PowerShell/ConPTY support is pending
 - **Multi-agent orchestration** — spawn sub-agents, build teams, fan out parallel swarms with review gates; children run inside the parent chat with live progress
 - **Full workspace toolset** — bash, file read/write/edit, grep/glob, web search & fetch, LSP diagnostics, tmux awareness, session search, run_code, and any tool your MCP servers expose
 - **Durable sessions** — every turn, chat, and tool call is saved; sessions survive app restarts, browser closes, and cold-resume of sub-agents days later
@@ -90,6 +95,18 @@ Everything else (feature toggles, retry policy, MCP servers, System One, custom 
 ```
 
 ---
+
+## 🎯 Skills
+
+Skills are reusable instruction packs the model loads when your task matches. Drop a `SKILL.md` folder into any of these — the harness scans **all three**:
+
+| Location | Scope |
+|---|---|
+| `~/.blazorly/skills/` | global, harness-native (wins name collisions) |
+| `~/.agents/skills/` | the shared convention other agent tools read — one collection serves them all |
+| `<workspace>/.blazorly/skills/` | this project only |
+
+Each skill is a folder with a `SKILL.md`: `name` + `description` frontmatter, markdown body with the instructions. Descriptions ride in the system prompt every turn; when your brief matches one, the model calls the `skill` tool itself and follows the loaded instructions — you never invoke anything manually.
 
 ## 🤖 Multi-agent & delegation
 

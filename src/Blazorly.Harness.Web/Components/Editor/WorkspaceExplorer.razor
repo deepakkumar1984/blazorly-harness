@@ -1,0 +1,141 @@
+@implements IDisposable
+
+<div class="workspace-explorer" aria-label="Workspace files">
+    <div class="explorer-heading">
+        <span title="@Root">@FolderName</span>
+        <button type="button" class="icon" title="Refresh files" aria-label="Refresh files" @onclick="RefreshFiles">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13 5A5.5 5.5 0 1 0 13.3 10M13 1.5V5H9.5" /></svg>
+        </button>
+    </div>
+    @if (string.IsNullOrWhiteSpace(Root))
+    {
+        <div class="explorer-empty">Open a workspace to browse its files.</div>
+    }
+    else if (_error is not null)
+    {
+        <div class="explorer-empty" role="status">@_error</div>
+    }
+    else if (Children("").Count == 0)
+    {
+        <div class="explorer-empty">This folder is empty. Files you or the agent create will appear here.</div>
+    }
+    else
+    {
+        <nav class="code-tree-list" aria-label="Files and folders">@RenderNodes("")</nav>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Root { get; set; }
+    [Parameter] public string? SelectedPath { get; set; }
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback<string> OnOpenFile { get; set; }
+
+    private string? _root;
+    private string? _error;
+    private bool _disposed;
+    private System.Timers.Timer? _poll;
+    private readonly Dictionary<string, IReadOnlyList<WorkspaceNode>> _children = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _expanded = new(StringComparer.Ordinal) { "" };
+    private string FolderName => string.IsNullOrWhiteSpace(Root) ? "Files" : Path.GetFileName(Path.TrimEndingDirectorySeparator(Root)) is { Length: > 0 } name ? name : Root;
+
+    protected override void OnInitialized()
+    {
+        _poll = new System.Timers.Timer(2000);
+        _poll.Elapsed += (_, _) => _ = InvokeAsync(() =>
+        {
+            if (!_disposed && Visible && RefreshTree()) StateHasChanged();
+        });
+        _poll.Start();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (_root == Root) return;
+        _root = Root;
+        _children.Clear();
+        _expanded.Clear();
+        _expanded.Add("");
+        RefreshTree();
+    }
+
+    private void RefreshFiles() => RefreshTree();
+
+    private bool RefreshTree()
+    {
+        var previousError = _error;
+        _error = null;
+        var changed = false;
+        if (string.IsNullOrWhiteSpace(Root)) return previousError is not null;
+        foreach (var relative in _expanded.ToArray())
+        {
+            try
+            {
+                var nodes = WorkspaceFiles.List(Root, relative);
+                if (!_children.TryGetValue(relative, out var old) || !old.SequenceEqual(nodes))
+                {
+                    _children[relative] = nodes;
+                    changed = true;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+            {
+                if (relative.Length == 0) _error = ex.Message;
+                else
+                {
+                    _expanded.Remove(relative);
+                    _children.Remove(relative);
+                    changed = true;
+                }
+            }
+        }
+        return changed || previousError != _error;
+    }
+
+    private void Toggle(string relative)
+    {
+        if (!_expanded.Add(relative)) _expanded.Remove(relative);
+        else RefreshTree();
+    }
+
+    private IReadOnlyList<WorkspaceNode> Children(string relative) => _children.GetValueOrDefault(relative) ?? [];
+
+    private RenderFragment RenderNodes(string relative) => builder =>
+    {
+        foreach (var node in Children(relative))
+        {
+            var open = _expanded.Contains(node.RelativePath);
+            builder.OpenElement(0, "div");
+            builder.SetKey(node.RelativePath);
+            builder.OpenElement(1, "button");
+            builder.AddAttribute(2, "type", "button");
+            builder.AddAttribute(3, "class", "code-tree-item " + (node.IsDirectory ? "dir" : "file") + (node.RelativePath == SelectedPath ? " active" : ""));
+            builder.AddAttribute(4, "title", node.RelativePath);
+            if (node.IsDirectory) builder.AddAttribute(5, "aria-expanded", open ? "true" : "false");
+            builder.AddAttribute(6, "onclick", node.IsDirectory
+                ? EventCallback.Factory.Create(this, () => Toggle(node.RelativePath))
+                : EventCallback.Factory.Create(this, () => OnOpenFile.InvokeAsync(node.RelativePath)));
+            builder.OpenElement(7, "span");
+            builder.AddAttribute(8, "class", "file-tree-symbol");
+            builder.AddAttribute(9, "aria-hidden", "true");
+            builder.AddContent(10, node.IsDirectory ? (open ? "▾" : "▸") : "·");
+            builder.CloseElement();
+            builder.AddContent(11, node.Name);
+            builder.CloseElement();
+            if (node.IsDirectory && open)
+            {
+                builder.OpenElement(12, "div");
+                builder.AddAttribute(13, "class", "code-tree-children");
+                builder.AddContent(14, RenderNodes(node.RelativePath));
+                builder.CloseElement();
+            }
+            builder.CloseElement();
+        }
+    };
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _poll?.Dispose();
+    }
+}

@@ -1,6 +1,8 @@
 @using Blazorly.Harness.Web.Services
 @inject SessionFacade Facade
 @inject IJSRuntime Js
+@inject WorkspaceUiState WorkspaceUi
+@inject WorkspaceDeletionService WorkspaceDeletion
 @implements IDisposable
 
 <div class="app-shell">
@@ -8,20 +10,72 @@
         <button class="icon mobile-menu" title="Toggle navigation" aria-label="Toggle navigation" @onclick='() => _drawerOpen = !_drawerOpen'>☰</button>
         <span class="mobile-title">⚡ Blazorly Harness</span>
     </div>
-    <aside class="sidebar @(_drawerOpen ? "open" : "")">
+    <aside class="sidebar @(_drawerOpen ? "open" : "")" aria-label="Workspace navigation" @onkeydown="OnSidebarKey">
         <div class="brand">
             <span class="brand-mark">⚡</span>
             <span class="brand-name">Blazorly Harness</span>
         </div>
-        <div class="sidebar-search">
-            <input type="text" placeholder="Search sessions…" @bind="_search" @bind:event="oninput" @bind:after="SearchChanged" />
+        <div class="ws-switch">
+            <button type="button" class="ws-current" title="Switch workspace" aria-haspopup="menu" aria-expanded="@(_switcherOpen ? "true" : "false")" @onclick="ToggleSwitcher">
+                <span class="ws-kicker">Workspace</span>
+                <span class="ws-current-row">
+                    <span class="ws-current-name">@ActiveWorkspaceLabel</span>
+                    <span class="ws-caret" aria-hidden="true">▾</span>
+                </span>
+                <span class="ws-current-root" title="@ActiveWorkspaceRoot">@ActiveWorkspaceRoot</span>
+            </button>
+            @if (_switcherOpen)
+            {
+                <div class="menu-backdrop" @onclick="CloseSwitcher"></div>
+                <div class="popover ws-menu" role="menu" aria-label="Workspaces">
+                    <div class="popover-group">Your workspaces</div>
+                    @foreach (var workspace in Facade.Workspaces().OrderBy(w => w.Order))
+                    {
+                        var selected = workspace.Id == ActiveWorkspaceKey;
+                        <div class="ws-option @(selected ? "selected" : "")">
+                            <button type="button" class="ws-option-main" title="@workspace.Root" role="menuitemradio" aria-checked="@(selected ? "true" : "false")" @onclick="() => SwitchWorkspace(workspace.Id)">
+                                <span class="ws-option-name">@workspace.Name @(selected ? "· current" : "")</span>
+                                <span class="ws-option-root">@workspace.Root</span>
+                            </button>
+                            <button type="button" class="icon" role="menuitem" title="Rename workspace" aria-label="@($"Rename {workspace.Name}")" @onclick="() => AskRenameWorkspace(workspace)">✎</button>
+                            <button type="button" class="icon danger" role="menuitem" title="Delete workspace and its files" aria-label="@($"Delete {workspace.Name}")" @onclick="() => AskRemoveWorkspace(workspace)">✕</button>
+                        </div>
+                    }
+                    @if (UnfiledCount > 0)
+                    {
+                        <button type="button" class="ws-option-main unfiled" role="menuitemradio" aria-checked="@(ActiveWorkspaceKey == UnfiledId ? "true" : "false")" @onclick="() => SwitchWorkspace(UnfiledId)">
+                            <span class="ws-option-name">Unfiled @(ActiveWorkspaceKey == UnfiledId ? "· current" : "")</span>
+                            <span class="ws-option-root">@UnfiledCount chat(s) with no folder</span>
+                        </button>
+                    }
+                    <button type="button" class="ws-add" role="menuitem" @onclick="OpenAddFromSwitcher">＋ Add workspace</button>
+                </div>
+            }
         </div>
-        @if (_hits.Count > 0)
+        <div class="workspace-nav-tabs" role="tablist" aria-label="Workspace explorer" @onkeydown="OnWorkspaceTabKey">
+            <button type="button" id="workspace-chats-tab" role="tab" tabindex="@(WorkspaceUi.SidebarTab == "chats" ? 0 : -1)" aria-selected="@(WorkspaceUi.SidebarTab == "chats" ? "true" : "false")" aria-controls="workspace-chats-panel" class="workspace-nav-tab @(WorkspaceUi.SidebarTab == "chats" ? "active" : "")" @onclick="WorkspaceUi.ShowChats">
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 3h11v7H9l-3.5 3v-3h-3z" /></svg>
+                Chats <span class="nav-count">@VisibleLive().Count()</span>
+            </button>
+            <button type="button" id="workspace-files-tab" role="tab" tabindex="@(WorkspaceUi.SidebarTab == "files" ? 0 : -1)" aria-selected="@(WorkspaceUi.SidebarTab == "files" ? "true" : "false")" aria-controls="workspace-files-panel" class="workspace-nav-tab @(WorkspaceUi.SidebarTab == "files" ? "active" : "")" @onclick="WorkspaceUi.ShowFiles">
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 4h4l1.5 1.5H14v7H2zM2 4V2.5h4l1.5 1.5H13v1.5" /></svg>
+                Files
+            </button>
+        </div>
+        <section id="workspace-chats-panel" class="workspace-sidebar-panel" role="tabpanel" aria-labelledby="workspace-chats-tab" hidden="@(WorkspaceUi.SidebarTab != "chats")">
+        <div class="sidebar-search">
+            <input type="search" placeholder="Search this workspace…" aria-label="Search chats in this workspace" @bind="_search" @bind:event="oninput" @bind:after="SearchChanged" />
+        </div>
+        @if (_search.Trim().Length >= 2)
         {
             <div class="search-results">
+                @if (_hits.Count == 0)
+                {
+                    <div class="explorer-empty">No matching chats in this workspace.</div>
+                }
                 @foreach (var hit in _hits)
                 {
-                    <a class="search-hit" href="@($"/session/{hit.SessionId}")" @onclick="() => ClearSearch()">
+                    <a class="search-hit" href="@($"/session/{hit.SessionId}")" @onclick="() => OpenChat(hit.SessionId)" @onclick:preventDefault="true">
                         <span class="hit-kind">@hit.Kind</span>
                         <span class="hit-snip">@hit.Snippet</span>
                     </a>
@@ -31,81 +85,39 @@
         else
         {
             <div class="new-session-wrap">
-                <button class="new-session" @onclick="ToggleNewMenu">＋ New chat</button>
-                @if (_newMenu)
-                {
-                    <div class="popover new-popover">
-                        <div class="popover-group">start this chat in…</div>
-                        @foreach (var workspace in Facade.Workspaces().OrderBy(w => w.Order))
-                        {
-                            <button class="popover-item np-item" @onclick="() => NewSessionIn(workspace.Id)">
-                                <span class="np-name">@workspace.Name @(IsCurrentWorkspace(workspace) ? "· current" : "")</span>
-                                <span class="np-root">@workspace.Root</span>
-                            </button>
-                        }
-                    </div>
-                }
+                <button class="new-session" @onclick="NewChatInActive">＋ New chat</button>
             </div>
-            <nav class="session-list">
-                @foreach (var group in Groups())
+            <nav class="session-list" aria-label="Chats in this workspace">
+                @foreach (var item in VisibleLive())
                 {
-                    var open = IsGroupOpen(group);
-                    <div class="workspace-group @(group.Workspace.Id == UnfiledId ? "unfiled" : "") @(open ? "" : "collapsed")">
-                        <div class="workspace-head" title="@group.Workspace.Root" role="button" tabindex="0"
-                             aria-expanded="@open.ToString().ToLowerInvariant()"
-                             @onclick="() => ToggleGroup(group.Workspace.Id)"
-                             @onclick:preventDefault
-                             @onkeydown='e => { if (e.Key is "Enter" or " ") ToggleGroup(group.Workspace.Id); }'>
-                            <span class="workspace-caret" aria-hidden="true">@(open ? "▾" : "▸")</span>
-                            <span class="workspace-name">@group.Workspace.Name</span>
-                            @if (group.RootEmpty)
-                            {
-                                <span class="workspace-empty-hint" title="This folder has no files yet — the agent will have nothing to read until you add some">empty</span>
-                            }
-                            <span class="workspace-count" title="@(open ? "" : $"{group.Sessions.Count} session(s) — click to expand")">@group.Sessions.Count</span>
-                            @if (group.Workspace.Id != UnfiledId)
-                            {
-                                <span class="workspace-actions">
-                                    <button class="icon" title="New chat here" @onclick="() => NewSessionIn(group.Workspace.Id)" @onclick:stopPropagation>＋</button>
-                                    <button class="icon danger" title="Remove workspace (sessions stay on disk)" @onclick="() => RemoveWorkspace(group.Workspace)" @onclick:stopPropagation>✕</button>
-                                </span>
-                            }
-                        </div>
-                        @if (open)
-                        {
-                            @foreach (var item in group.Sessions)
-                            {
-                                <div class="session-row">
-                                    <a class="session-item @(item.Id == ActiveSessionId ? "active" : "")" href="@($"/session/{item.Id}")">
-                                        <span class="session-dot @(item.Running ? "running" : "")"></span>
-                                        <span class="session-title">@item.Title</span>
-                                    </a>
-                                    <button class="icon archive" title="@(item.Archived ? "Unarchive" : "Archive")" @onclick="() => ToggleArchive(item.Id, item.Archived)">
-                                        @(item.Archived ? "↩" : "🗄")
-                                    </button>
-                                    <button class="icon danger delete" title="Delete chat" @onclick="() => AskDelete(item)">🗑</button>
-                                </div>
-                            }
-                            @if (group.Sessions.Count == 0)
-                            {
-                                <div class="workspace-empty">no sessions yet</div>
-                            }
-                        }
+                    <div class="session-row">
+                        <a class="session-item @(item.Id == ActiveSessionId ? "active" : "")" href="@($"/session/{item.Id}")" @onclick="() => OpenChat(item.Id)" @onclick:preventDefault="true">
+                            <span class="session-dot @(item.Running ? "running" : "")"></span>
+                            <span class="session-title">@item.Title</span>
+                        </a>
+                        <button class="icon archive" title="@(item.Archived ? "Unarchive" : "Archive")" @onclick="() => ToggleArchive(item.Id, item.Archived)">
+                            @(item.Archived ? "↩" : "🗄")
+                        </button>
+                        <button class="icon danger delete" title="Delete chat" @onclick="() => AskDelete(item)">🗑</button>
                     </div>
                 }
-                @if (_showArchived.Count > 0)
+                @if (!VisibleLive().Any())
+                {
+                    <div class="workspace-empty">No chats in this workspace yet.</div>
+                }
+                @if (VisibleArchived().Any())
                 {
                     <div class="workspace-group">
-                        <div class="workspace-head archived-toggle" @onclick="ToggleShowArchived">
-                            <span class="workspace-name">🗄 @($"{_showArchived.Count} archived")</span>
+                        <button type="button" class="workspace-head archived-toggle" aria-expanded="@(_archivedOpen ? "true" : "false")" @onclick="ToggleShowArchived">
+                            <span class="workspace-name">🗄 @($"{VisibleArchived().Count()} archived")</span>
                             <span class="workspace-actions"><span class="icon">@(_archivedOpen ? "▴" : "▾")</span></span>
-                        </div>
+                        </button>
                         @if (_archivedOpen)
                         {
-                            foreach (var item in _showArchived)
+                            foreach (var item in VisibleArchived())
                             {
                                 <div class="session-row archived">
-                                    <a class="session-item" href="@($"/session/{item.Id}")">
+                                    <a class="session-item" href="@($"/session/{item.Id}")" @onclick="() => OpenChat(item.Id)" @onclick:preventDefault="true">
                                         <span class="session-dot"></span>
                                         <span class="session-title">@item.Title</span>
                                     </a>
@@ -118,6 +130,10 @@
                 }
             </nav>
         }
+        </section>
+        <section id="workspace-files-panel" class="workspace-sidebar-panel" role="tabpanel" aria-labelledby="workspace-files-tab" hidden="@(WorkspaceUi.SidebarTab != "files")">
+            <WorkspaceExplorer Root="@ExplorerRoot" SelectedPath="@WorkspaceUi.ActiveFile" Visible="@(WorkspaceUi.SidebarTab == "files")" OnOpenFile="OpenWorkspaceFile" />
+        </section>
         <div class="sidebar-foot">
             <button class="sidebar-link" @onclick="OpenAddWorkspace"><span class="sidebar-link-icon">📁</span>Add workspace</button>
             <a class="sidebar-link" href="/settings"><span class="sidebar-link-icon">⚙️</span>Settings</a>
@@ -144,7 +160,7 @@
             <div class="browse-quick">
                 <span class="browse-quick-label">Jump to</span>
                 <button type="button" class="chip" @onclick='() => Browse(Facade.HomeDirectory)'>🏠 home</button>
-                <button type="button" class="chip" @onclick='() => Browse("/")'>/root</button>
+                <button type="button" class="chip" @onclick='() => Browse(Path.GetPathRoot(_browsePath) ?? "/")'>@(Path.GetPathRoot(_browsePath) ?? "/")</button>
                 <button type="button" class="chip" @onclick="BrowseParent" disabled="@(_browseParent is null)" title="Up one folder">↑ up</button>
             </div>
             <div class="browse-path"><code>@_browsePath</code></div>
@@ -170,7 +186,7 @@
             </div>
             <label class="browse-pick">
                 <span>Folder path</span>
-                <input type="text" @ref="_folderInput" @bind="_workspaceRoot" @bind:event="oninput" placeholder="/home/you/projects/my-app" />
+                <input type="text" @ref="_folderInput" @bind="_workspaceRoot" @bind:event="oninput" placeholder="@(OperatingSystem.IsWindows() ? @"C:\Work\my-app" : "/home/you/projects/my-app")" />
             </label>
             <label class="browse-pick">
                 <span>Display name</span>
@@ -187,6 +203,54 @@
             <div class="modal-actions">
                 <button class="ghost" @onclick="CloseAddWorkspace">Cancel</button>
                 <button class="primary" @onclick="AddWorkspace">Add workspace</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_confirmRemoveWorkspace is { } remove)
+{
+    <div class="modal-overlay" @onclick="CloseDeleteWorkspace">
+        <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Delete workspace" @onclick:stopPropagation="true">
+            <div class="modal-head">
+                <h3>Delete workspace permanently?</h3>
+                <button class="icon modal-close" title="Cancel" disabled="@_workspaceDeleteBusy" @onclick="CloseDeleteWorkspace">✕</button>
+            </div>
+            <p class="confirm-text">
+                Delete “@remove.Name”, its chats and child sessions, their attachments, and the local folder below with all its files.
+                Active work will be stopped. This cannot be undone.
+            </p>
+            <p class="confirm-text workspace-delete-path"><code>@remove.Root</code></p>
+            @if (_workspaceDeletePreview is { } preview)
+            {
+                <p class="confirm-text">@preview.Sessions.Count session(s), including child sessions, will be deleted.</p>
+            }
+            else if (_workspaceDeleteError is null) { <p class="confirm-text">Checking workspace contents…</p> }
+            @if (_workspaceDeleteError is not null) { <div class="form-error" role="alert">@_workspaceDeleteError</div> }
+            <div class="modal-actions">
+                <button class="ghost" disabled="@_workspaceDeleteBusy" @onclick="CloseDeleteWorkspace">Cancel</button>
+                <button class="danger" disabled="@(_workspaceDeleteBusy || _workspaceDeletePreview is null)" @onclick="() => RemoveWorkspaceConfirmed(remove)">@(_workspaceDeleteBusy ? "Deleting…" : "Delete workspace and files")</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_renameWorkspace is { } rename)
+{
+    <div class="modal-overlay" @onclick="CloseRenameWorkspace">
+        <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Rename workspace" @onclick:stopPropagation="true">
+            <div class="modal-head">
+                <h3>Rename workspace</h3>
+                <button class="icon modal-close" title="Cancel" @onclick="CloseRenameWorkspace">✕</button>
+            </div>
+            <label class="browse-pick">
+                <span>Display name</span>
+                <input type="text" @bind="_renameWorkspaceName" @bind:event="oninput" @onkeydown="OnRenameKey" />
+            </label>
+            <p class="confirm-text"><code>@rename.Root</code></p>
+            <div class="modal-actions">
+                <button class="ghost" @onclick="CloseRenameWorkspace">Cancel</button>
+                <button class="primary" disabled="@string.IsNullOrWhiteSpace(_renameWorkspaceName)" @onclick="RenameWorkspace">Save name</button>
             </div>
         </div>
     </div>
@@ -238,6 +302,14 @@
     private string _theme = "dark";
     private bool _drawerOpen;
     private bool _startChatAfterAdd = true;
+    private bool _switcherOpen;
+    private bool _disposed;
+    private Workspace? _renameWorkspace;
+    private string _renameWorkspaceName = "";
+    private Workspace? _confirmRemoveWorkspace;
+    private WorkspaceDeletionPreview? _workspaceDeletePreview;
+    private bool _workspaceDeleteBusy;
+    private string? _workspaceDeleteError;
     private SessionItem? _confirmDelete;
     private string? _deleteError;
 
@@ -260,8 +332,9 @@
         var wasActive = doomed.Id == ActiveSessionId;
         _confirmDelete = null;
         _deleteError = null;
+        WorkspaceUi.CloseTab(WorkspaceTab.ChatKey(doomed.Id));
         Refresh();
-        if (wasActive) Navigation.NavigateTo("/", forceLoad: false);
+        if (wasActive && WorkspaceUi.ActiveTab is not { IsChat: true }) Navigation.NavigateTo("/", forceLoad: false);
     }
 
     [Inject] private Microsoft.AspNetCore.Components.NavigationManager Navigation { get; set; } = null!;
@@ -271,20 +344,39 @@
         Refresh();
         _ = Browse("/");
         _refresh = new System.Timers.Timer(1200);
-        _refresh.Elapsed += (_, _) => { if (!_showAddWorkspace) Refresh(); };
+        _refresh.Elapsed += (_, _) => _ = InvokeAsync(() => { if (!_disposed && !_showAddWorkspace) Refresh(); });
         _refresh.AutoReset = true;
         _refresh.Enabled = true;
         Navigation.LocationChanged += OnLocationChanged;
+        WorkspaceUi.Changed += OnWorkspaceUiChanged;
     }
 
     private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
-        if (_drawerOpen || _newMenu)
+        _ = InvokeAsync(() =>
         {
+            if (_disposed) return;
             _drawerOpen = false;
-            _newMenu = false;
-            _ = InvokeAsync(StateHasChanged);
-        }
+            _switcherOpen = false;
+            ClearSearch();
+            Refresh();
+        });
+    }
+
+    private void OnWorkspaceUiChanged() => _ = InvokeAsync(() => { if (!_disposed) StateHasChanged(); });
+
+    private void OnSidebarKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") { _switcherOpen = false; _drawerOpen = false; }
+    }
+
+    private async Task OnWorkspaceTabKey(KeyboardEventArgs e)
+    {
+        if (e.Key is not ("ArrowLeft" or "ArrowRight" or "Home" or "End")) return;
+        var files = e.Key == "End" || (e.Key != "Home" && WorkspaceUi.SidebarTab == "chats");
+        if (files) WorkspaceUi.ShowFiles(); else WorkspaceUi.ShowChats();
+        try { await Js.InvokeVoidAsync("blazorly.focusById", files ? "workspace-files-tab" : "workspace-chats-tab"); }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or ObjectDisposedException) { }
     }
 
     private bool _awaitFolderFocus;
@@ -293,7 +385,6 @@
     {
         if (firstRender)
         {
-            await LoadCollapsedGroupsAsync();
             try
             {
                 var theme = await Js.InvokeAsync<string>("blazorly.getTheme");
@@ -314,54 +405,152 @@
         }
     }
 
-    // ---- workspace-group collapse (fights sidebar clutter with many workspaces × sessions) ----
+    private const string UnfiledId = "unfiled";
 
-    /// <summary>null = not loaded yet (treat as open); a saved preference or the smart default after that.</summary>
-    private HashSet<string>? _collapsedGroups;
-
-    private bool IsGroupOpen(WorkspaceGroup group)
-        => _collapsedGroups is null || !_collapsedGroups.Contains(group.Workspace.Id);
-
-    private void ToggleGroup(string workspaceId)
+    private string ActiveWorkspaceKey
     {
-        _collapsedGroups ??= new HashSet<string>(StringComparer.Ordinal);
-        if (!_collapsedGroups.Add(workspaceId)) _collapsedGroups.Remove(workspaceId);
-        try { _ = Js.InvokeVoidAsync("blazorly.sidebar.saveCollapsed", _collapsedGroups.ToArray()); }
-        catch (JSDisconnectedException) { }
-        catch (ObjectDisposedException) { }
-        catch (JSException) { }
-        StateHasChanged();
+        get
+        {
+            if (ActiveSessionId is { Length: > 0 }
+                && Facade.Harness.Sessions.Get(ActiveSessionId) is { } session)
+                return Facade.WorkspaceOf(session)?.Id ?? UnfiledId;
+            try { return Facade.Harness.Workspaces.Default().Id; }
+            catch (InvalidOperationException) { return UnfiledId; }
+        }
     }
 
-    /// <summary>
-    /// Restores the user's saved collapse state. With none saved and more than one workspace, the
-    /// smart default collapses every group except the active session's workspace — 5 × 15 sessions
-    /// becomes 5 one-liners plus one open list. Implicit defaults are not persisted, so moving
-    /// between workspaces re-defaults sensibly until the user chooses.
-    /// </summary>
-    private async Task LoadCollapsedGroupsAsync()
+    private Workspace? CurrentWorkspace()
+        => Facade.Workspaces().FirstOrDefault(w => w.Id == ActiveWorkspaceKey);
+
+    private string ActiveWorkspaceLabel => CurrentWorkspace()?.Name ?? (UnfiledCount > 0 ? "Unfiled" : "No workspace");
+
+    private string ActiveWorkspaceRoot => CurrentWorkspace()?.Root ?? "Chats outside a registered workspace";
+
+    private string? ExplorerRoot => CurrentWorkspace()?.Root;
+
+    private int UnfiledCount => _sessions.Count(s => s.WorkspaceId == UnfiledId);
+
+    private IEnumerable<SessionItem> VisibleLive()
+        => _sessions.Where(s => !s.Archived && s.WorkspaceId == ActiveWorkspaceKey);
+
+    private IEnumerable<SessionItem> VisibleArchived()
+        => _showArchived.Where(s => s.WorkspaceId == ActiveWorkspaceKey);
+
+    private void ToggleSwitcher() => _switcherOpen = !_switcherOpen;
+
+    private void CloseSwitcher() => _switcherOpen = false;
+
+    private void OpenAddFromSwitcher()
     {
-        string[]? saved = null;
-        try { saved = await Js.InvokeAsync<string[]?>("blazorly.sidebar.loadCollapsed"); }
-        catch (JSDisconnectedException) { }
-        catch (ObjectDisposedException) { }
-        catch (JSException) { }
-        if (saved is { Length: > 0 })
+        _switcherOpen = false;
+        OpenAddWorkspace();
+    }
+
+    private void SwitchWorkspace(string id)
+    {
+        _switcherOpen = false;
+        _drawerOpen = false;
+        ClearSearch();
+        if (id == UnfiledId)
         {
-            _collapsedGroups = new HashSet<string>(saved, StringComparer.Ordinal);
-            await InvokeAsync(StateHasChanged);
+            var unfiled = _sessions.Where(s => s.WorkspaceId == UnfiledId).OrderBy(s => s.Archived).FirstOrDefault();
+            if (unfiled is not null) OpenChat(unfiled.Id);
             return;
         }
+        if (Facade.Harness.Workspaces.Get(id) is null) return;
+        var latest = Facade.LiveSessions()
+            .Where(s => s.Header.ParentSession is null && !Facade.IsArchived(s.Id))
+            .Where(s => Facade.WorkspaceOf(s)?.Id == id)
+            .OrderBy(s => s.Header.CreatedAt)
+            .LastOrDefault();
+        if (latest is not null) OpenChat(latest.Id);
+        else NewSessionIn(id);
+    }
 
-        var groups = Groups();
-        if (groups.Count <= 1) { _collapsedGroups = []; return; } // single group: leave open
-        var activeWorkspace = Facade.Harness.Sessions.Get(ActiveSessionId ?? "") is { } session
-            ? Facade.WorkspaceOf(session)?.Id
-            : null;
-        _collapsedGroups = new HashSet<string>(
-            groups.Where(g => g.Workspace.Id != activeWorkspace && g.Sessions.Count > 0).Select(g => g.Workspace.Id),
-            StringComparer.Ordinal);
-        await InvokeAsync(StateHasChanged);
+    private void OpenWorkspaceFile(string relativePath)
+    {
+        if (ExplorerRoot is not { Length: > 0 } root) return;
+        WorkspaceUi.OpenFile(root, relativePath);
+        _drawerOpen = false;
+        if (ActiveSessionId is null) SwitchWorkspace(ActiveWorkspaceKey);
+    }
+
+    private void AskRenameWorkspace(Workspace workspace)
+    {
+        _switcherOpen = false;
+        _renameWorkspace = workspace;
+        _renameWorkspaceName = workspace.Name;
+    }
+
+    private void CloseRenameWorkspace() => _renameWorkspace = null;
+
+    private void OnRenameKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") CloseRenameWorkspace();
+        else if (e.Key == "Enter") RenameWorkspace();
+    }
+
+    private void RenameWorkspace()
+    {
+        if (_renameWorkspace is not { } workspace || string.IsNullOrWhiteSpace(_renameWorkspaceName)) return;
+        Facade.RenameWorkspace(workspace.Id, _renameWorkspaceName.Trim());
+        CloseRenameWorkspace();
+        Refresh();
+    }
+
+    private void NewChatInActive()
+    {
+        var workspace = CurrentWorkspace();
+        if (workspace is null)
+        {
+            try { workspace = Facade.Harness.Workspaces.Default(); }
+            catch (InvalidOperationException)
+            {
+                OpenAddWorkspace();
+                return;
+            }
+        }
+        Facade.Harness.Workspaces.SetDefault(workspace.Id);
+        NewSessionIn(workspace.Id);
+    }
+
+    private async Task AskRemoveWorkspace(Workspace workspace)
+    {
+        _switcherOpen = false;
+        _confirmRemoveWorkspace = workspace;
+        _workspaceDeletePreview = null;
+        _workspaceDeleteError = null;
+        try { _workspaceDeletePreview = await WorkspaceDeletion.PreviewAsync(workspace.Id); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+            _workspaceDeleteError = ex.Message;
+        }
+    }
+
+    private void CloseDeleteWorkspace()
+    {
+        if (!_workspaceDeleteBusy) _confirmRemoveWorkspace = null;
+    }
+
+    private async Task RemoveWorkspaceConfirmed(Workspace workspace)
+    {
+        if (_workspaceDeleteBusy || _workspaceDeletePreview is null) return;
+        var wasActive = workspace.Id == ActiveWorkspaceKey;
+        _workspaceDeleteBusy = true;
+        _workspaceDeleteError = null;
+        try
+        {
+            await WorkspaceDeletion.DeleteAsync(workspace.Id, workspace.Root);
+            WorkspaceUi.WorkspaceDeleted(workspace.Root);
+            _confirmRemoveWorkspace = null;
+            Refresh();
+            if (wasActive) Navigation.NavigateTo("/");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or TimeoutException or System.ComponentModel.Win32Exception)
+        {
+            _workspaceDeleteError = $"Deletion could not finish: {ex.Message} You can retry.";
+        }
+        finally { _workspaceDeleteBusy = false; }
     }
 
     private async Task FocusFolderInput()
@@ -382,39 +571,6 @@
         catch (JSException) { }
     }
 
-    public sealed record WorkspaceGroup(Workspace Workspace, List<SessionItem> Sessions, bool RootEmpty = false);
-
-    /// <summary>Pseudo-group for sessions whose cwd matches no registered workspace.</summary>
-    private const string UnfiledId = "unfiled";
-
-    private bool _newMenu;
-
-    private void ToggleNewMenu() => _newMenu = !_newMenu;
-
-    private bool IsCurrentWorkspace(Workspace workspace)
-        => ActiveSessionId is { Length: > 0 } active
-           && Facade.Harness.Sessions.Get(active) is { } session
-           && Facade.WorkspaceOf(session)?.Id == workspace.Id;
-
-    private List<WorkspaceGroup> Groups()
-    {
-        var groups = Facade.Workspaces()
-            .OrderBy(w => w.Order)
-            .Select(w => new WorkspaceGroup(w, [], DirectoryBrowser.IsEmptyFolder(w.Root)))
-            .ToList();
-        var unfiled = new List<SessionItem>();
-        foreach (var item in _sessions.Where(entry => !entry.Archived))
-        {
-            var workspace = Facade.Harness.Workspaces.ForRoot(Facade.Harness.Sessions.Get(item.Id)?.Header.Cwd ?? "");
-            var target = groups.FirstOrDefault(g => g.Workspace.Id == workspace?.Id);
-            if (target is not null) target.Sessions.Add(item);
-            else unfiled.Add(item);
-        }
-        if (unfiled.Count > 0)
-            groups.Add(new WorkspaceGroup(new Workspace(UnfiledId, "unfiled", "", Order: int.MaxValue), unfiled));
-        return groups;
-    }
-
     private string? CurrentSessionId()
     {
         var match = System.Text.RegularExpressions.Regex.Match(Navigation.Uri, "/session/([^/?]+)");
@@ -433,7 +589,9 @@
             // appeared and is asking me things" confusion.
             if (session.Header.ParentSession is not null) continue;
             var agent = Facade.Harness.Agents.Get(session.Id);
-            var item = new SessionItem(session.Id, SessionFacade.DeriveTitle(session), agent?.Status == "running", Facade.IsArchived(session.Id), "");
+            var workspaceId = Facade.WorkspaceOf(session)?.Id ?? UnfiledId;
+            var item = new SessionItem(session.Id, SessionFacade.DeriveTitle(session), agent?.Status == "running", Facade.IsArchived(session.Id), workspaceId);
+            WorkspaceUi.UpdateChatTitle(session.Id, item.Title);
             items.Add(item);
             if (!item.Archived) live.Add(item);
         }
@@ -444,7 +602,8 @@
 
     private Task SearchChanged()
     {
-        if (_search.Trim().Length >= 2) { _hits = Facade.Search(_search); } else { _hits = []; }
+        var ids = _sessions.Where(s => s.WorkspaceId == ActiveWorkspaceKey).Select(s => s.Id).ToHashSet();
+        _hits = _search.Trim().Length >= 2 ? Facade.Search(_search).Where(h => ids.Contains(h.SessionId)).ToList() : [];
         return Task.CompletedTask;
     }
 
@@ -457,14 +616,15 @@
     private void NewSessionIn(string workspaceId)
     {
         var session = Facade.CreateSession(workspaceId);
-        _newMenu = false;
-        Navigation.NavigateTo($"/session/{session.Id}", forceLoad: true);
+        OpenChat(session.Id);
     }
 
-    private void RemoveWorkspace(Workspace workspace)
+    private void OpenChat(string sessionId)
     {
-        Facade.RemoveWorkspace(workspace.Id);
-        Refresh();
+        ClearSearch();
+        _drawerOpen = false;
+        WorkspaceUi.RequestChat(sessionId);
+        if (CurrentSessionId() != sessionId) Navigation.NavigateTo($"/session/{sessionId}");
     }
 
     private void ToggleArchive(string sessionId, bool currentlyArchived)
@@ -497,7 +657,7 @@
         _workspaceRoot = _browsePath;
         if (_workspaceName.Trim().Length == 0)
         {
-            var name = System.IO.Path.GetFileName(_browsePath.TrimEnd('/'));
+            var name = System.IO.Path.GetFileName(Path.TrimEndingDirectorySeparator(_browsePath));
             _workspaceName = name.Length > 0 ? name : _browsePath;
         }
     }
@@ -548,7 +708,9 @@
 
     public void Dispose()
     {
+        _disposed = true;
         Navigation.LocationChanged -= OnLocationChanged;
+        WorkspaceUi.Changed -= OnWorkspaceUiChanged;
         _refresh?.Dispose();
     }
 }

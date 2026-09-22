@@ -20,6 +20,15 @@ blazorly
   "apiKey": "sk-…"
 }
 
+Settings UI (sidebar → Settings), five tabs:
+- Model & API: provider, load models from the API, base URL, key (per provider)
+- Custom providers: extra OpenAI-compatible routes
+- Sessions & context: jsonl vs sqlite, context window, compaction, spill, local telemetry
+- Capabilities: plugin toggles (web, skills, terminals, MCP, teams, System One, tool-gate, …)
+- Permissions & sandbox: default preset for new sessions; optional E2B
+
+Session chrome: Chat tab (conversation + tool cards) and Trajectory tab (turn timeline; raw events pages the log). Terminal drawer and Stats sit next to those tabs. Header chips: provider/model, effort, permission, context meter.
+
 Providers: DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, custom OpenAI-compatible routes. Keys resolve per request; env vars win if settings field is empty.
 
 Permission presets (switch with /permission):

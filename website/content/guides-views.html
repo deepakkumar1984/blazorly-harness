@@ -1,0 +1,66 @@
+<div class="wrap">
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/guides/">Guides</a> / Session views</nav>
+</div>
+<article class="prose prose-wrap">
+  <h1>Chat, Trajectory, and the session chrome</h1>
+  <p class="muted">Every session has two views and a handful of header chips. They are easy to miss if you only ever stay on Chat.</p>
+
+  <div class="answer">
+    <p>A Blazorly session has two tabs in the top-right: <strong>Chat</strong> and <strong>Trajectory</strong>. Chat is the conversation — streaming assistant text and live tool cards. Trajectory is the same turn as a timeline: user, assistant, each tool, <code>turn/end</code>, with durations. Next to those tabs sit Terminal (a persistent shell for the session) and Stats (turns, tokens, tool counts). Below the title, chips show provider/model, reasoning effort, the permission preset, and how full the context window is. Click the model chip to switch provider without opening Settings. Click the lock chip or type <code>/permission</code> to change the sandbox on this session only.</p>
+  </div>
+</article>
+
+<section>
+  <div class="wrap grid-2">
+    <figure class="shot">
+      <img src="/assets/img/ui-chat.webp" width="1440" height="900" alt="Blazorly Chat tab with the Chat view selected, live tool cards, and the session still running.">
+      <figcaption>Chat tab — what you talk to. Tool cards land in the transcript as they run.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="/assets/img/ui-trajectory.webp" width="1440" height="900" alt="Blazorly Trajectory tab showing turn 1 completed with read, edit, and bash steps, and turn 2 still running.">
+      <figcaption>Trajectory tab — same session, as a log of steps. “raw events” pages the JSONL.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<article class="prose prose-wrap">
+  <h2>Chat</h2>
+  <p>Default view. User messages, assistant text, and tool cards (read / edit / bash / …) with a done or running badge. The composer at the bottom is bound to this session’s workspace — the cwd chip on the left is that folder. Stop cancels the in-flight turn; the cards close, partial text stays. That contract is in <a href="/guides/durable-sessions/">durable sessions</a>.</p>
+  <p>If the agent wrote todos, a task list can dock on the right. If it spawned workers, the Agents panel docks there too — children do not open extra sidebar rows. See <a href="/guides/multi-agent/">multi-agent</a>.</p>
+
+  <h2>Trajectory</h2>
+  <p>Flip the tab when you care about <em>order and cost</em>, not prose. Each turn is a card: status (<code>completed</code>, <code>running</code>, <code>aborted</code>, <code>error</code>), wall time, then a row per event. That is the same append-only log the crash-repair path reads.</p>
+  <p><strong>raw events ▶</strong> switches off the pretty timeline and pages the underlying event table: seq, type, time, preview. Use it when you are debugging a stuck tool or quoting a sequence number. Pagination is for large sessions — a 132k-event log is not dumped in one paint.</p>
+
+  <h2>Terminal and Stats</h2>
+</article>
+<section>
+  <div class="wrap">
+    <figure class="shot">
+      <img src="/assets/img/ui-terminal.webp" width="1440" height="900" loading="lazy" alt="Blazorly session with the terminal drawer open, showing a passing test run and git diff --stat.">
+      <figcaption>Terminal drawer — a persistent shell for this session, not a one-shot bash tool card.</figcaption>
+    </figure>
+  </div>
+</section>
+<article class="prose prose-wrap">
+  <p><strong>Terminal</strong> opens a drawer at the bottom. It is a real shell that survives turns, so you can run <code>git diff</code> while the agent is idle. The bash <em>tool</em> is different: the model invokes it, it is logged, and cancel kills that process tree. Use the drawer when <em>you</em> want a prompt; let the tool fire when the <em>agent</em> needs a command.</p>
+  <p><strong>Stats</strong> is a small panel: turn count, tokens in/out, duration, which tools ran. It is the same data as local telemetry, scoped to this session.</p>
+
+  <h2>Header chips</h2>
+  <ul>
+    <li><strong>Title</strong> — click to rename, or let auto-titles fill it (Capabilities tab).</li>
+    <li><strong>running / idle</strong> — whether a turn is in flight.</li>
+    <li><strong>provider / model</strong> — opens a picker. Load models on Settings → Model &amp; API first if the list is empty.</li>
+    <li><strong>effort</strong> — reasoning effort for the next turn, when the route supports it.</li>
+    <li><strong>permission</strong> — <code>full-access</code>, <code>workspace-write</code>, or <code>read-only</code> for <em>this</em> session. A warning mark means the OS cannot jail bash (no Landlock).</li>
+    <li><strong>context</strong> — how much of the window is used; compaction is configured under Settings → Sessions &amp; context.</li>
+  </ul>
+  <p>Fork, docs generation, and the task-list toggle sit in the same toolbar. They apply to this session, not to Settings.</p>
+
+  <h2>Related</h2>
+  <ul>
+    <li><a href="/guides/settings/">The five Settings tabs</a></li>
+    <li><a href="/guides/getting-started/">Getting started</a></li>
+    <li><a href="/features/">Feature list</a></li>
+  </ul>
+</article>

@@ -38,6 +38,19 @@ public sealed class AgentRuntime
         lock (_gate) return _agents.GetValueOrDefault(id);
     }
 
+    /// <summary>Releases an idle agent after its session has been selected for deletion.</summary>
+    public async Task RemoveAsync(string id)
+    {
+        var agent = Get(id);
+        if (agent is null) return;
+        if (agent.Status == AgentStatus.Running) throw new InvalidOperationException("Stop this agent before deleting its session.");
+        await agent.DisposeAsync().ConfigureAwait(false);
+        lock (_gate)
+        {
+            if (_agents.GetValueOrDefault(id) == agent) _agents.Remove(id);
+        }
+    }
+
     public IReadOnlyList<Agent> LiveAgents()
     {
         lock (_gate) return [.. _agents.Values];

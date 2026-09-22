@@ -1,0 +1,81 @@
+.settings-shell { grid-template-columns: 248px 1fr; }
+.settings-page {
+  background: var(--bg);
+  overflow: hidden;
+  padding: 0 28px 28px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.settings-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 0 10px; border-bottom: 1px solid var(--border);
+}
+.settings-title { display: flex; align-items: center; gap: 10px; }
+.settings-title h1 { margin: 0; font-size: 20px; }
+.back {
+  width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--border-strong);
+  background: var(--bg-raised); color: var(--text-dim);
+}
+.save {
+  background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+  padding: 7px 14px; font-weight: 600;
+}
+.settings-tabs { display: flex; gap: 6px; margin: 14px 0 0; }
+.settings-tab {
+  background: transparent; color: var(--text-dim); border: 1px solid transparent;
+  border-radius: 999px; padding: 6px 14px; font-size: 13px;
+}
+.settings-tab.on,
+body[data-tab="provider"] .settings-tab[data-tab="provider"],
+body[data-tab="custom"] .settings-tab[data-tab="custom"],
+body[data-tab="context"] .settings-tab[data-tab="context"],
+body[data-tab="capabilities"] .settings-tab[data-tab="capabilities"],
+body[data-tab="sandbox"] .settings-tab[data-tab="sandbox"] {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
+.panel {
+  display: none;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 10px; padding: 6px 18px 18px; margin-top: 14px;
+}
+body[data-tab="provider"] .panel[data-panel="provider"],
+body[data-tab="custom"] .panel[data-panel="custom"],
+body[data-tab="context"] .panel[data-panel="context"],
+body[data-tab="capabilities"] .panel[data-panel="capabilities"],
+body[data-tab="sandbox"] .panel[data-panel="sandbox"] { display: block; }
+.note { color: var(--text-dim); font-size: 13px; margin: 12px 0 0; }
+.note code, .hint code {
+  background: var(--bg-overlay); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0 4px; font-family: var(--mono); font-size: 11.5px;
+}
+label { display: block; margin: 14px 0; }
+label > span { display: block; font-size: 12.5px; color: var(--text-dim); margin-bottom: 5px; }
+.field {
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 8px 10px; font-family: var(--mono); font-size: 13px;
+}
+.meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: -6px; }
+.hint { font-size: 12px; color: var(--text-dim); }
+.discover { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; }
+.ghost {
+  background: none; border: 1px solid var(--border-strong); color: var(--text);
+  border-radius: 8px; padding: 6px 12px; font-size: 13px;
+}
+.ghost.small { padding: 4px 10px; font-size: 12.5px; }
+.ok { font-size: 12.5px; color: var(--success); }
+.toggle { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; color: var(--text); }
+.toggle span { margin: 0; display: inline; color: var(--text); }
+.toggle input { width: auto; }
+.toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; }
+.custom-row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; margin-top: 10px;
+}
+.custom-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.custom-name { font-size: 13.5px; }
+.custom-main code { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+.muted { font-size: 12px; color: var(--text-faint); }
+.sess.foot-link.on { background: var(--bg-overlay); color: var(--text); }
+.sidebar .sessions { padding-bottom: 16px; }
