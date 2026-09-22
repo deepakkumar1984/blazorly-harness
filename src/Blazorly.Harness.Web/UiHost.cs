@@ -53,7 +53,8 @@ public static class UiHost
         }
 
         builder.Services.AddRazorComponents()
-        .AddInteractiveServerComponents();
+        .AddInteractiveServerComponents()
+        .AddHubOptions(options => options.MaximumReceiveMessageSize = WorkspaceFiles.MaxBytes * 6 + 16 * 1024);
     builder.Services.AddHttpClient();
 
     builder.Services.AddSingleton<HarnessBootstrapper>();
@@ -66,6 +67,9 @@ public static class UiHost
         return new ConversationAssembler(harness.Tools, harness.Meter);
     });
     builder.Services.AddSingleton<MarkdownService>();
+    builder.Services.AddSingleton<RunSupervisor>();
+    builder.Services.AddSingleton<WorkspaceDeletionService>();
+    builder.Services.AddScoped<WorkspaceUiState>();
 
     var app = builder.Build();
 
@@ -124,8 +128,12 @@ public static class UiHost
 
     app.MapPost("/api/session.create", (SessionFacade facade) =>
     {
-        var session = facade.CreateSession();
-        return Results.Json(new { session.Id });
+        try
+        {
+            var session = facade.CreateSession();
+            return Results.Json(new { session.Id });
+        }
+        catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
     });
 
     app.MapPost("/api/session.prompt", async (HttpContext http, SessionFacade facade) =>
@@ -266,6 +274,22 @@ public static class UiHost
         if (body is null || string.IsNullOrWhiteSpace(body.Id)) return Results.BadRequest();
         facade.RemoveWorkspace(body.Id);
         return Results.Json(new { ok = true });
+    });
+
+    app.MapPost("/api/workspace.delete", async (HttpContext http, WorkspaceDeletionService deletion) =>
+    {
+        var body = await http.Request.ReadFromJsonAsync<WorkspaceRequest>();
+        if (body is null || string.IsNullOrWhiteSpace(body.Id) || string.IsNullOrWhiteSpace(body.Root))
+            return Results.BadRequest(new { error = "The workspace id and confirmed folder path are required." });
+        try
+        {
+            await deletion.DeleteAsync(body.Id, body.Root);
+            return Results.Json(new { ok = true });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or TimeoutException or System.ComponentModel.Win32Exception)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
     });
 
     app.MapGet("/api/host.browse", (string? path) =>

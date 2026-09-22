@@ -3,19 +3,41 @@
 @inject SessionFacade Facade
 @inject NavigationManager Navigation
 
+<div class="workspace-welcome">
+    <span class="brand-mark">⚡</span>
+    <h1>Open a workspace</h1>
+    <p>Add a folder from the sidebar to bring its chats, files, and run commands together.</p>
+    <p>Your existing chats are available under Unfiled in the workspace switcher.</p>
+</div>
+
 @code
 {
     protected override void OnInitialized()
     {
-        var latest = Facade.LiveSessions().OrderBy(s => s.Header.CreatedAt).LastOrDefault();
-        if (latest is not null)
+        // The open workspace is the product surface. Land in its latest chat, not a
+        // chat that happens to belong to some other folder.
+        Workspace? preferred = null;
+        try { preferred = Facade.Harness.Workspaces.Default(); }
+        catch (InvalidOperationException) { }
+
+        var chats = Facade.LiveSessions()
+            .Where(s => s.Header.ParentSession is null && !Facade.IsArchived(s.Id));
+        if (preferred is not null)
         {
-            Navigation.NavigateTo($"/session/{latest.Id}");
+            var latest = chats
+                .Where(s => Facade.WorkspaceOf(s)?.Id == preferred.Id)
+                .OrderBy(s => s.Header.CreatedAt)
+                .LastOrDefault();
+            if (latest is not null)
+            {
+                Navigation.NavigateTo($"/session/{latest.Id}");
+                return;
+            }
+            Navigation.NavigateTo($"/session/{Facade.CreateSession(preferred.Id).Id}");
+            return;
         }
-        else
-        {
-            var session = Facade.CreateSession();
-            Navigation.NavigateTo($"/session/{session.Id}");
-        }
+
+        // Removing the final workspace leaves a useful empty state. Do not recreate it
+        // or attempt to create a session without a registered workspace.
     }
 }

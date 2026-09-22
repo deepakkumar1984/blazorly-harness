@@ -316,6 +316,7 @@ public class CompactCommandTests : BootstrapperTestBase
         await bootstrapper.StartAsync(CancellationToken.None);
         try
         {
+            bootstrapper.Workspaces.Ensure(Home);
             var facade = new SessionFacade(bootstrapper, new UiEventBroker());
             var session = facade.CreateSession();
 
@@ -357,6 +358,7 @@ public class CompactCommandTests : BootstrapperTestBase
         await bootstrapper.StartAsync(CancellationToken.None);
         try
         {
+            bootstrapper.Workspaces.Ensure(Home);
             var facade = new SessionFacade(bootstrapper, new UiEventBroker());
             var session = facade.CreateSession();
             await facade.PromptAsync(session.Id, "run the scripted task", "queue");

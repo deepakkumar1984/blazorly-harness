@@ -3,28 +3,38 @@
 @using Blazorly.Harness.Tools
 @inject SessionFacade Facade
 @inject NavigationManager Navigation
+@inject IJSRuntime Js
+
+<PageTitle>Settings · Blazorly Harness</PageTitle>
 
 <div class="settings-page">
     <div class="settings-topbar">
         <div class="settings-title">
-            <button class="icon" title="Back" @onclick="GoBack">←</button>
-            <h1>Settings</h1>
+            <button class="icon settings-back" title="Back to workspace" aria-label="Back to workspace" @onclick="GoBack">←</button>
+            <div><span class="settings-eyebrow">PREFERENCES</span><h1>Settings</h1></div>
         </div>
         <div class="settings-actions">
-            <button class="primary" @onclick="Save">Save</button>
+            @if (_tab != "appearance")
+            {
+                <button class="primary" @onclick="Save">Save settings</button>
+            }
         </div>
     </div>
 
-    <nav class="settings-tabs" role="tablist">
+    <nav class="settings-tabs" role="tablist" aria-label="Settings categories" @onkeydown="OnSettingsTabKey">
         @foreach (var (id, label) in Tabs)
         {
-            <button type="button" role="tab" class="settings-tab @(_tab == id ? "on" : "")" @onclick="() => _tab = id">@label</button>
+            <button type="button" id="@($"settings-tab-{id}")" role="tab" tabindex="@(_tab == id ? 0 : -1)" aria-selected="@(_tab == id ? "true" : "false")" aria-controls="@($"settings-panel-{id}")" class="settings-tab @(_tab == id ? "on" : "")" @onclick="() => SelectTab(id)">@label</button>
         }
     </nav>
 
-    <div class="settings-form" role="tabpanel">
+    <div class="@(_tab == "appearance" ? "appearance-panel" : "settings-form")" id="@($"settings-panel-{_tab}")" role="tabpanel" aria-labelledby="@($"settings-tab-{_tab}")">
         @switch (_tab)
         {
+            case "appearance":
+                <AppearanceSettings />
+                break;
+
             case "provider":
                 <p class="settings-note">Provider, model and API key for new sessions. Keys are kept per provider —
                     configure several and every one of them stays selectable from the session topbar.
@@ -402,6 +412,7 @@
 @code {
     private static readonly (string Id, string Label)[] Tabs =
     [
+        ("appearance", "Appearance"),
         ("provider", "Model & API"),
         ("custom", "Custom providers"),
         ("context", "Sessions & context"),
@@ -411,6 +422,31 @@
 
     private HarnessSettings _settings = new();
     private string _tab = "provider";
+    private bool _providerTabVisited;
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? RequestedTab { get; set; }
+
+    private void SelectTab(string id)
+    {
+        _tab = id;
+        Navigation.NavigateTo($"/settings?tab={id}", replace: true);
+    }
+
+    private async Task OnSettingsTabKey(KeyboardEventArgs e)
+    {
+        if (e.Key is not ("ArrowLeft" or "ArrowRight" or "Home" or "End")) return;
+        var index = Array.FindIndex(Tabs, t => t.Id == _tab);
+        index = e.Key switch
+        {
+            "Home" => 0,
+            "End" => Tabs.Length - 1,
+            "ArrowRight" => (index + 1) % Tabs.Length,
+            _ => (index - 1 + Tabs.Length) % Tabs.Length
+        };
+        SelectTab(Tabs[index].Id);
+        try { await Js.InvokeVoidAsync("blazorly.focusById", $"settings-tab-{_tab}"); }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or ObjectDisposedException) { }
+    }
 
     /// <summary>The decision seams the settings expose; the service also accepts "*".</summary>
     private static readonly (string Key, string Label)[] DecisionSeams =
@@ -472,9 +508,16 @@
         RefreshModels();
     }
 
-    protected override Task OnInitializedAsync()
-        // The model list comes from the provider's API — load it whenever the key is already available.
-        => MaybeAutoDiscoverAsync();
+    protected override async Task OnParametersSetAsync()
+    {
+        _tab = Tabs.Any(t => t.Id == RequestedTab) ? RequestedTab! : "provider";
+        // Appearance is local to the browser and does not need a provider request.
+        if (_tab == "provider" && !_providerTabVisited)
+        {
+            _providerTabVisited = true;
+            await MaybeAutoDiscoverAsync();
+        }
+    }
 
     private async Task MaybeAutoDiscoverAsync()
     {

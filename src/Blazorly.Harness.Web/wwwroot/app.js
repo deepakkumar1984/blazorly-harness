@@ -20,6 +20,24 @@ function blazorlyTrackPin(element) {
 }
 
 window.blazorly = {
+    focusById: function (id) { document.getElementById(id)?.focus(); },
+    revealWorkspaceTab: function (list) {
+        if (!list) return;
+        const reveal = () => {
+            if (!list.isConnected) { list._tabResize?.disconnect(); return; }
+            const active = list.querySelector(".code-tab.active");
+            if (!active) return;
+            const tabBounds = active.getBoundingClientRect();
+            const listBounds = list.getBoundingClientRect();
+            if (tabBounds.left < listBounds.left) list.scrollLeft += tabBounds.left - listBounds.left;
+            else if (tabBounds.right > listBounds.right) list.scrollLeft += tabBounds.right - listBounds.right;
+        };
+        if (!list._tabResize) {
+            list._tabResize = new ResizeObserver(reveal);
+            list._tabResize.observe(list);
+        }
+        reveal();
+    },
     scrollBottom: function (element, force) {
         if (!element) return;
         blazorlyTrackPin(element);
@@ -101,8 +119,71 @@ window.blazorly = {
             if (overflow > 0) el.style.transform = "translateX(" + (-overflow) + "px)";
         });
     },
-    // Sidebar workspace-group collapse state, persisted across reloads. Safe no-ops when
-    // localStorage is unavailable (private mode, embedded webviews).
+    // In-app editor: the textarea owns the text so keystrokes stay in the page.
+    // Blazor only hears dirty/save, and reads the value back when saving or switching tabs.
+    editor: {
+        bind: function (ta, gutter, dotNetRef, relativePath) {
+            if (!ta) return;
+            ta.editorState = { dotNetRef, relativePath, dirty: false };
+            if (ta.dataset.editorBound) return;
+            ta.dataset.editorBound = "1";
+            const notify = method => {
+                const state = ta.editorState;
+                state.dotNetRef?.invokeMethodAsync(method, state.relativePath).catch(() => {});
+            };
+            const paint = () => {
+                if (!gutter) return;
+                const n = Math.max(1, ta.value.split("\n").length);
+                if (gutter.dataset.n !== String(n)) {
+                    gutter.dataset.n = String(n);
+                    let text = "";
+                    for (let i = 1; i <= n; i++) text += i + "\n";
+                    gutter.textContent = text;
+                }
+                gutter.scrollTop = ta.scrollTop;
+            };
+            ta.addEventListener("scroll", paint);
+            ta.addEventListener("editor-sync", paint);
+            ta.addEventListener("input", () => {
+                paint();
+                if (!ta.editorState.dirty) {
+                    ta.editorState.dirty = true;
+                    notify("MarkDirty");
+                }
+            });
+            ta.addEventListener("keydown", e => {
+                if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+                    e.preventDefault();
+                    notify("SaveFromEditor");
+                    return;
+                }
+                if (e.key !== "Tab" || e.ctrlKey || e.metaKey || e.altKey) return;
+                e.preventDefault();
+                const start = ta.selectionStart, end = ta.selectionEnd;
+                ta.setRangeText("  ", start, end, "end");
+                ta.dispatchEvent(new Event("input", { bubbles: true }));
+            });
+            paint();
+        },
+        setText: function (ta, text, dirty) {
+            if (!ta) return;
+            if (ta.value !== (text ?? "")) ta.value = text ?? "";
+            if (ta.editorState) ta.editorState.dirty = !!dirty;
+            ta.dispatchEvent(new Event("editor-sync"));
+        },
+        saved: function (ta, text) {
+            if (!ta) return false;
+            const unchanged = ta.value === text;
+            if (ta.editorState) ta.editorState.dirty = !unchanged;
+            return unchanged;
+        },
+        getText: function (ta) {
+            return ta ? ta.value : "";
+        },
+        repaint: function (ta) {
+            if (ta) ta.dispatchEvent(new Event("editor-sync"));
+        }
+    },
     sidebar: {
         loadCollapsed: function () {
             try { return JSON.parse(localStorage.getItem("blazorly.sidebar.collapsed") ?? "null"); }
@@ -148,18 +229,22 @@ window.blazorly = {
         /// pastes fall through untouched.
         attachImagePaste: function (ta, dotnetRef, clipInput, sessionId) {
             if (!ta || !dotnetRef) return;
-            // Navigation re-creates the session component and its ref; the document-
-            // level listeners are bound once, so they must always reach the live one.
-            const holder = (this._holder ??= { ref: null });
+            // One document listener serves every chat. Read its current destination
+            // for each upload, then retain that destination until the upload finishes.
+            const holder = (this._holder ??= {});
             holder.ref = dotnetRef;
-            const upload = (file) => {
-                if (!file) return false;
+            holder.ta = ta;
+            holder.sessionId = sessionId;
+            holder.upload = (file) => {
+                if (!file || !holder.ta?.isConnected || !holder.ta.getClientRects().length) return false;
+                const destination = holder.sessionId;
+                const receiver = holder.ref;
                 const form = new FormData();
-                form.append("sessionId", sessionId);
+                form.append("sessionId", destination);
                 form.append("file", file, file.name || "pasted-file");
                 fetch("/api/session.uploadFile", { method: "POST", body: form })
                     .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(new Error("upload " + r.status + ": " + t))))
-                    .then(j => holder.ref.invokeMethodAsync("OnFileUploaded", j.id, j.fileName, j.kind)
+                    .then(j => receiver.invokeMethodAsync("OnFileUploaded", destination, j.id, j.fileName, j.kind)
                         .catch(() => { /* circuit gone mid-upload; nothing to do */ }))
                     .catch(err => console.error("[blazorly] attach failed:", err));
                 return true;
@@ -177,11 +262,13 @@ window.blazorly = {
                 document.addEventListener("paste", (e) => {
                     if (!hasFileItem(e)) return; // text paste: let the browser handle it
                     const items = e.clipboardData.items;
+                    let uploaded = false;
                     for (let i = 0; i < items.length; i++) {
-                        if (items[i].kind === "file") upload(items[i].getAsFile());
+                        if (items[i].kind === "file") uploaded = holder.upload(items[i].getAsFile()) || uploaded;
                     }
+                    if (!uploaded) return;
                     e.preventDefault();
-                    ta.focus(); // the next action is typing a note or hitting Send
+                    holder.ta.focus(); // the next action is typing a note or hitting Send
                 });
             }
             if (!this._dropBound) {
@@ -197,8 +284,9 @@ window.blazorly = {
                 document.addEventListener("drop", (e) => {
                     if (!e.dataTransfer?.files?.length) return;
                     e.preventDefault();
-                    for (const file of e.dataTransfer.files) upload(file);
-                    ta.focus();
+                    let uploaded = false;
+                    for (const file of e.dataTransfer.files) uploaded = holder.upload(file) || uploaded;
+                    if (uploaded) holder.ta.focus();
                 });
             }
             // File input (paperclip button)
@@ -206,13 +294,14 @@ window.blazorly = {
                 clipInput.dataset.clipBound = "1";
                 clipInput.addEventListener("change", () => {
                     const file = clipInput.files?.[0];
-                    if (upload(file)) clipInput.value = "";
+                    if (holder.upload(file)) clipInput.value = "";
                 });
             }
         },
     },
     // Drag handle that resizes the terminal drawer between min and max pixels.
-    attachTerminalResize: function (handle, drawer, min, max) {
+    // upward: the dock sits under the chat, so dragging the handle up grows it.
+    attachTerminalResize: function (handle, drawer, min, max, upward) {
         if (!handle || !drawer || handle.dataset.bound) return;
         handle.dataset.bound = "1";
         let dragging = false, startY = 0, startH = 0;
@@ -226,7 +315,8 @@ window.blazorly = {
         });
         handle.addEventListener("pointermove", e => {
             if (!dragging) return;
-            const h = Math.min(max, Math.max(min, startH + (e.clientY - startY)));
+            const delta = upward ? (startY - e.clientY) : (e.clientY - startY);
+            const h = Math.min(max, Math.max(min, startH + delta));
             drawer.style.height = h + "px";
         });
         const stop = () => { dragging = false; document.body.style.cursor = ""; };
@@ -258,12 +348,10 @@ window.blazorly = {
         if (el && typeof el.click === "function") el.click();
     },
     getTheme: function () {
-        return localStorage.getItem("blazorly.theme") || "dark";
+        return window.blazorlyAppearance.get().preferences.theme;
     },
     setTheme: function (theme) {
-        localStorage.setItem("blazorly.theme", theme);
-        document.documentElement.dataset.theme = theme;
-        return theme;
+        return window.blazorlyAppearance.update({ theme }).preferences.theme;
     },
     // Slash-command autocomplete: runs entirely in the browser (no round-trip per
     // keystroke). The server is contacted only when a command is picked.
@@ -362,6 +450,10 @@ window.blazorly = {
         attach: function (ta, menu, sessionId) {
             if (!ta || !menu) return;
             if (this._s && this._s.ta === ta) {
+                if (this._s.sessionId !== sessionId) {
+                    this._hide(this._s);
+                    this._s.cache.clear();
+                }
                 this._s.sessionId = sessionId;
                 return;
             }

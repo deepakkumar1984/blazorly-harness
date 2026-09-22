@@ -1,0 +1,60 @@
+@inject WorkspaceUiState WorkspaceUi
+@inject IJSRuntime Js
+@implements IDisposable
+
+<div class="workspace-tabs-bar" aria-label="Open workspace items">
+    <div class="code-tabs workspace-tabs" role="tablist" aria-label="Open chats and files" @ref="_tabList">
+        @if (WorkspaceUi.Tabs.Count == 0)
+        {
+            <span class="code-tab-hint">Open a chat or a file to get started</span>
+        }
+        @foreach (var tab in WorkspaceUi.Tabs)
+        {
+            <div class="code-tab @(WorkspaceUi.ActiveTabKey == tab.Key ? "active" : "")" @key="tab.Key">
+                <button type="button" class="code-tab-name" role="tab"
+                        aria-selected="@(WorkspaceUi.ActiveTabKey == tab.Key ? "true" : "false")"
+                        aria-label="@(tab.IsChat ? $"Chat: {tab.Title}" : tab.Title)"
+                        title="@(tab.RelativePath ?? tab.Title)" @onclick="() => OnActivate.InvokeAsync(tab)">
+                    @if (tab.IsChat)
+                    {
+                        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 3h11v7H9l-3.5 3v-3h-3z" /></svg>
+                    }
+                    else
+                    {
+                        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 2h5l3 3v9H4zM9 2v4h3" /></svg>
+                    }
+                    <span class="workspace-tab-title">@tab.Title</span>
+                    @if (tab.Dirty) { <span class="code-dirty" aria-label="Unsaved">●</span> }
+                </button>
+                <button type="button" class="icon code-tab-close" title="Close tab"
+                        aria-label="@(tab.IsChat ? $"Close chat {tab.Title}" : $"Close {tab.Title}")"
+                        @onclick="() => OnClose.InvokeAsync(tab)">×</button>
+            </div>
+        }
+    </div>
+    <button type="button" class="ghost small close-all-tabs" disabled="@(WorkspaceUi.Tabs.Count == 0)"
+            title="Close all open chat and file tabs" @onclick="OnCloseAll">Close all</button>
+</div>
+
+@code {
+    [Parameter] public EventCallback<WorkspaceTab> OnActivate { get; set; }
+    [Parameter] public EventCallback<WorkspaceTab> OnClose { get; set; }
+    [Parameter] public EventCallback OnCloseAll { get; set; }
+    private bool _disposed;
+    private ElementReference _tabList;
+    private string? _revealedTab;
+    protected override void OnInitialized() => WorkspaceUi.Changed += OnChanged;
+    private void OnChanged() => _ = InvokeAsync(() => { if (!_disposed) StateHasChanged(); });
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender && _revealedTab == WorkspaceUi.ActiveTabKey) return;
+        _revealedTab = WorkspaceUi.ActiveTabKey;
+        try { await Js.InvokeVoidAsync("blazorly.revealWorkspaceTab", _tabList); }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or ObjectDisposedException) { }
+    }
+    public void Dispose()
+    {
+        _disposed = true;
+        WorkspaceUi.Changed -= OnChanged;
+    }
+}

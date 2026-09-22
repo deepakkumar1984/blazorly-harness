@@ -345,6 +345,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 
     private readonly Dictionary<string, IDisposable> _routeEffects = new(StringComparer.Ordinal);
     private readonly string _home;
+    public string DataDirectory => _home;
 
     /// <summary>One long-lived client for streaming adapter requests (no request-level timeout; the caller's token governs).</summary>
     internal static readonly HttpClient StreamingHttp = new(new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(10) })
@@ -1000,7 +1001,9 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                 Providers = Settings.RetryProviders,
             };
         }
-        Workspaces = new WorkspaceRegistry(_home).EnsureDefault(Settings.WorkspaceRoot);
+        // Workspaces are registered explicitly by the user or the CLI. Startup must
+        // never turn the harness installation/working directory into a workspace.
+        Workspaces ??= new WorkspaceRegistry(_home);
     }
 
     public void SaveSettings()

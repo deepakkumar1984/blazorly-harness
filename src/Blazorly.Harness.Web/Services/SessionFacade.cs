@@ -43,6 +43,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     {
         var workspace = workspaceId is null ? harness.Workspaces.Default() : harness.Workspaces.Get(workspaceId)
             ?? throw new InvalidOperationException($"unknown workspace '{workspaceId}'");
+        harness.Workspaces.ThrowIfDeleting(workspace.Root);
         var session = harness.Sessions.Create(meta: new SessionMeta(Cwd: workspace.Root));
         AttachAgent(session, workspace);
         return session;
@@ -151,6 +152,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     public async Task PromptAsync(string sessionId, string text, string mode, string[]? attachmentIds = null)
     {
         var agent = harness.Agents.Get(sessionId) ?? throw new InvalidOperationException("unknown session");
+        harness.Workspaces.ThrowIfDeleting(agent.Session.Header.Cwd);
         var message = await BuildUserMessageAsync(sessionId, agent, text, attachmentIds);
         if (mode == "steer") agent.Steer(message);
         else agent.Followup(message);

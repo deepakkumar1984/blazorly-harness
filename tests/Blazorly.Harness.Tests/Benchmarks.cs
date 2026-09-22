@@ -209,6 +209,7 @@ public class HttpCancelLatencyBenchmarks : BootstrapperTestBase
         await boot.StartAsync(CancellationToken.None);
         try
         {
+            boot.Workspaces.Ensure(Home);
             var facade = new SessionFacade(boot, new UiEventBroker());
             var session = facade.CreateSession();
             var agent = facade.EnsureAgent(session);

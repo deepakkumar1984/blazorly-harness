@@ -25,6 +25,7 @@ public sealed class ComposerUploadTests
         {
             var boot = new HarnessBootstrapper();
             await boot.StartAsync(default);
+            boot.Workspaces.Add("Uploads", home);
             // No network in tests: swap the default route for the scripted adapter.
             boot.Llm.RegisterAdapter(new ScriptedLlmAdapter(_ => Scripted.Text("ok")));
             boot.Loop.DefaultSelection = new LlmCallConfig { Provider = "scripted", Model = "test" };
