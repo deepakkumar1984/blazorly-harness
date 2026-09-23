@@ -87,7 +87,8 @@ public class ProviderCatalogTests
     [Fact]
     public void Catalog_GroupsCloudVersusLocal_WithoutRegionSplit()
     {
-        Assert.Equal(["cloud", "local", "generic"], ProviderCatalog.Categories);
+        // No "generic" group: the generic slot is retired (Custom providers tab is the path).
+        Assert.Equal(["cloud", "local"], ProviderCatalog.Categories);
         Assert.All(ProviderCatalog.All, p =>
             Assert.Contains(p.Category, ProviderCatalog.Categories));
         // Country groupings are gone; every hosted route is one cloud bucket.
@@ -290,6 +291,127 @@ public class ProviderCatalogTests
         var models = new[] { new LlmModelInfo("p", "small", "small", MaxOutputTokens: 8_192) };
         Assert.Equal(8_192, HarnessBootstrapper.ResolveMaxOutputTokens(settings, models, "small"));
         Assert.Equal(65_536, HarnessBootstrapper.ResolveMaxOutputTokens(settings, models, "other"));
+    }
+
+    [Fact]
+    public void CompatibleSlot_RetiredFromCatalogButStillResolves()
+    {
+        Assert.DoesNotContain("openai-compatible", ProviderCatalog.Providers);
+        Assert.DoesNotContain(ProviderCatalog.All, p => p.Id == "openai-compatible");
+        // Existing configs keep routing until they switch away.
+        var legacy = ProviderCatalog.Info("openai-compatible");
+        Assert.NotNull(legacy);
+        Assert.Equal("https://gateway.example.com/v1", legacy.DefaultBaseUrl);
+        Assert.False(ProviderCatalog.RequiresApiKey("openai-compatible"));
+    }
+
+    [Fact]
+    public void MigrateLegacySettings_CompatibleSlotMatchingCatalogUrl_MovesOntoProvider()
+    {
+        // A Mimo endpoint configured before the Mimo entry existed moves over intact.
+        var settings = new HarnessSettings
+        {
+            Provider = "openai-compatible",
+            Model = "mimo-v2.5",
+            ApiKey = "tp-live",
+            BaseUrl = "https://token-plan-sgp.xiaomimimo.com/v1",
+            BaseUrlProvider = "openai-compatible",
+        };
+        settings.ProviderKeys["openai-compatible"] = "tp-stashed";
+        settings.ProviderBaseUrls["openai-compatible"] = "https://token-plan-sgp.xiaomimimo.com/v1";
+        settings.DiscoveredModels["openai-compatible"] = ["mimo-v2.5", "mimo-v2.6-pro"];
+
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+
+        Assert.Equal("mimo", settings.Provider);
+        Assert.Equal("mimo", settings.BaseUrlProvider);
+        Assert.Equal("mimo-v2.5", settings.Model); // still listed, so kept
+        Assert.Equal("tp-live", settings.ApiKey);
+        Assert.Equal("tp-stashed", settings.ProviderKeys["mimo"]);
+        Assert.Equal(["mimo-v2.5", "mimo-v2.6-pro"], settings.DiscoveredModels["mimo"].Select(m => m.Id));
+        Assert.Equal("https://token-plan-sgp.xiaomimimo.com/v1", settings.ProviderBaseUrls["mimo"]);
+        Assert.False(settings.ProviderKeys.ContainsKey("openai-compatible"));
+        Assert.False(settings.DiscoveredModels.ContainsKey("openai-compatible"));
+
+        // Second run is a no-op.
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+        Assert.Equal("mimo", settings.Provider);
+    }
+
+    [Fact]
+    public void MigrateLegacySettings_CompatibleSlotStaleModel_FallsBackToCatalogDefault()
+    {
+        var settings = new HarnessSettings
+        {
+            Provider = "openai-compatible",
+            Model = "default", // the retired slot's seed: not a real id on the new route
+            BaseUrl = "https://token-plan-sgp.xiaomimimo.com/v1",
+            BaseUrlProvider = "openai-compatible",
+        };
+
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+
+        Assert.Equal("mimo", settings.Provider);
+        Assert.Equal(ProviderCatalog.DefaultModel("mimo"), settings.Model);
+    }
+
+    [Fact]
+    public void MigrateLegacySettings_CompatibleSlotUnknownUrl_StaysLegacy()
+    {
+        var settings = new HarnessSettings
+        {
+            Provider = "openai-compatible",
+            Model = "gw-model",
+            ApiKey = "sk-gw",
+            BaseUrl = "https://gw.internal/v1",
+            BaseUrlProvider = "openai-compatible",
+        };
+        settings.ProviderKeys["openai-compatible"] = "sk-gw";
+
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+
+        Assert.Equal("openai-compatible", settings.Provider);
+        Assert.Equal("gw-model", settings.Model);
+        Assert.Equal("sk-gw", settings.ProviderKeys["openai-compatible"]);
+    }
+
+    [Fact]
+    public void MigrateLegacySettings_CompatibleSlotStashOnly_MovesWithoutSwitching()
+    {
+        // Inactive slot stash pointing at a catalog default moves over; active route untouched.
+        var settings = new HarnessSettings { Provider = "deepseek", BaseUrl = "https://api.deepseek.com" };
+        settings.ProviderKeys["openai-compatible"] = "tp-stashed";
+        settings.ProviderBaseUrls["openai-compatible"] = "https://token-plan-sgp.xiaomimimo.com/v1";
+        settings.DiscoveredModels["openai-compatible"] = ["mimo-v2.5"];
+
+        HarnessBootstrapper.MigrateLegacySettings(settings);
+
+        Assert.Equal("deepseek", settings.Provider);
+        Assert.Equal("tp-stashed", settings.ProviderKeys["mimo"]);
+        Assert.Equal(["mimo-v2.5"], settings.DiscoveredModels["mimo"].Select(m => m.Id));
+        Assert.False(settings.ProviderKeys.ContainsKey("openai-compatible"));
+    }
+
+    [Fact]
+    public void CustomRouteModels_ConfiguredIdsOrDefaultPlaceholder()
+    {
+        var listed = HarnessBootstrapper.CustomRouteModels(new CustomProviderConfig
+        {
+            Name = "mygw",
+            BaseUrl = "https://gw.internal/v1",
+            Models = ["a", "b"],
+        });
+        Assert.Equal(["a", "b"], [.. listed.Select(m => m.Id)]);
+        Assert.All(listed, m => Assert.Equal("mygw", m.Provider));
+
+        var empty = HarnessBootstrapper.CustomRouteModels(new CustomProviderConfig
+        {
+            Name = "mygw",
+            BaseUrl = "https://gw.internal/v1",
+        });
+        var only = Assert.Single(empty);
+        Assert.Equal("default", only.Id);
+        Assert.Equal("mygw", only.Provider);
     }
 
     [Fact]

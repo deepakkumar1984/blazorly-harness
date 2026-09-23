@@ -369,6 +369,16 @@ public class InvalidRequestHintTests
     }
 
     [Fact]
+    public void ArgumentsRejected_PointsAtTrajectoryNotMaxTokens()
+    {
+        var text = AgentDriver.WithInvalidRequestHint(
+            """provider rejected request (400: {"success":false,"error":"'arguments' must be valid JSON"})""",
+            new AgentOptions("p", "m", 4000));
+        Assert.Contains("arguments", text);
+        Assert.DoesNotContain("max_tokens 4000", text);
+    }
+
+    [Fact]
     public void NothingOursSent_MessagePassesThrough()
     {
         const string message = "provider rejected request (400: Invalid request parameters)";

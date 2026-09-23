@@ -290,6 +290,137 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
         }
     }
 
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("gw.internal/v1")]
+    [InlineData("just-a-hostname")]
+    [InlineData("ftp://gw.internal/v1")]
+    [InlineData("not a url at all %%%")]
+    public async Task Discover_BadBaseUrl_ReturnsErrorInsteadOfThrowing(string typedBaseUrl)
+    {
+        var boot = Boot("deepseek", "http://127.0.0.1:1/v1", "sk-test");
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var (ids, error) = await boot.DiscoverModelsAsync("deepseek", typedBaseUrl, "[REDACTED]");
+            Assert.Empty(ids);
+            Assert.NotNull(error);
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Discover_PreCancelledToken_ReturnsEmptyWithoutError()
+    {
+        using var server = new SilentServer();
+        var boot = Boot("deepseek", server.BaseUrl, "sk-test");
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var (ids, error) = await boot.DiscoverModelsAsync("deepseek", ct: cts.Token);
+            sw.Stop();
+            Assert.Empty(ids);
+            Assert.Null(error); // caller-cancelled: silent, not a timeout error
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"returned in {sw.Elapsed.TotalSeconds:0.0}s");
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Discover_MidFlightCancel_AbortsAHungEndpoint()
+    {
+        using var server = new SilentServer();
+        var boot = Boot("deepseek", server.BaseUrl, "sk-test");
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var pending = boot.DiscoverModelsAsync("deepseek", timeout: TimeSpan.FromMinutes(5), ct: cts.Token);
+            await Task.Delay(200);
+            cts.Cancel(); // the UI Cancel button path
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var (ids, error) = await pending;
+            sw.Stop();
+            Assert.Empty(ids);
+            Assert.Null(error);
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"cancel took {sw.Elapsed.TotalSeconds:0.0}s");
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Discover_CustomProviderBlankUrl_ReturnsError()
+    {
+        var home = Environment.GetEnvironmentVariable("BLAZORLY_HOME")!;
+        File.WriteAllText(Path.Combine(home, "settings.json"), JsonSerializer.Serialize(new
+        {
+            provider = "deepseek",
+            baseUrl = "http://127.0.0.1:1/v1",
+            customProviders = new[]
+            {
+                new { name = "mygw", baseUrl = " ", models = Array.Empty<string>() },
+            },
+        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+        var boot = new HarnessBootstrapper();
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var (ids, error) = await boot.DiscoverModelsAsync("mygw");
+            Assert.Empty(ids);
+            Assert.NotNull(error);
+            Assert.Contains("base URL", error);
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task RuntimeModels_CustomProvidersListTheirModels()
+    {
+        // The session picker reads RuntimeModels and hides empty groups: customs must resolve.
+        var home = Environment.GetEnvironmentVariable("BLAZORLY_HOME")!;
+        File.WriteAllText(Path.Combine(home, "settings.json"), JsonSerializer.Serialize(new
+        {
+            provider = "deepseek",
+            baseUrl = "http://127.0.0.1:1/v1",
+            customProviders = new[]
+            {
+                new { name = "mygw", baseUrl = "http://127.0.0.1:1/v1", models = new[] { "gw-a", "gw-b" } },
+                new { name = "emptygw", baseUrl = "http://127.0.0.1:1/v1", models = Array.Empty<string>() },
+            },
+        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+        var boot = new HarnessBootstrapper();
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var listed = boot.RuntimeModels("mygw");
+            Assert.Equal(["gw-a", "gw-b"], [.. listed.Select(m => m.Id)]);
+            Assert.All(listed, m => Assert.Equal("mygw", m.Provider));
+            // Same list the adapter was registered with: picker and route agree.
+            Assert.Equal(["gw-a", "gw-b"], [.. boot.Llm.ListModels("mygw").Select(m => m.Id)]);
+            var empty = boot.RuntimeModels("emptygw");
+            Assert.Equal("default", Assert.Single(empty).Id);
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task Discover_UpdatesCustomProviderModels()
     {

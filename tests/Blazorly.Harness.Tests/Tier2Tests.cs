@@ -141,6 +141,110 @@ public class RepeatGuardTests
     }
 }
 
+public class RepeatGuardStopTests
+{
+    private static ToolExecutionInput Call(Agent agent, string argsJson) => new()
+    {
+        Name = "strict",
+        Arguments = JsonSerializer.Deserialize<JsonElement>(argsJson),
+        CallId = "call_" + Guid.NewGuid().ToString("N")[..6],
+        Signal = CancellationToken.None,
+        Agent = agent,
+    };
+
+    private static ToolExecutionResult InvalidArgs() => new()
+    {
+        IsError = true,
+        Content = [],
+        Error = new ToolFailure("bad", new ToolErrorInfo("strict", ToolErrorCodes.InvalidArgs)),
+    };
+
+    private static ToolExecutionResult Ok() => new() { IsError = false, Content = [] };
+
+    private static ToolExecutionResult TimedOut() => new()
+    {
+        IsError = true,
+        Content = [],
+        Error = new ToolFailure("slow", new ToolErrorInfo("strict", ToolErrorCodes.ToolTimeout)),
+    };
+
+    [Fact]
+    public async Task ValidationFailures_ReachingThreshold_StopsTurn()
+    {
+        await using var harness = TestHarness.Create();
+        var guard = RepeatCallGuard.Mount(harness.Ctx, new RepeatGuardOptions { Threshold = 3, StopAfterValidationFailures = 4 });
+        var agent = harness.CreateAgent();
+
+        for (var i = 0; i < 3; i++) guard.Observe(Call(agent, "{}"), InvalidArgs());
+        Assert.False(guard.ShouldStop(agent, turn: 1));
+        guard.Observe(Call(agent, "{}"), InvalidArgs());
+        Assert.True(guard.ShouldStop(agent, turn: 1)); // 4th consecutive → stop
+    }
+
+    [Fact]
+    public async Task ValidationStreak_ResetsOnNonValidationOutcome()
+    {
+        await using var harness = TestHarness.Create();
+        var guard = RepeatCallGuard.Mount(harness.Ctx, new RepeatGuardOptions { Threshold = 3, StopAfterValidationFailures = 4 });
+        var agent = harness.CreateAgent();
+
+        for (var i = 0; i < 3; i++) guard.Observe(Call(agent, "{}"), InvalidArgs());
+        guard.Observe(Call(agent, "{}"), Ok()); // a success breaks the chain
+        for (var i = 0; i < 3; i++) guard.Observe(Call(agent, "{}"), InvalidArgs());
+        Assert.False(guard.ShouldStop(agent, turn: 1));
+        guard.Observe(Call(agent, "{\"command\":\"ls\"}"), TimedOut()); // runtime errors don't count either
+        Assert.False(guard.ShouldStop(agent, turn: 1));
+    }
+
+    [Fact]
+    public async Task ValidationStreak_ResetsAcrossTurns()
+    {
+        await using var harness = TestHarness.Create();
+        var guard = RepeatCallGuard.Mount(harness.Ctx, new RepeatGuardOptions { Threshold = 3, StopAfterValidationFailures = 4 });
+        var agent = harness.CreateAgent();
+
+        for (var i = 0; i < 3; i++) guard.Observe(Call(agent, "{}"), InvalidArgs());
+        Assert.False(guard.ShouldStop(agent, turn: 1));
+        Assert.False(guard.ShouldStop(agent, turn: 2)); // fresh turn, fresh budget
+        for (var i = 0; i < 3; i++) guard.Observe(Call(agent, "{}"), InvalidArgs());
+        Assert.False(guard.ShouldStop(agent, turn: 2));
+        guard.Observe(Call(agent, "{}"), InvalidArgs());
+        Assert.True(guard.ShouldStop(agent, turn: 2));
+    }
+
+    private sealed class StrictTool : ToolDefinition<StrictTool.Args, string>
+    {
+        public sealed record Args(string Command);
+        public override string Name => "strict";
+        public override string Description => "needs a command";
+        public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(
+            properties: new Dictionary<string, JsonSchema.Schema> { ["command"] = JsonSchema.String() },
+            required: ["command"]);
+        public override JsonSchema.Schema Output { get; } = JsonSchema.String();
+        protected override Task<string> ExecuteTyped(Args args, ToolRunContext exec) => Task.FromResult($"ran:{args.Command}");
+        protected override IReadOnlyList<ContentBlock> RenderTyped(Args args, string value) => [new TextBlock(value)];
+    }
+
+    [Fact]
+    public async Task IdenticalValidationFailures_EndsTurnInsteadOfLooping()
+    {
+        // The reported wedge: every step emits the same schema-invalid call, each step costs
+        // a full model request, and the advisory alone never ends it.
+        await using var harness = TestHarness.Create(_ => Scripted.ToolCall("strict", new { }));
+        _ = harness.Tools.Register(new StrictTool());
+        RepeatCallGuard.Mount(harness.Ctx, new RepeatGuardOptions { Threshold = 3, StopAfterValidationFailures = 4 });
+        var agent = harness.CreateAgent();
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        Assert.Equal(4, agent.Session.Events.Count(e => e.Type == SessionEventTypes.StepStart));
+        Assert.Equal(4, agent.Session.Events.Count(e => e.Type == SessionEventTypes.ToolCall));
+        var turnEnd = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd);
+        Assert.Contains("blocked", turnEnd.Data.GetRawText());
+    }
+}
+
 public class ToolTimeoutPolicyTests
 {
     [Fact]

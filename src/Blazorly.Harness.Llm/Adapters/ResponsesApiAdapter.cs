@@ -196,7 +196,7 @@ public sealed class ResponsesApiAdapter : LlmAdapter
                             ["type"] = "function_call",
                             ["call_id"] = toolCall.Id,
                             ["name"] = toolCall.Name,
-                            ["arguments"] = toolCall.Arguments,
+                            ["arguments"] = ToolCallWireFormat.CoerceArgumentsJson(toolCall.Arguments),
                         });
                     }
                     var assistantText = Flatten(message.Content);

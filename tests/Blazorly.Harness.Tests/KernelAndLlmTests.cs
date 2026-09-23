@@ -267,6 +267,38 @@ public class OpenAiAdapterWireTests
     }
 
     [Fact]
+    public void InvalidToolCallArguments_CoercedToEmptyObjectOnTheWire()
+    {
+        // A model emission of "" or truncated JSON executes locally as {} — the wire must
+        // say the same, or strict gateways 400 every replay of the stored call.
+        GenerateOptions OptionsWithArgs(params string[] args) => new()
+        {
+            Provider = "test",
+            Model = "m1",
+            Messages = args.Select((a, i) => Message.CreateAssistant("test", "m1",
+                [new ToolCallBlock($"call_{i}", "bash", a)])).ToList(),
+        };
+        var bad = OptionsWithArgs("", "{\"command\":\"ls", "not json at all");
+        var openaiJson = System.Text.Json.JsonSerializer.Serialize(
+            new OpenAiCompatibleAdapter("test", "http://localhost", "k", [], new HttpClient()).BuildWireBody(bad));
+        Assert.Equal(3, System.Text.RegularExpressions.Regex.Matches(openaiJson, "\"arguments\":\"\\{\\}\"").Count);
+        var responsesJson = System.Text.Json.JsonSerializer.Serialize(
+            new ResponsesApiAdapter("test", "http://localhost", "k", [], new HttpClient()).BuildWireBody(bad));
+        Assert.Equal(3, System.Text.RegularExpressions.Regex.Matches(responsesJson, "\"arguments\":\"\\{\\}\"").Count);
+
+        // Valid JSON travels untouched on both wires.
+        var good = OptionsWithArgs("{\"command\":\"ls\"}", "[1,2]");
+        var goodOpenAi = System.Text.Json.JsonSerializer.Serialize(
+            new OpenAiCompatibleAdapter("test", "http://localhost", "k", [], new HttpClient()).BuildWireBody(good));
+        // (System.Text.Json escapes the inner quotes as \u0022; the value is untouched.)
+        Assert.Contains("\"arguments\":\"{\\u0022command\\u0022:\\u0022ls\\u0022}\"", goodOpenAi);
+        Assert.Contains("\"arguments\":\"[1,2]\"", goodOpenAi);
+        var goodResponses = System.Text.Json.JsonSerializer.Serialize(
+            new ResponsesApiAdapter("test", "http://localhost", "k", [], new HttpClient()).BuildWireBody(good));
+        Assert.Contains("\"arguments\":\"{\\u0022command\\u0022:\\u0022ls\\u0022}\"", goodResponses);
+    }
+
+    [Fact]
     public void ClassifiesHttpErrors()
     {
         Assert.Equal(LlmErrorCodes.Auth, OpenAiCompatibleAdapter.ClassifyHttp(401, "").Code);

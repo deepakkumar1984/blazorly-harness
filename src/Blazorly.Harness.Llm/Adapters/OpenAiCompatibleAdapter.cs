@@ -417,7 +417,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
                             {
                                 id = tc.Id,
                                 type = "function",
-                                function = new { name = tc.Name, arguments = tc.Arguments },
+                                function = new { name = tc.Name, arguments = ToolCallWireFormat.CoerceArgumentsJson(tc.Arguments) },
                             }).ToList()
                             : null,
                     });

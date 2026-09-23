@@ -229,7 +229,10 @@ public static class TrajectoryBuilder
                 : $"attempt {n.GetInt32()}, "
             : "";
         var source = e.Data.TryGetProperty("retryAfterMs", out _) ? " (provider retry-after)" : "";
-        return $"{attempt}waiting {wait}{source}";
+        var adapt = e.Data.TryGetProperty("maxTokensFrom", out var from) && e.Data.TryGetProperty("maxTokensTo", out var to)
+            ? $"max_tokens {from.GetInt64():N0} → {to.GetInt64():N0}, "
+            : "";
+        return $"{adapt}{attempt}waiting {wait}{source}";
     }
 
     private static string? SafeDetail(SessionEvent e, string property)

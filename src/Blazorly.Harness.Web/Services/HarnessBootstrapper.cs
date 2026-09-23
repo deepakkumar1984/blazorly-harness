@@ -695,11 +695,27 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         return new Blazorly.Harness.Tools.HttpWebProvider();
     }
 
-    /// <summary>The selectable model list for a route: the live API list once discovered (known ids
-    /// keep their catalog metadata — names, windows, effort levels; unknown ids take any sizes
-    /// the endpoint published), otherwise the catalog seeds.</summary>
+    /// <summary>Models for a custom gateway route: its configured ids, or a single "default"
+    /// placeholder while none are listed (discovery fills them in). Shared with route
+    /// registration so the session picker and the adapter never disagree.</summary>
+    public static IReadOnlyList<LlmModelInfo> CustomRouteModels(CustomProviderConfig custom)
+    {
+        var models = custom.Models
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Select(m => new LlmModelInfo(custom.Name, m, m))
+            .ToList();
+        if (models.Count == 0) models = [new LlmModelInfo(custom.Name, "default", $"{custom.BaseUrl} (default model)")];
+        return models;
+    }
+
+    /// <summary>The selectable model list for a route: a custom gateway's configured ids, else
+    /// the live API list once discovered (known ids keep their catalog metadata — names,
+    /// windows, effort levels; unknown ids take any sizes the endpoint published),
+    /// otherwise the catalog seeds.</summary>
     public IReadOnlyList<LlmModelInfo> RuntimeModels(string provider)
     {
+        if (Settings.CustomProviders.FirstOrDefault(c => c.Name == provider) is { } custom)
+            return CustomRouteModels(custom);
         var catalog = ProviderCatalog.For(provider, Settings.BaseUrl);
         if (Settings.DiscoveredModels.TryGetValue(provider, out var found) && found.Count > 0)
         {
@@ -839,7 +855,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         property.SetValue(settings, false);
     }
     public async Task<(IReadOnlyList<string> Models, string? Error)> DiscoverModelsAsync(
-        string provider, string? typedBaseUrl = null, string? typedApiKey = null, TimeSpan? timeout = null)
+        string provider, string? typedBaseUrl = null, string? typedApiKey = null, TimeSpan? timeout = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(provider)) return ([], "provider is required");
         var custom = Settings.CustomProviders.FirstOrDefault(c => c.Name == provider);
@@ -867,12 +883,21 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                 };
             }
         }
+        // A pasted URL with whitespace or no scheme must fail with a message, not with an
+        // unhandled UriFormatException/InvalidOperationException on the caller's context.
+        baseUrl = (baseUrl ?? "").Trim();
+        if (baseUrl.Length == 0)
+            return ([], "enter the endpoint's base URL first (for example https://gateway.example.com/v1)");
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            return ([], $"'{baseUrl}' is not an absolute http(s) URL — include the scheme, e.g. https://host/v1");
         try
         {
             // Discovery rides the streaming client, whose timeout is infinite (long generations);
             // without a cap of its own, one stalled GET /models wedges the Settings button on
-            // "Loading…" forever. Metadata must answer fast or fail with a message.
-            using var discoveryCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+            // "Loading…" for the whole wait. Metadata must answer fast or fail with a message.
+            // The caller's token (the UI Cancel button) links in beside the timeout.
+            using var discoveryCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(ct);
             discoveryCts.CancelAfter(timeout ?? TimeSpan.FromSeconds(30));
             var models = await LlmModelDiscovery.DiscoverAsync(provider, baseUrl, apiKey, StreamingHttp, configure, discoveryCts.Token).ConfigureAwait(false);
             var ids = models.Select(m => m.Id).ToList();
@@ -892,6 +917,10 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             ApplyProviderSelection();
             return (ids, null);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return ([], null); // caller cancelled: silent, no list and no error
+        }
         catch (OperationCanceledException)
         {
             return ([], $"model list request timed out after {(int)(timeout ?? TimeSpan.FromSeconds(30)).TotalSeconds}s — {baseUrl} accepted the connection but never answered. "
@@ -900,6 +929,10 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         catch (Exception ex) when (ex is LlmException or HttpRequestException or System.Text.Json.JsonException or InvalidOperationException)
         {
             return ([], ex.Message);
+        }
+        catch (Exception ex)
+        {
+            return ([], $"model list request failed: {ex.Message}");
         }
     }
 
@@ -956,12 +989,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             var key = !string.IsNullOrWhiteSpace(custom.ApiKey) ? custom.ApiKey
                 : !string.IsNullOrWhiteSpace(custom.ApiKeyEnv) ? Environment.GetEnvironmentVariable(custom.ApiKeyEnv)
                 : null;
-            var models = custom.Models
-                .Where(m => !string.IsNullOrWhiteSpace(m))
-                .Select(m => new LlmModelInfo(custom.Name, m, m))
-                .ToList();
-            if (models.Count == 0) models = [new LlmModelInfo(custom.Name, "default", $"{custom.BaseUrl} (default model)")];
-            RegisterRoute(BuildRoute(custom.Name, custom.BaseUrl, key, models));
+            RegisterRoute(BuildRoute(custom.Name, custom.BaseUrl, key, CustomRouteModels(custom)));
             desired.Add(custom.Name);
         }
         // Routes that are no longer configured are unregistered (e.g. a removed custom provider).
@@ -1058,6 +1086,56 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             settings.BaseUrl = ProviderCatalog.Info("zai-coding")!.DefaultBaseUrl;
         if (settings.ProviderBaseUrls.TryGetValue("zai-coding", out var stashed) && stashed.TrimEnd('/') == legacyCodingUrl)
             settings.ProviderBaseUrls["zai-coding"] = ProviderCatalog.Info("zai-coding")!.DefaultBaseUrl;
+
+        MigrateRetiredCompatibleSlot(settings);
+    }
+
+    /// <summary>Moves a retired generic slot onto the catalog provider it actually points at:
+    /// when the slot's URL equals a built-in default (a Mimo endpoint configured before the
+    /// Mimo entry existed), the selection, key stash and discovered list move to that id.
+    /// Anything else stays on the hidden legacy id and keeps routing until the user
+    /// switches away — never silently repointed. Idempotent.</summary>
+    private static void MigrateRetiredCompatibleSlot(HarnessSettings settings)
+    {
+        const string retired = "openai-compatible";
+        string? slotUrl = null;
+        if (settings.Provider == retired && settings.BaseUrlProvider is null or retired)
+            slotUrl = settings.BaseUrl;
+        else if (settings.ProviderBaseUrls.TryGetValue(retired, out var stashedUrl))
+            slotUrl = stashedUrl;
+        if (string.IsNullOrWhiteSpace(slotUrl)) return;
+        var match = ProviderCatalog.All.FirstOrDefault(p =>
+            p.DefaultBaseUrl.TrimEnd('/').Equals(slotUrl.Trim().TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+        if (match is null) return;
+        if (settings.ProviderKeys.Remove(retired, out var key) && !settings.ProviderKeys.ContainsKey(match.Id))
+            settings.ProviderKeys[match.Id] = key;
+        List<DiscoveredModelInfo>? moved = null;
+        if (settings.DiscoveredModels.Remove(retired, out moved))
+        {
+            if (settings.DiscoveredModels.TryGetValue(match.Id, out var existing))
+            {
+                var seen = new HashSet<string>(existing.Select(m => m.Id), StringComparer.Ordinal);
+                foreach (var entry in moved)
+                    if (seen.Add(entry.Id)) existing.Add(entry);
+            }
+            else
+            {
+                settings.DiscoveredModels[match.Id] = moved;
+            }
+        }
+        if (settings.ProviderBaseUrls.Remove(retired, out var url))
+            settings.ProviderBaseUrls.TryAdd(match.Id, url);
+        if (settings.Provider != retired) return;
+        settings.Provider = match.Id;
+        if (settings.BaseUrlProvider == retired) settings.BaseUrlProvider = match.Id;
+        // The slot's "default" seed (or any id the new route never listed) would 400: fall
+        // back to the catalog default unless the current model is known there.
+        var known = new HashSet<string>(ProviderCatalog.For(match.Id, "").Select(m => m.Id), StringComparer.Ordinal);
+        if (moved is not null)
+            foreach (var entry in moved)
+                known.Add(entry.Id);
+        if (!known.Contains(settings.Model))
+            settings.Model = ProviderCatalog.DefaultModel(match.Id);
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -1069,7 +1147,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 }
 
 /// <summary>A built-in provider route: display metadata plus defaults for the Settings UI.</summary>
-/// <param name="Category">cloud | local | generic — drives the grouped picker.</param>
+/// <param name="Category">cloud | local — drives the grouped picker ("generic" survives on the legacy record only).</param>
 public sealed record ProviderInfo(
     string Id,
     string Name,
@@ -1132,12 +1210,19 @@ public static class ProviderCatalog
         new("omlx", "oMLX (local, MLX)", "local", "http://localhost:8000/v1"),
         // Unsloth Studio serves an OpenAI-compatible API from the local app; auth uses a key from its UI.
         new("unsloth", "Unsloth Studio (local)", "local", "http://localhost:8888/v1", "UNSLOTH_API_KEY"),
-        new("openai-compatible", "Custom OpenAI-compatible", "generic", "https://gateway.example.com/v1"),
     ];
+
+    /// <summary>The retired generic slot: no longer offered for new selections (the Custom
+    /// providers tab is the path for extra endpoints), but existing configs keep routing
+    /// until the user switches away — resolving metadata keeps them working verbatim.</summary>
+    private static readonly ProviderInfo LegacyCompatibleSlot =
+        new("openai-compatible", "Custom OpenAI-compatible (legacy)", "generic", "https://gateway.example.com/v1");
 
     public static readonly IReadOnlyList<string> Providers = [.. All.Select(p => p.Id)];
 
-    public static ProviderInfo? Info(string provider) => All.FirstOrDefault(p => p.Id == provider);
+    public static ProviderInfo? Info(string provider) =>
+        All.FirstOrDefault(p => p.Id == provider)
+        ?? (provider == LegacyCompatibleSlot.Id ? LegacyCompatibleSlot : null);
 
     /// <summary>Only cloud routes demand a key up front; local servers and open gateways
     /// stream keyless and let the server reject them if it actually wants auth.</summary>
@@ -1150,7 +1235,7 @@ public static class ProviderCatalog
     /// </summary>
     public static bool UsesResponsesApi(string provider) => provider is "xai" or "openai" or "zai-coding";
 
-    public static IReadOnlyList<string> Categories => ["cloud", "local", "generic"];
+    public static IReadOnlyList<string> Categories => ["cloud", "local"];
 
     public static IReadOnlyList<LlmModelInfo> For(string provider, string baseUrl) => provider switch
     {
@@ -1341,6 +1426,7 @@ public static class ProviderCatalog
             new LlmModelInfo(provider, "gpt-oss-20b", "GPT-OSS 20B", ContextWindowTokens: 131_072, MaxOutputTokens: 32_768),
             new LlmModelInfo(provider, "qwen3-coder-480b-a35b-instruct", "Qwen3 Coder 480B", ContextWindowTokens: 262_144, MaxOutputTokens: 32_768),
         ],
+        // Retired slot: seeds for configs still on the legacy id until they switch away.
         "openai-compatible" =>
         [
             new LlmModelInfo(provider, "default", $"{baseUrl} (default model)", ReasoningEfforts: OpenAiEfforts),

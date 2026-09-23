@@ -4,6 +4,7 @@
 @inject SessionFacade Facade
 @inject NavigationManager Navigation
 @inject IJSRuntime Js
+@implements IDisposable
 
 <PageTitle>Settings · Blazorly Harness</PageTitle>
 
@@ -53,6 +54,12 @@
                                     <option value="@provider.Id">@provider.Name</option>
                                 }
                             </optgroup>
+                        }
+                        @if (ProviderCatalog.Info(_settings.Provider) is { } current && !ProviderCatalog.Providers.Contains(current.Id))
+                        {
+                            // Retired ids (e.g. the old generic slot) stay selectable while active so the
+                            // dropdown never misdisplays the current route; switching away is one-way.
+                            <option value="@current.Id">@current.Name — pick a built-in or Custom provider to migrate</option>
                         }
                     </select>
                 </label>
@@ -111,6 +118,10 @@
                     <button type="button" class="ghost" @onclick="DiscoverModels" disabled="@_discovering">
                         @(_discovering ? "Loading…" : _discovered is { Count: > 0 } ? "Reload models" : "Load models from the API")
                     </button>
+                    @if (_discovering)
+                    {
+                        <button type="button" class="ghost" @onclick="CancelDiscover">Cancel</button>
+                    }
                     @if (_discoverError is not null)
                     {
                         <span class="discover-error">@_discoverError</span>
@@ -138,6 +149,9 @@
                                 <code class="custom-row-url">@custom.BaseUrl</code>
                             </div>
                             <span class="custom-row-models">@custom.Models.Count models</span>
+                            <button type="button" class="ghost small" @onclick="() => DiscoverCustom(custom)" disabled="@(_customDiscovering is not null)">
+                                @(_customDiscovering == custom.Name ? "Loading…" : "Discover")
+                            </button>
                             <button type="button" class="ghost small" @onclick="() => EditCustom(custom)">Edit</button>
                             <button type="button" class="icon danger" title="Remove provider" @onclick='() => RemoveCustomProvider(custom)'>✕</button>
                         </div>
@@ -145,6 +159,10 @@
                 </div>
                 <div class="discover-row">
                     <button type="button" class="ghost" @onclick="AddCustomProvider">＋ Add custom provider</button>
+                    @if (_customDiscoverError is not null)
+                    {
+                        <span class="discover-error">@_customDiscoverError</span>
+                    }
                 </div>
                 break;
 
@@ -398,7 +416,7 @@
                 <input type="text" @bind="_customModal.ApiKeyEnv" @bind:event="oninput" placeholder="MY_GATEWAY_API_KEY" />
             </label>
             <label class="modal-field">
-                <span>Model ids (comma separated — or use Discover models after saving)</span>
+                <span>Model ids (comma separated — or leave blank and press Discover on the saved row)</span>
                 <textarea rows="3" @bind="_customModal.ModelsText"></textarea>
             </label>
             <div class="modal-actions">
@@ -508,14 +526,27 @@
         RefreshModels();
     }
 
-    protected override async Task OnParametersSetAsync()
+    protected override void OnParametersSet()
     {
         _tab = Tabs.Any(t => t.Id == RequestedTab) ? RequestedTab! : "provider";
-        // Appearance is local to the browser and does not need a provider request.
+        // A page load/refresh never fires network: the persisted API list (if any) seeds the
+        // dropdown labels below, and discovery only runs on explicit gestures (provider switch,
+        // key blur, Load click). Auto-loading here re-fired a hanging custom URL on every
+        // refresh and wedged the button on "Loading…" with no way out.
         if (_tab == "provider" && !_providerTabVisited)
         {
             _providerTabVisited = true;
-            await MaybeAutoDiscoverAsync();
+            SeedDiscoveredFromPersisted();
+        }
+    }
+
+    private void SeedDiscoveredFromPersisted()
+    {
+        if (_discovered is null
+            && Facade.Harness.Settings.DiscoveredModels.TryGetValue(_settings.Provider, out var found)
+            && found.Count > 0)
+        {
+            _discovered = [.. found.Select(m => m.Id)];
         }
     }
 
@@ -526,6 +557,12 @@
             && string.IsNullOrWhiteSpace(Facade.Harness.Settings.EffectiveApiKey))
         {
             return; // no key yet: keep the placeholder, list nothing
+        }
+        if (string.IsNullOrWhiteSpace(_settings.BaseUrl)) return; // nothing to call yet
+        if (_settings.Provider == "openai-compatible"
+            && _settings.BaseUrl.Trim().TrimEnd('/') == (ProviderCatalog.Info("openai-compatible")?.DefaultBaseUrl.TrimEnd('/')))
+        {
+            return; // untouched example placeholder: wait for the user to type a real endpoint
         }
         await DiscoverModels();
     }
@@ -557,8 +594,14 @@
         _ => "Other",
     };
 
-    /// <summary>Records which provider the typed URL belongs to, so a later provider switch does not send it to the wrong host.</summary>
-    private void BaseUrlEdited() => _settings.BaseUrlProvider = _settings.Provider;
+    /// <summary>Records which provider the typed URL belongs to, so a later provider switch does not send it to the wrong host.
+    /// The previously loaded list belonged to the old URL, so it clears until Load runs again.</summary>
+    private void BaseUrlEdited()
+    {
+        _settings.BaseUrlProvider = _settings.Provider;
+        _discovered = null;
+        _models = [];
+    }
 
     private async Task ProviderChanged()
     {
@@ -569,6 +612,7 @@
         _discovered = null;
         _discoverError = null;
         RefreshModels();
+        SeedDiscoveredFromPersisted();
         StateHasChanged();
         await MaybeAutoDiscoverAsync();
     }
@@ -586,13 +630,20 @@
 
     private bool HasApiList => Facade.Harness.Settings.DiscoveredModels.TryGetValue(_settings.Provider, out var ids) && ids.Count > 0;
 
+    private System.Threading.CancellationTokenSource? _discoverCts;
+
     private async Task DiscoverModels()
     {
+        // The button disables while a run is in flight; this also swallows a second click
+        // that lands before the re-render, so two runs can never share the cancel source.
+        if (_discovering) return;
+        _discoverCts = new System.Threading.CancellationTokenSource();
         _discovering = true;
         _discoverError = null;
         try
         {
-            var (models, error) = await Facade.Harness.DiscoverModelsAsync(_settings.Provider, _settings.BaseUrl, _settings.ApiKey);
+            var (models, error) = await Facade.Harness.DiscoverModelsAsync(
+                _settings.Provider, _settings.BaseUrl, _settings.ApiKey, ct: _discoverCts.Token);
             if (error is not null)
             {
                 _discoverError = error;
@@ -604,11 +655,36 @@
                 RefreshModels();
             }
         }
+        catch (Exception ex)
+        {
+            // DiscoverModelsAsync already funnels failures into its error slot; this keeps any
+            // unexpected throw off the error UI and the button out of "Loading…" regardless.
+            _discoverError = ex.Message;
+            _discovered = null;
+        }
         finally
         {
             _discovering = false;
-            StateHasChanged();
+            _discoverCts?.Dispose();
+            _discoverCts = null;
+            if (!_disposed) StateHasChanged();
         }
+    }
+
+    private void CancelDiscover()
+    {
+        try { _discoverCts?.Cancel(); }
+        catch (ObjectDisposedException) { }
+    }
+
+    private bool _disposed;
+
+    public void Dispose()
+    {
+        _disposed = true;
+        // Navigating away aborts a hung request instead of leaving it to time out.
+        try { _discoverCts?.Cancel(); }
+        catch (ObjectDisposedException) { }
     }
 
     private void AddCustomProvider()
@@ -646,7 +722,7 @@
             _customError = "name and base URL are required";
             return;
         }
-        if (ProviderCatalog.Providers.Contains(name) ||
+        if (ProviderCatalog.Info(name) is not null ||
             _settings.CustomProviders.Any(c => c != _original && c.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
         {
             _customError = $"'{name}' is already a provider name";
@@ -681,6 +757,32 @@
         _settings.CustomProviders.Remove(custom);
         Facade.Harness.ApplyProviderSelection(); // drop the route immediately
         StateHasChanged();
+    }
+
+    private string? _customDiscovering;
+    private string? _customDiscoverError;
+
+    private async Task DiscoverCustom(CustomProviderConfig custom)
+    {
+        if (_customDiscovering is not null) return;
+        _customDiscovering = custom.Name;
+        _customDiscoverError = null;
+        try
+        {
+            // Same GET /models path as the built-ins; the bootstrapper appends new ids to
+            // the custom entry, persists settings and rebuilds the route.
+            var (_, error) = await Facade.Harness.DiscoverModelsAsync(custom.Name);
+            if (error is not null) _customDiscoverError = $"{custom.Name}: {error}";
+        }
+        catch (Exception ex)
+        {
+            _customDiscoverError = $"{custom.Name}: {ex.Message}";
+        }
+        finally
+        {
+            _customDiscovering = null;
+            if (!_disposed) StateHasChanged();
+        }
     }
 
     private static readonly (string Key, string Label)[] Toggles =

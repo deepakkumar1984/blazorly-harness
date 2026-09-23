@@ -156,6 +156,8 @@ public sealed class AgentDriver
             hint = $"The route rejected reasoning effort '{effort}': the model may not support it. Reset with /effort default or pick another level in the model dialog.";
         else if (maxTokens is not null && (lower.Contains("max_tokens") || lower.Contains("max output") || lower.Contains("max_output")))
             hint = $"max_tokens {maxTokens} exceeds what this route allows. Lower Max output tokens in Settings → Context.";
+        else if (lower.Contains("argument") || lower.Contains("tool_call") || lower.Contains("tool call"))
+            hint = "The route rejected a tool call's arguments as invalid JSON. Stored calls are coerced to {} on the wire — inspect the failing call in the trajectory if this repeats.";
         else
         {
             var suspects = new List<string>();

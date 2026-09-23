@@ -90,10 +90,13 @@ public sealed class RetryService
     private async Task<RequestErrorAction?> DecideAsync(RequestErrorEvent payload, CancellationToken ct)
     {
         var policy = PolicyFor(payload.Agent.Options.Provider);
+        var adaptable = TryReduceMaxTokens(payload.Failure, payload.Agent.Options.MaxTokens, out var reduced);
         if (policy.Mode != "always")
         {
-            if (!LlmErrorCodes.IsRetryable(payload.Failure.Code, policy.RetryableCodes)) return null;
             if (payload.Attempts >= policy.MaxRetries) return null;
+            // Adaptation is its own retryable case: an invalid-request failure with a
+            // reducible cap retries below; anything else still needs a retryable code.
+            if (!adaptable && !LlmErrorCodes.IsRetryable(payload.Failure.Code, policy.RetryableCodes)) return null;
         }
 
         // Context-overflow recovery belongs to compaction; a provider ask longer than we are
@@ -103,21 +106,23 @@ public sealed class RetryService
         if (payload.Failure.Code == LlmErrorCodes.ContextWindowExceeded) return null;
         if (providerDelay is { } ask && ask > RetryAfterCap(policy) && policy.Mode != "always") return null;
 
+        // A 400 that names no other culprit is usually an oversized max_tokens — the model's
+        // true output ceiling is unknown or lower than configured (undiscovered routes have no
+        // metadata to clamp against). Halve the agent's cap and retry immediately instead of
+        // failing the turn; the reduced value sticks as a proven-accepted ceiling.
+        if (adaptable)
+        {
+            var from = payload.Agent.Options.MaxTokens!.Value;
+            payload.Agent.Options = payload.Agent.Options with { MaxTokens = reduced };
+            var adaptId = $"retry_{++_counter}";
+            AppendRetryScheduled(payload, policy, adaptId, delayMs: 0, retryAfterMs: null, maxTokensFrom: from, maxTokensTo: reduced);
+            AppendRetryStarted(payload, adaptId);
+            return RequestErrorAction.Retry(backoffHandled: true);
+        }
+
         var delay = ScheduleDelay(policy, providerDelay, payload.Attempts, payload.Failure.Code);
         var retryId = $"retry_{++_counter}";
-        var session = payload.Agent.Session;
-        session.Append(SessionEventTypes.LlmRetry, new
-        {
-            retryId,
-            provider = payload.Agent.Options.Provider,
-            mode = policy.Mode,
-            code = payload.Failure.Code,
-            message = payload.Failure.Message,
-            attempt = payload.Attempts + 1,
-            delayMs = delay,
-            retryAfterMs = delay == providerDelay ? providerDelay : null,
-            maxRetries = policy.Mode == "always" ? (int?)null : policy.MaxRetries,
-        });
+        AppendRetryScheduled(payload, policy, retryId, delay, delay == providerDelay ? providerDelay : null);
 
         try
         {
@@ -129,14 +134,71 @@ public sealed class RetryService
             throw;
         }
 
-        session.Append(SessionEventTypes.LlmRetryStarted, new
+        AppendRetryStarted(payload, retryId);
+        return RequestErrorAction.Retry(backoffHandled: true);
+    }
+
+    private static void AppendRetryScheduled(RequestErrorEvent payload, RetryPolicyConfig policy, string retryId,
+        long delayMs, long? retryAfterMs, int? maxTokensFrom = null, int? maxTokensTo = null)
+    {
+        payload.Agent.Session.Append(SessionEventTypes.LlmRetry, new
+        {
+            retryId,
+            provider = payload.Agent.Options.Provider,
+            mode = policy.Mode,
+            code = payload.Failure.Code,
+            message = payload.Failure.Message,
+            attempt = payload.Attempts + 1,
+            delayMs,
+            retryAfterMs,
+            maxRetries = policy.Mode == "always" ? (int?)null : policy.MaxRetries,
+            maxTokensFrom,
+            maxTokensTo,
+        });
+    }
+
+    private static void AppendRetryStarted(RequestErrorEvent payload, string retryId)
+    {
+        payload.Agent.Session.Append(SessionEventTypes.LlmRetryStarted, new
         {
             retryId,
             turn = payload.Turn,
             step = payload.Step,
             attempt = payload.Attempts + 1,
         });
-        return RequestErrorAction.Retry(backoffHandled: true);
+    }
+
+    /// <summary>Floor for adaptive max_tokens reduction: a route rejecting this little has a different problem.</summary>
+    private const int AdaptiveMaxTokensFloor = 1024;
+
+    /// <summary>
+    /// Whether a failed request is worth retrying with a smaller max_tokens: an invalid-request
+    /// failure with a reducible cap, unless the provider's message clearly blames another knob
+    /// (reasoning effort) or an unknown model — those fail identically at any cap and must
+    /// surface with their terminal hint instead of burning the attempt budget.
+    /// </summary>
+    public static bool TryReduceMaxTokens(LlmFailure failure, int? maxTokens, out int reduced)
+    {
+        reduced = 0;
+        if (failure.Code != LlmErrorCodes.InvalidRequest) return false;
+        if (maxTokens is null or <= AdaptiveMaxTokensFloor) return false;
+        var lower = failure.Message.ToLowerInvariant();
+        var namesMaxTokens = lower.Contains("max_tokens") || lower.Contains("max output") || lower.Contains("max_output");
+        if (!namesMaxTokens)
+        {
+            if (lower.Contains("reasoning") || lower.Contains("thinking") || lower.Contains("effort")) return false;
+            // A rejected payload fails identically at any cap: bad tool-call arguments, an
+            // unknown tool name, or (below) an unknown model. Stored arguments are already
+            // coerced to {} on the wire, so a repeat needs eyes, not retries.
+            if (lower.Contains("argument") || lower.Contains("tool_call") || lower.Contains("tool call")) return false;
+            if (lower.Contains("unknown tool") || lower.Contains("invalid tool") || lower.Contains("no such tool")) return false;
+            if (lower.Contains("model")
+                && (lower.Contains("not found") || lower.Contains("unknown") || lower.Contains("does not exist")
+                    || lower.Contains("no such") || lower.Contains("invalid model") || lower.Contains("not available")
+                    || lower.Contains("does not support") || lower.Contains("not supported"))) return false;
+        }
+        reduced = Math.Max(AdaptiveMaxTokensFloor, maxTokens.Value / 2);
+        return reduced < maxTokens.Value;
     }
 
     /// <summary>Longest provider Retry-After waited out verbatim; never below MaxDelayMs.</summary>

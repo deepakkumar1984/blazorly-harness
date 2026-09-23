@@ -194,6 +194,175 @@ public class RetryServiceTests
     }
 
     [Fact]
+    public async Task InvalidRequest_Generic400_ReducesMaxTokensAndRecovers()
+    {
+        // Unknown ceiling + a 400 that names nothing (the generic-rejection case): halve
+        // 128000 -> 64000 -> 32000 until the route accepts, then keep the working value.
+        await using var harness = HarnessWithFlaky((options, _) =>
+            options.MaxTokens is > 32000
+                ? Scripted.Error(LlmErrorCodes.InvalidRequest, "provider rejected request (400)")
+                : Scripted.Text("recovered"));
+        RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
+        var agent = harness.CreateAgent(options: new AgentOptions(MaxTokens: 128000));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        var retries = agent.Session.Events.Where(e => e.Type == SessionEventTypes.LlmRetry).ToList();
+        Assert.Equal(2, retries.Count);
+        Assert.Equal(128000, retries[0].Data.GetProperty("maxTokensFrom").GetInt32());
+        Assert.Equal(64000, retries[0].Data.GetProperty("maxTokensTo").GetInt32());
+        Assert.Equal(64000, retries[1].Data.GetProperty("maxTokensFrom").GetInt32());
+        Assert.Equal(32000, retries[1].Data.GetProperty("maxTokensTo").GetInt32());
+        Assert.Equal(32000, agent.Options.MaxTokens); // the accepted ceiling sticks
+        Assert.Contains("recovered", agent.Session.Events
+            .Where(e => e.Type == SessionEventTypes.AssistantMessage)
+            .Last().Data.GetProperty("message").GetProperty("content").EnumerateArray()
+            .First(b => b.GetProperty("type").GetString() == "text").GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task InvalidRequest_EffortBlame_IsNotAdapted()
+    {
+        // A 400 naming the reasoning effort fails identically at any cap: no adaptation,
+        // options untouched, and the terminal hint points at the effort knob.
+        await using var harness = HarnessWithFlaky((options, _) =>
+            Scripted.Error(LlmErrorCodes.InvalidRequest, "reasoning effort 'max' is not supported by this model"));
+        RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
+        var agent = harness.CreateAgent(options: new AgentOptions(MaxTokens: 128000, ReasoningEffort: "max"));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        Assert.DoesNotContain(agent.Session.Events, e => e.Type == SessionEventTypes.LlmRetry);
+        Assert.Equal(128000, agent.Options.MaxTokens);
+        var reason = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd).Data.GetProperty("reason");
+        Assert.Equal("INVALID_REQUEST", reason.GetProperty("code").GetString());
+        Assert.Contains("Reset with /effort default", reason.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task InvalidRequest_AtFloor_IsNotAdapted()
+    {
+        await using var harness = HarnessWithFlaky((options, _) =>
+            Scripted.Error(LlmErrorCodes.InvalidRequest, "provider rejected request (400)"));
+        RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
+        var agent = harness.CreateAgent(options: new AgentOptions(MaxTokens: 1024));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        Assert.DoesNotContain(agent.Session.Events, e => e.Type == SessionEventTypes.LlmRetry);
+        Assert.Equal(1024, agent.Options.MaxTokens);
+        var reason = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd).Data.GetProperty("reason");
+        Assert.Equal("INVALID_REQUEST", reason.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task InvalidRequest_UnknownModel_IsNotAdapted()
+    {
+        await using var harness = HarnessWithFlaky((options, _) =>
+            Scripted.Error(LlmErrorCodes.InvalidRequest, "provider rejected request (400: model 'mimo-v9' not found)"));
+        RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
+        var agent = harness.CreateAgent(options: new AgentOptions(MaxTokens: 128000));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        Assert.DoesNotContain(agent.Session.Events, e => e.Type == SessionEventTypes.LlmRetry);
+        Assert.Equal(128000, agent.Options.MaxTokens);
+    }
+
+    [Fact]
+    public async Task InvalidRequest_BadArguments_IsNotAdapted()
+    {
+        // A strict gateway rejecting a tool call's arguments fails identically at any cap:
+        // no max_tokens probing, options untouched, terminal hint names the arguments.
+        await using var harness = HarnessWithFlaky((options, _) =>
+            Scripted.Error(LlmErrorCodes.InvalidRequest,
+                """provider rejected request (400: {"success":false,"error":"'arguments' must be valid JSON"})"""));
+        RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
+        var agent = harness.CreateAgent(options: new AgentOptions(MaxTokens: 128000));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        Assert.DoesNotContain(agent.Session.Events, e => e.Type == SessionEventTypes.LlmRetry);
+        Assert.Equal(128000, agent.Options.MaxTokens);
+        var reason = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd).Data.GetProperty("reason");
+        Assert.Equal("INVALID_REQUEST", reason.GetProperty("code").GetString());
+        Assert.Contains("arguments", reason.GetProperty("message").GetString());
+        Assert.DoesNotContain("max_tokens 128000", reason.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task InvalidRequest_Persistent400_StopsAtAttemptBudget()
+    {
+        // A route that rejects everything: 5 adaptations (128000 -> 4000), then terminal.
+        await using var harness = HarnessWithFlaky((options, _) =>
+            Scripted.Error(LlmErrorCodes.InvalidRequest, "provider rejected request (400)"));
+        RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
+        var agent = harness.CreateAgent(options: new AgentOptions(MaxTokens: 128000));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        var retries = agent.Session.Events.Where(e => e.Type == SessionEventTypes.LlmRetry).ToList();
+        Assert.Equal(5, retries.Count);
+        Assert.Equal(4000, agent.Options.MaxTokens);
+        var reason = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd).Data.GetProperty("reason");
+        Assert.Equal("INVALID_REQUEST", reason.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public void TryReduceMaxTokens_RequiresInvalidRequestAndReducibleCap()
+    {
+        Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure("slow down", LlmErrorCodes.RateLimit), 128000, out _));
+        Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure("too long", LlmErrorCodes.ContextWindowExceeded), 128000, out _));
+        Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure("provider rejected request (400)", LlmErrorCodes.InvalidRequest), null, out _));
+        Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure("provider rejected request (400)", LlmErrorCodes.InvalidRequest), 1024, out _));
+        Assert.True(RetryService.TryReduceMaxTokens(new LlmFailure("provider rejected request (400)", LlmErrorCodes.InvalidRequest), 128000, out var reduced));
+        Assert.Equal(64000, reduced);
+    }
+
+    [Fact]
+    public void TryReduceMaxTokens_NamedMaxTokensAlwaysAdapts()
+    {
+        // An explicit max_tokens complaint wins even when the message also says reasoning.
+        Assert.True(RetryService.TryReduceMaxTokens(
+            new LlmFailure("max_tokens 128000 exceeds the per-request limit for reasoning models", LlmErrorCodes.InvalidRequest),
+            128000, out var reduced));
+        Assert.Equal(64000, reduced);
+    }
+
+    [Fact]
+    public void TryReduceMaxTokens_EffortOrMissingModelBlameSkips()
+    {
+        foreach (var message in new[]
+        {
+            "reasoning effort 'max' is not supported by this model",
+            "provider rejected request (400: model 'mimo-v9' not found)",
+            "provider rejected request (400: unknown model 'mimo-v9')",
+            "provider rejected request (400: model does not support tools)",
+            """provider rejected request (400: {"success":false,"error":"'arguments' must be valid JSON"})""",
+            "provider rejected request (400: unknown tool 'bash_exec')",
+        })
+        {
+            Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure(message, LlmErrorCodes.InvalidRequest), 128000, out _), message);
+        }
+    }
+
+    [Fact]
+    public void TryReduceMaxTokens_ClampsToFloor()
+    {
+        Assert.True(RetryService.TryReduceMaxTokens(new LlmFailure("provider rejected request (400)", LlmErrorCodes.InvalidRequest), 1500, out var clamped));
+        Assert.Equal(1024, clamped);
+        Assert.True(RetryService.TryReduceMaxTokens(new LlmFailure("provider rejected request (400)", LlmErrorCodes.InvalidRequest), 1025, out clamped));
+        Assert.Equal(1024, clamped);
+        Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure("provider rejected request (400)", LlmErrorCodes.InvalidRequest), 1024, out _));
+    }
+
+    [Fact]
     public async Task QuotaExhaustion_FailsFastWithTheProvidersMessage()
     {
         // Z.ai answers an empty balance with 429 + code 1113; classified as QUOTA it must not be
