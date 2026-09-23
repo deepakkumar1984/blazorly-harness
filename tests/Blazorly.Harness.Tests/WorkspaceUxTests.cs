@@ -277,4 +277,58 @@ public class WorkspaceUxTests : IDisposable
         }
         return ready();
     }
+
+    [Fact]
+    public void ExplorerDelete_ClosesCleanTabs_KeepsDirtyOnes()
+    {
+        var ui = new WorkspaceUiState();
+        ui.EnterWorkspace(_root);
+        ui.FileOpened("a.txt", dirty: false);
+        ui.FileOpened("sub/dirty.txt", dirty: true);
+        ui.FileOpened("sub/b.txt", dirty: false);
+
+        ui.NotifyFilesDeleted(_root, ["sub"]);
+
+        Assert.Equal(["file:a.txt", "file:sub/dirty.txt"], ui.Tabs.Select(t => t.Key));
+        Assert.Equal("file:sub/dirty.txt", ui.ActiveTabKey);
+        Assert.Equal("sub/dirty.txt", ui.ActiveFile);
+        Assert.NotNull(ui.FileSync);
+        Assert.Equal(["sub"], ui.FileSync!.Closed);
+        ui.AcknowledgeFileSync(ui.FileSync.Version);
+        Assert.Null(ui.FileSync);
+    }
+
+    [Fact]
+    public void ExplorerRename_RetitlesTabsAndActiveFile()
+    {
+        var ui = new WorkspaceUiState();
+        ui.EnterWorkspace(_root);
+        ui.FileOpened("a.txt", dirty: false);
+        ui.FileOpened("sub/b.txt", dirty: true);
+
+        ui.NotifyFileRenamed(_root, "sub", "renamed");
+
+        Assert.Equal(["file:a.txt", "file:renamed/b.txt"], ui.Tabs.Select(t => t.Key));
+        var renamed = ui.Tabs.Single(t => t.Key == "file:renamed/b.txt");
+        Assert.Equal("b.txt", renamed.Title);
+        Assert.True(renamed.Dirty);
+        Assert.Equal("file:renamed/b.txt", ui.ActiveTabKey);
+        Assert.Equal("renamed/b.txt", ui.ActiveFile);
+        Assert.NotNull(ui.FileSync);
+        Assert.Equal([new WorkspaceFileRename("sub", "renamed")], ui.FileSync!.Renamed);
+    }
+
+    [Fact]
+    public void ExplorerSync_IgnoresOtherRoots()
+    {
+        var ui = new WorkspaceUiState();
+        ui.EnterWorkspace(_root);
+        ui.FileOpened("a.txt", dirty: false);
+
+        ui.NotifyFilesDeleted("/elsewhere", ["a.txt"]);
+        ui.NotifyFileRenamed("/elsewhere", "a.txt", "z.txt");
+
+        Assert.Equal(["file:a.txt"], ui.Tabs.Select(t => t.Key));
+        Assert.Null(ui.FileSync);
+    }
 }

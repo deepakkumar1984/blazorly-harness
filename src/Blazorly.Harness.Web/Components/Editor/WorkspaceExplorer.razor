@@ -1,11 +1,21 @@
 @implements IDisposable
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.AspNetCore.Components.Rendering
 
-<div class="workspace-explorer" aria-label="Workspace files">
-    <div class="explorer-heading">
-        <span title="@Root">@FolderName</span>
-        <button type="button" class="icon" title="Refresh files" aria-label="Refresh files" @onclick="RefreshFiles">
-            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13 5A5.5 5.5 0 1 0 13.3 10M13 1.5V5H9.5" /></svg>
-        </button>
+<div class="workspace-explorer" aria-label="Workspace files" @oncontextmenu="OpenRootMenu" @oncontextmenu:preventDefault="true">
+    <div class="explorer-heading" @oncontextmenu:stopPropagation="true">
+        <span class="explorer-title" title="@Root">@FolderName</span>
+        <span class="explorer-actions">
+            <button type="button" class="icon" title="New file" aria-label="New file" @onclick='() => BeginCreate("", true)'>
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" /></svg>
+            </button>
+            <button type="button" class="icon" title="New folder" aria-label="New folder" @onclick='() => BeginCreate("", false)'>
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 4h4l1.5 1.5H14v7H2zM8 8.5v4M6 10.5h4" /></svg>
+            </button>
+            <button type="button" class="icon" title="Refresh files" aria-label="Refresh files" @onclick="RefreshFiles">
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13 5A5.5 5.5 0 1 0 13.3 10M13 1.5V5H9.5" /></svg>
+            </button>
+        </span>
     </div>
     @if (string.IsNullOrWhiteSpace(Root))
     {
@@ -15,13 +25,42 @@
     {
         <div class="explorer-empty" role="status">@_error</div>
     }
-    else if (Children("").Count == 0)
+    else if (Children("").Count == 0 && _creatingParent is null)
     {
         <div class="explorer-empty">This folder is empty. Files you or the agent create will appear here.</div>
     }
     else
     {
         <nav class="code-tree-list" aria-label="Files and folders">@RenderNodes("")</nav>
+    }
+    @if (_menuOpen)
+    {
+        <div class="menu-backdrop" @onclick="CloseMenu"></div>
+        <div class="popover tree-menu" role="menu" aria-label="File actions"
+             style="position:fixed;left:@(_menuX)px;top:@(_menuY)px;z-index:60;"
+             @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true">
+            @if (_deleting is { } dying)
+            {
+                <div class="popover-group">Delete permanently?</div>
+                <div class="popover-empty">@dying@(IsDirMenuTarget ? " and its contents" : "")</div>
+                <button type="button" class="popover-item danger" role="menuitem" @onclick="ConfirmDelete">Delete</button>
+                <button type="button" class="popover-item" role="menuitem" @onclick="CloseMenu">Cancel</button>
+            }
+            else if (_menuFor is { } target)
+            {
+                @if (IsFileMenuTarget)
+                {
+                    <button type="button" class="popover-item" role="menuitem" @onclick="MenuOpen">Open</button>
+                }
+                <button type="button" class="popover-item" role="menuitem" @onclick="MenuNewFile">New file@(IsFileMenuTarget ? " here" : "")</button>
+                <button type="button" class="popover-item" role="menuitem" @onclick="MenuNewFolder">New folder@(IsFileMenuTarget ? " here" : "")</button>
+                @if (target.Length > 0)
+                {
+                    <button type="button" class="popover-item" role="menuitem" @onclick="MenuRename">Rename</button>
+                    <button type="button" class="popover-item danger" role="menuitem" @onclick="MenuDelete">Delete</button>
+                }
+            }
+        </div>
     }
 </div>
 
@@ -30,6 +69,10 @@
     [Parameter] public string? SelectedPath { get; set; }
     [Parameter] public bool Visible { get; set; }
     [Parameter] public EventCallback<string> OnOpenFile { get; set; }
+    [Parameter] public EventCallback<string> OnDeleted { get; set; }
+    [Parameter] public EventCallback<FileRenamedEvent> OnRenamed { get; set; }
+
+    public sealed record FileRenamedEvent(string OldPath, string NewPath);
 
     private string? _root;
     private string? _error;
@@ -38,6 +81,26 @@
     private readonly Dictionary<string, IReadOnlyList<WorkspaceNode>> _children = new(StringComparer.Ordinal);
     private readonly HashSet<string> _expanded = new(StringComparer.Ordinal) { "" };
     private string FolderName => string.IsNullOrWhiteSpace(Root) ? "Files" : Path.GetFileName(Path.TrimEndingDirectorySeparator(Root)) is { Length: > 0 } name ? name : Root;
+
+    // Context menu + inline editing state.
+    private bool _menuOpen;
+    private bool _suppressRootMenu;
+    private string? _menuFor;
+    private bool _menuForIsDir;
+    private int _menuX;
+    private int _menuY;
+    private string? _deleting;
+    private string? _creatingParent;
+    private string? _creatingAnchor;
+    private bool _creatingFile = true;
+    private string _creatingName = "";
+    private string? _renaming;
+    private string _renamingName = "";
+    private ElementReference _editInput;
+    private bool _focusEdit;
+
+    private bool IsFileMenuTarget => _menuFor is { Length: > 0 } && !_menuForIsDir;
+    private bool IsDirMenuTarget => _menuFor is { Length: > 0 } && _menuForIsDir;
 
     protected override void OnInitialized()
     {
@@ -56,7 +119,20 @@
         _children.Clear();
         _expanded.Clear();
         _expanded.Add("");
+        CloseMenu();
+        _creatingParent = null;
+        _creatingAnchor = null;
+        _renaming = null;
         RefreshTree();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusEdit)
+        {
+            _focusEdit = false;
+            try { await _editInput.FocusAsync(); } catch { /* input already gone */ }
+        }
     }
 
     private void RefreshFiles() => RefreshTree();
@@ -100,8 +176,242 @@
 
     private IReadOnlyList<WorkspaceNode> Children(string relative) => _children.GetValueOrDefault(relative) ?? [];
 
+    private static string ParentOf(string relative)
+    {
+        var slash = relative.LastIndexOf('/');
+        return slash < 0 ? "" : relative[..slash];
+    }
+
+    private static string Combine(string dir, string name) => dir.Length == 0 ? name : dir + "/" + name;
+
+    private void ExpandChain(string relative)
+    {
+        var cursor = "";
+        _expanded.Add(cursor);
+        foreach (var part in relative.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            cursor = cursor.Length == 0 ? part : cursor + "/" + part;
+            _expanded.Add(cursor);
+        }
+    }
+
+    private void OpenMenu(string? target, bool targetIsDir, MouseEventArgs args)
+    {
+        if (string.IsNullOrWhiteSpace(Root)) return;
+        _menuFor = target ?? "";
+        _menuForIsDir = targetIsDir;
+        _menuX = (int)args.ClientX;
+        _menuY = (int)args.ClientY;
+        _deleting = null;
+        _menuOpen = true;
+        // The container also listens for contextmenu: its handler runs right after this
+        // one on the bubble path. The markup stopPropagation should already prevent that,
+        // but if the metadata is ever lost, this flag deterministically eats the duplicate
+        // instead of resetting the menu to the root one (which hides Rename/Delete).
+        _suppressRootMenu = true;
+    }
+
+    private void OpenRootMenu(MouseEventArgs args)
+    {
+        if (_suppressRootMenu)
+        {
+            _suppressRootMenu = false;
+            return;
+        }
+        OpenMenu("", false, args);
+        // OpenMenu re-arms the flag; a genuine background click must not suppress itself.
+        _suppressRootMenu = false;
+    }
+
+    private void CloseMenu()
+    {
+        _menuOpen = false;
+        _menuFor = null;
+        _deleting = null;
+        _suppressRootMenu = false;
+    }
+
+    private string MenuDir => _menuFor is { Length: > 0 } target && !_menuForIsDir ? ParentOf(target) : _menuFor ?? "";
+
+    private void MenuNewFile() => BeginCreate(MenuDir, true, FileAnchor);
+    private void MenuNewFolder() => BeginCreate(MenuDir, false, FileAnchor);
+
+    /// <summary>The clicked file, if the menu was opened on one: the new row goes
+    /// right after it instead of at the top of the listing.</summary>
+    private string? FileAnchor => _menuFor is { Length: > 0 } target && !_menuForIsDir ? target : null;
+
+    private void BeginCreate(string dir, bool file, string? anchor = null)
+    {
+        CloseMenu();
+        if (string.IsNullOrWhiteSpace(Root)) return;
+        ExpandChain(dir);
+        _renaming = null;
+        _creatingParent = dir;
+        _creatingAnchor = anchor;
+        _creatingFile = file;
+        _creatingName = "";
+        _error = null;
+        _focusEdit = true;
+        RefreshTree();
+    }
+
+    private void CommitCreate()
+    {
+        var dir = _creatingParent;
+        var name = _creatingName.Trim().Replace('\\', '/');
+        _creatingParent = null;
+        _creatingAnchor = null;
+        if (Root is null || dir is null || name.Length == 0 || name.Contains('/')) return;
+        try
+        {
+            var created = _creatingFile
+                ? WorkspaceFiles.CreateFile(Root, Combine(dir, name))
+                : WorkspaceFiles.CreateDirectory(Root, Combine(dir, name));
+            _error = null;
+            if (_creatingFile)
+            {
+                ExpandChain(dir);
+                RefreshTree();
+                _ = OnOpenFile.InvokeAsync(created);
+            }
+            else
+            {
+                ExpandChain(created);
+                RefreshTree();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void MenuRename()
+    {
+        var target = _menuFor;
+        CloseMenu();
+        if (target is not { Length: > 0 }) return;
+        var slash = target.LastIndexOf('/');
+        _creatingParent = null;
+        _creatingAnchor = null;
+        _renaming = target;
+        _renamingName = slash < 0 ? target : target[(slash + 1)..];
+        _error = null;
+        _focusEdit = true;
+    }
+
+    private void CommitRename()
+    {
+        var target = _renaming;
+        var name = _renamingName.Trim();
+        _renaming = null;
+        if (Root is null || target is null || name.Length == 0) return;
+        try
+        {
+            var slash = target.LastIndexOf('/');
+            var current = slash < 0 ? target : target[(slash + 1)..];
+            if (name == current) return;
+            var wasExpanded = _expanded.Contains(target);
+            var renamed = WorkspaceFiles.Rename(Root, target, name);
+            _error = null;
+            _expanded.Remove(target);
+            _children.Remove(target);
+            foreach (var key in _expanded.Where(k => k.StartsWith(target + "/", StringComparison.Ordinal)).ToArray())
+            {
+                _expanded.Remove(key);
+                _children.Remove(key);
+            }
+            if (wasExpanded) ExpandChain(renamed);
+            RefreshTree();
+            _ = OnRenamed.InvokeAsync(new FileRenamedEvent(target, renamed));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void MenuOpen()
+    {
+        var target = _menuFor;
+        CloseMenu();
+        if (target is { Length: > 0 } && !_menuForIsDir) _ = OnOpenFile.InvokeAsync(target);
+    }
+
+    private void MenuDelete()
+    {
+        _deleting = _menuFor is { Length: > 0 } name ? (name.Contains('/') ? name[(name.LastIndexOf('/') + 1)..] : name) : null;
+    }
+
+    private void ConfirmDelete()
+    {
+        var target = _menuFor;
+        CloseMenu();
+        if (Root is null || target is not { Length: > 0 }) return;
+        try
+        {
+            WorkspaceFiles.Delete(Root, target);
+            _error = null;
+            _expanded.Remove(target);
+            _children.Remove(target);
+            foreach (var key in _expanded.Where(k => k.StartsWith(target + "/", StringComparison.Ordinal)).ToArray())
+            {
+                _expanded.Remove(key);
+                _children.Remove(key);
+            }
+            RefreshTree();
+            _ = OnDeleted.InvokeAsync(target);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void OnEditKey(KeyboardEventArgs args, bool creating)
+    {
+        if (args.Key == "Enter")
+        {
+            if (creating) CommitCreate();
+            else CommitRename();
+        }
+        else if (args.Key == "Escape")
+        {
+            _creatingParent = null;
+            _creatingAnchor = null;
+            _renaming = null;
+        }
+    }
+
+    private void RenderCreateRow(RenderTreeBuilder builder)
+    {
+        builder.OpenElement(20, "div");
+        builder.AddAttribute(21, "class", "code-tree-item editing");
+        builder.OpenElement(22, "span");
+        builder.AddAttribute(23, "class", "file-tree-symbol");
+        builder.AddAttribute(24, "aria-hidden", "true");
+        builder.AddContent(25, _creatingFile ? "·" : "▸");
+        builder.CloseElement();
+        builder.OpenElement(26, "input");
+        builder.AddAttribute(27, "class", "tree-rename-input");
+        builder.AddAttribute(28, "placeholder", _creatingFile ? "file name — Enter to create" : "folder name — Enter to create");
+        builder.AddAttribute(29, "aria-label", _creatingFile ? "New file name" : "New folder name");
+        builder.AddAttribute(30, "value", _creatingName);
+        builder.AddAttribute(31, "oninput", EventCallback.Factory.Create<ChangeEventArgs>(this, args => _creatingName = args.Value?.ToString() ?? ""));
+        builder.AddAttribute(32, "onkeydown", EventCallback.Factory.Create<KeyboardEventArgs>(this, args => OnEditKey(args, true)));
+        builder.AddElementReferenceCapture(33, value => _editInput = value);
+        builder.CloseElement();
+        builder.CloseElement();
+    }
+
     private RenderFragment RenderNodes(string relative) => builder =>
     {
+        var showCreateHere = _creatingParent == relative;
+        // Anchor present in this listing: the row goes right after the clicked file.
+        // Otherwise (folder/root target, or the anchor vanished) it leads the listing.
+        var anchorHere = showCreateHere && _creatingAnchor is not null
+            && Children(relative).Any(n => n.RelativePath == _creatingAnchor);
+        if (showCreateHere && !anchorHere) RenderCreateRow(builder);
         foreach (var node in Children(relative))
         {
             var open = _expanded.Contains(node.RelativePath);
@@ -115,21 +425,46 @@
             builder.AddAttribute(6, "onclick", node.IsDirectory
                 ? EventCallback.Factory.Create(this, () => Toggle(node.RelativePath))
                 : EventCallback.Factory.Create(this, () => OnOpenFile.InvokeAsync(node.RelativePath)));
-            builder.OpenElement(7, "span");
-            builder.AddAttribute(8, "class", "file-tree-symbol");
-            builder.AddAttribute(9, "aria-hidden", "true");
-            builder.AddContent(10, node.IsDirectory ? (open ? "▾" : "▸") : "·");
-            builder.CloseElement();
-            builder.AddContent(11, node.Name);
+            builder.AddAttribute(7, "oncontextmenu", EventCallback.Factory.Create<MouseEventArgs>(this, args => OpenMenu(node.RelativePath, node.IsDirectory, args)));
+            builder.AddAttribute(8, "oncontextmenu:preventDefault", true);
+            builder.AddAttribute(36, "oncontextmenu:stopPropagation", true);
+            if (_renaming == node.RelativePath)
+            {
+                builder.OpenElement(9, "span");
+                builder.AddAttribute(10, "class", "file-tree-symbol");
+                builder.AddAttribute(11, "aria-hidden", "true");
+                builder.AddContent(12, node.IsDirectory ? "▸" : "·");
+                builder.CloseElement();
+                builder.OpenElement(13, "input");
+                builder.AddAttribute(14, "class", "tree-rename-input");
+                builder.AddAttribute(15, "aria-label", $"Rename {node.Name}");
+                builder.AddAttribute(16, "value", _renamingName);
+                builder.AddAttribute(17, "oninput", EventCallback.Factory.Create<ChangeEventArgs>(this, args => _renamingName = args.Value?.ToString() ?? ""));
+                builder.AddAttribute(18, "onkeydown", EventCallback.Factory.Create<KeyboardEventArgs>(this, args => OnEditKey(args, false)));
+                builder.AddAttribute(19, "onclick:stopPropagation", true);
+                builder.AddAttribute(34, "oncontextmenu:stopPropagation", true);
+                builder.AddElementReferenceCapture(35, value => _editInput = value);
+                builder.CloseElement();
+            }
+            else
+            {
+                builder.OpenElement(9, "span");
+                builder.AddAttribute(10, "class", "file-tree-symbol");
+                builder.AddAttribute(11, "aria-hidden", "true");
+                builder.AddContent(12, node.IsDirectory ? (open ? "▾" : "▸") : "·");
+                builder.CloseElement();
+                builder.AddContent(13, node.Name);
+            }
             builder.CloseElement();
             if (node.IsDirectory && open)
             {
-                builder.OpenElement(12, "div");
-                builder.AddAttribute(13, "class", "code-tree-children");
-                builder.AddContent(14, RenderNodes(node.RelativePath));
+                builder.OpenElement(14, "div");
+                builder.AddAttribute(15, "class", "code-tree-children");
+                builder.AddContent(16, RenderNodes(node.RelativePath));
                 builder.CloseElement();
             }
             builder.CloseElement();
+            if (anchorHere && node.RelativePath == _creatingAnchor) RenderCreateRow(builder);
         }
     };
 

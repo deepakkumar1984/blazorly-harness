@@ -617,8 +617,26 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                 try { await Sessions.OpenAsync(header.Id).ConfigureAwait(false); }
                 catch { /* skip unreadable session logs */ }
             }
+            await ReconcileOrphanedDelegationsAsync().ConfigureAwait(false);
         }
         catch { /* persistence issues must not block startup */ }
+    }
+
+    /// <summary>
+    /// Boot backstop for delegation rows orphaned by the previous process: background
+    /// monitors are in-memory tasks, so any child that settled after a restart (or whose
+    /// monitor died with the old process) would otherwise read "running" forever. Each
+    /// session is guarded individually; healing never blocks startup.
+    /// </summary>
+    private async Task ReconcileOrphanedDelegationsAsync()
+    {
+        var subagents = Subagents;
+        if (subagents is null) return;
+        foreach (var session in Sessions.LiveSessions())
+        {
+            try { await subagents.ReconcileAsync(session.Id).ConfigureAwait(false); }
+            catch { /* one session's healing must not block the rest */ }
+        }
     }
 
     public UserQuestionsService UserQuestions { get; private set; } = null!;

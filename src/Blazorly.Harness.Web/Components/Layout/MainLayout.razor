@@ -14,15 +14,16 @@
         <div class="brand">
             <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m13 3-8 10h6l-1 8 9-11h-6z" /></svg></span>
             <span class="brand-name">Blazorly <span>Harness</span></span>
+            <a class="icon brand-settings" href="/settings" title="Settings" aria-label="Settings">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+            </a>
         </div>
         <div class="ws-switch">
-            <button type="button" class="ws-current" title="Switch workspace" aria-haspopup="menu" aria-expanded="@(_switcherOpen ? "true" : "false")" @onclick="ToggleSwitcher">
-                <span class="ws-kicker">Workspace</span>
+            <button type="button" class="ws-current" title="Switch workspace — @ActiveWorkspaceRoot" aria-haspopup="menu" aria-expanded="@(_switcherOpen ? "true" : "false")" @onclick="ToggleSwitcher">
                 <span class="ws-current-row">
                     <span class="ws-current-name">@ActiveWorkspaceLabel</span>
                     <span class="ws-caret" aria-hidden="true">▾</span>
                 </span>
-                <span class="ws-current-root" title="@ActiveWorkspaceRoot">@ActiveWorkspaceRoot</span>
             </button>
             @if (_switcherOpen)
             {
@@ -53,13 +54,18 @@
             }
         </div>
         <div class="workspace-nav-tabs" role="tablist" aria-label="Workspace explorer" @onkeydown="OnWorkspaceTabKey">
-            <button type="button" id="workspace-chats-tab" role="tab" tabindex="@(WorkspaceUi.SidebarTab == "chats" ? 0 : -1)" aria-selected="@(WorkspaceUi.SidebarTab == "chats" ? "true" : "false")" aria-controls="workspace-chats-panel" class="workspace-nav-tab @(WorkspaceUi.SidebarTab == "chats" ? "active" : "")" @onclick="WorkspaceUi.ShowChats">
+            <button type="button" id="workspace-chats-tab" role="tab" title="Chats" aria-label="Chats" tabindex="@(WorkspaceUi.SidebarTab == "chats" ? 0 : -1)" aria-selected="@(WorkspaceUi.SidebarTab == "chats" ? "true" : "false")" aria-controls="workspace-chats-panel" class="workspace-nav-tab @(WorkspaceUi.SidebarTab == "chats" ? "active" : "")" @onclick="WorkspaceUi.ShowChats">
                 <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 3h11v7H9l-3.5 3v-3h-3z" /></svg>
-                Chats <span class="nav-count">@VisibleLive().Count()</span>
+                <span class="nav-count">@VisibleLive().Count()</span>
             </button>
-            <button type="button" id="workspace-files-tab" role="tab" tabindex="@(WorkspaceUi.SidebarTab == "files" ? 0 : -1)" aria-selected="@(WorkspaceUi.SidebarTab == "files" ? "true" : "false")" aria-controls="workspace-files-panel" class="workspace-nav-tab @(WorkspaceUi.SidebarTab == "files" ? "active" : "")" @onclick="WorkspaceUi.ShowFiles">
+            <button type="button" id="workspace-files-tab" role="tab" title="Files" aria-label="Files" tabindex="@(WorkspaceUi.SidebarTab == "files" ? 0 : -1)" aria-selected="@(WorkspaceUi.SidebarTab == "files" ? "true" : "false")" aria-controls="workspace-files-panel" class="workspace-nav-tab @(WorkspaceUi.SidebarTab == "files" ? "active" : "")" @onclick="WorkspaceUi.ShowFiles">
                 <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 4h4l1.5 1.5H14v7H2zM2 4V2.5h4l1.5 1.5H13v1.5" /></svg>
-                Files
+            </button>
+            <button type="button" id="workspace-changes-tab" role="tab" title="Changes" aria-label="Changes" tabindex="@(WorkspaceUi.SidebarTab == "changes" ? 0 : -1)" aria-selected="@(WorkspaceUi.SidebarTab == "changes" ? "true" : "false")" aria-controls="workspace-changes-panel" class="workspace-nav-tab @(WorkspaceUi.SidebarTab == "changes" ? "active" : "")" @onclick="WorkspaceUi.ShowChanges">
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="4.5" cy="12.5" r="1.5" /><circle cx="11.5" cy="8" r="1.5" /><path d="M4.5 5.2v5.6M4.5 8h5.3" /></svg>
+            </button>
+            <button type="button" class="workspace-nav-tab workspace-nav-add" title="New chat" aria-label="New chat" @onclick="NewChatInActive" @onkeydown:stopPropagation="true">
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" /></svg>
             </button>
         </div>
         <section id="workspace-chats-panel" class="workspace-sidebar-panel" role="tabpanel" aria-labelledby="workspace-chats-tab" hidden="@(WorkspaceUi.SidebarTab != "chats")">
@@ -84,9 +90,6 @@
         }
         else
         {
-            <div class="new-session-wrap">
-                <button class="new-session" @onclick="NewChatInActive">＋ New chat</button>
-            </div>
             <nav class="session-list" aria-label="Chats in this workspace">
                 @foreach (var item in VisibleLive())
                 {
@@ -132,20 +135,11 @@
         }
         </section>
         <section id="workspace-files-panel" class="workspace-sidebar-panel" role="tabpanel" aria-labelledby="workspace-files-tab" hidden="@(WorkspaceUi.SidebarTab != "files")">
-            <WorkspaceExplorer Root="@ExplorerRoot" SelectedPath="@WorkspaceUi.ActiveFile" Visible="@(WorkspaceUi.SidebarTab == "files")" OnOpenFile="OpenWorkspaceFile" />
+            <WorkspaceExplorer Root="@ExplorerRoot" SelectedPath="@WorkspaceUi.ActiveFile" Visible="@(WorkspaceUi.SidebarTab == "files")" OnOpenFile="OpenWorkspaceFile" OnDeleted="OnExplorerDeleted" OnRenamed="OnExplorerRenamed" />
         </section>
-        <div class="sidebar-foot">
-            <button class="sidebar-link" @onclick="OpenAddWorkspace">
-                <svg class="sidebar-link-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 5.5h6l2 2h7v9h-15zM2.5 5.5V3.5h6l2 2h6v2M10 10v4M8 12h4" /></svg>Add workspace
-            </button>
-            <a class="sidebar-link" href="/settings">
-                <svg class="sidebar-link-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" /><rect x="6" y="3" width="3" height="4" rx="1" fill="var(--bg-raised)" /><rect x="12" y="8" width="3" height="4" rx="1" fill="var(--bg-raised)" /><rect x="6" y="13" width="3" height="4" rx="1" fill="var(--bg-raised)" /></svg>Settings
-            </a>
-            <a class="sidebar-link appearance-link" href="/settings?tab=appearance">
-                <svg class="sidebar-link-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M10 2.5a7.5 7.5 0 1 0 0 15h1a2 2 0 0 0 1.3-3.5.8.8 0 0 1 .5-1.4H15a2.5 2.5 0 0 0 2.5-2.5A7.5 7.5 0 0 0 10 2.5Z" /><circle cx="6" cy="7" r=".8" fill="currentColor" /><circle cx="10" cy="5.5" r=".8" fill="currentColor" /><circle cx="14" cy="7.5" r=".8" fill="currentColor" /></svg>Appearance
-                <span class="sidebar-palette" aria-hidden="true"><i></i><i></i><i></i></span>
-            </a>
-        </div>
+        <section id="workspace-changes-panel" class="workspace-sidebar-panel" role="tabpanel" aria-labelledby="workspace-changes-tab" hidden="@(WorkspaceUi.SidebarTab != "changes")">
+            <SourceControl Root="@ExplorerRoot" Visible="@(WorkspaceUi.SidebarTab == "changes")" />
+        </section>
     </aside>
     <main class="chat-pane">@Body</main>
 </div>
@@ -374,12 +368,25 @@
         if (e.Key == "Escape") { _switcherOpen = false; _drawerOpen = false; }
     }
 
+    private static readonly string[] SidebarTabOrder = ["chats", "files", "changes"];
+
     private async Task OnWorkspaceTabKey(KeyboardEventArgs e)
     {
         if (e.Key is not ("ArrowLeft" or "ArrowRight" or "Home" or "End")) return;
-        var files = e.Key == "End" || (e.Key != "Home" && WorkspaceUi.SidebarTab == "chats");
-        if (files) WorkspaceUi.ShowFiles(); else WorkspaceUi.ShowChats();
-        try { await Js.InvokeVoidAsync("blazorly.focusById", files ? "workspace-files-tab" : "workspace-chats-tab"); }
+        var current = Array.IndexOf(SidebarTabOrder, WorkspaceUi.SidebarTab);
+        if (current < 0) current = 0;
+        var next = e.Key switch
+        {
+            "Home" => 0,
+            "End" => SidebarTabOrder.Length - 1,
+            "ArrowRight" => (current + 1) % SidebarTabOrder.Length,
+            _ => (current + SidebarTabOrder.Length - 1) % SidebarTabOrder.Length,
+        };
+        var tab = SidebarTabOrder[next];
+        if (tab == "files") WorkspaceUi.ShowFiles();
+        else if (tab == "changes") WorkspaceUi.ShowChanges();
+        else WorkspaceUi.ShowChats();
+        try { await Js.InvokeVoidAsync("blazorly.focusById", $"workspace-{tab}-tab"); }
         catch (Exception ex) when (ex is JSException or JSDisconnectedException or ObjectDisposedException) { }
     }
 
@@ -462,6 +469,18 @@
         WorkspaceUi.OpenFile(root, relativePath);
         _drawerOpen = false;
         if (ActiveSessionId is null) SwitchWorkspace(ActiveWorkspaceKey);
+    }
+
+    private void OnExplorerDeleted(string relativePath)
+    {
+        if (ExplorerRoot is not { Length: > 0 } root) return;
+        WorkspaceUi.NotifyFilesDeleted(root, [relativePath]);
+    }
+
+    private void OnExplorerRenamed(WorkspaceExplorer.FileRenamedEvent renamed)
+    {
+        if (ExplorerRoot is not { Length: > 0 } root) return;
+        WorkspaceUi.NotifyFileRenamed(root, renamed.OldPath, renamed.NewPath);
     }
 
     private void AskRenameWorkspace(Workspace workspace)

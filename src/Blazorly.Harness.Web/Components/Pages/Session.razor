@@ -701,7 +701,7 @@
                         {
                             <div class="run-detail-head"><code>@selected.CommandLine</code><span title="@selected.WorkingDirectory">@selected.WorkingDirectory</span></div>
                         }
-                        <pre class="terminal-output run-output">@(SelectedRun?.Output is { Length: > 0 } output ? output : "Output from the selected command appears here.")</pre>
+                        <pre class="terminal-output run-output" @ref="_runOut">@(SelectedRun?.Output is { Length: > 0 } output ? output : "Output from the selected command appears here.")</pre>
                     </div>
                 </div>
             }
@@ -942,6 +942,7 @@
     private bool _terminalDead;
     private System.Timers.Timer? _terminalPoll;
     private ElementReference _terminalOut;
+    private ElementReference _runOut;
     private ElementReference _terminalResizeHandle;
     private ElementReference _terminalDrawer;
     private bool _terminalResizeAttached;
@@ -1497,7 +1498,11 @@
     private async Task SelectDock(string tab)
     {
         if (tab == "terminal" && !_terminalOpen) await ToggleTerminal();
-        if (tab == "run") ShowRunPanel();
+        if (tab == "run")
+        {
+            ShowRunPanel();
+            await ScrollRunOutput(force: true);
+        }
     }
 
     private void CloseDock()
@@ -1522,19 +1527,34 @@
             return;
         }
         _runPoll = new System.Timers.Timer(750);
-        _runPoll.Elapsed += (_, _) => _ = InvokeAsync(() =>
+        _runPoll.Elapsed += (_, _) => _ = InvokeAsync(RunPollAsync);
+        _runPoll.Start();
+    }
+
+    /// <summary>Run-tab tick: refresh the list and follow the selected run's tail.</summary>
+    private async Task RunPollAsync()
+    {
+        if (_disposed) return;
+        try
         {
-            if (_disposed) return;
             var before = SelectedRun?.Output;
+            var previousSelection = _selectedRunId;
             var wasRunning = _runs.Count(r => r.Running);
             var previousCount = _runs.Count;
             var previousExit = SelectedRun?.ExitCode;
             SyncRuns();
             var running = _runs.Count(r => r.Running);
-            if (running != wasRunning || previousCount != _runs.Count || previousExit != SelectedRun?.ExitCode
-                || (DockOpen && _dockTab == "run" && SelectedRun?.Output != before)) StateHasChanged();
-        });
-        _runPoll.Start();
+            var outputChanged = DockOpen && _dockTab == "run" && SelectedRun?.Output != before;
+            if (running != wasRunning || previousCount != _runs.Count || previousExit != SelectedRun?.ExitCode || outputChanged)
+                StateHasChanged();
+            // Sticky follow: tracks the tail while the user stays at the bottom, respects
+            // scrolling up to inspect, and jumps on run switches (fresh content).
+            if (outputChanged) await ScrollRunOutput(force: _selectedRunId != previousSelection);
+        }
+        catch
+        {
+            // a failed tick must not kill the timer; the next tick retries
+        }
     }
 
     private async Task ToggleTerminal()
@@ -1685,6 +1705,10 @@
     {
         await TryJs("blazorly.scrollBottom", _terminalOut, true);
     }
+
+    /// <summary>Sticky run-log follow: tracks the tail unless the user scrolled up.</summary>
+    private Task ScrollRunOutput(bool force = false)
+        => TryJs("blazorly.scrollBottom", _runOut, force);
 
     private void RemoveQueued(Llm.Message message)
     {

@@ -78,6 +78,7 @@ a { color: var(--accent); }
     letter-spacing: 0.01em;
 }
 
+.brand-settings { margin-left: auto; }
 .brand-mark {
     font-size: 15px;
     display: inline-flex;
@@ -597,6 +598,8 @@ button.icon:disabled { opacity: 0.35; }
 }
 .popover-item:hover { background: var(--bg-overlay); }
 .popover-item.selected { color: var(--accent); background: var(--accent-soft); }
+.popover-item.danger { color: var(--danger); }
+.popover-item.danger:hover { background: var(--danger-soft); }
 
 /* ---- searchable model menu ---- */
 .popover-search {
@@ -2164,13 +2167,15 @@ button.chip:hover:not(:disabled) { border-color: var(--accent); color: var(--tex
 .ws-switch { position: relative; padding: 0 12px 8px; z-index: 45; flex: none; }
 .workspace-nav-tabs { display: flex; gap: 3px; padding: 3px; margin: 2px 12px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); flex: none; }
 .workspace-nav-tab { display: flex; align-items: center; justify-content: center; gap: 7px; flex: 1; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text-dim); font-size: 12.5px; font-weight: 600; }
+.workspace-nav-add { flex: none; padding: 7px 10px; }
 .workspace-nav-tab:hover { color: var(--text); background: var(--bg-overlay); }
 .workspace-nav-tab.active { background: var(--accent-soft); color: var(--accent); }
 .nav-count { min-width: 19px; padding: 0 5px; border-radius: 5px; font: 10px/18px var(--mono); background: var(--bg-overlay); color: var(--text-dim); }
 .workspace-sidebar-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .workspace-explorer { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .explorer-heading { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 0 13px 8px 17px; flex: none; }
-.explorer-heading > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 650; color: var(--text-dim); }
+.explorer-heading > .explorer-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 650; color: var(--text-dim); }
+.explorer-actions { display: flex; align-items: center; gap: 2px; flex: none; }
 .explorer-empty { padding: 12px 17px; color: var(--text-dim); font-size: 12px; overflow-wrap: anywhere; }
 .workspace-welcome { margin: auto; max-width: 500px; padding: 40px 24px; }
 .workspace-welcome h1 { font-size: 26px; font-weight: 650; }
@@ -2297,6 +2302,54 @@ button.chip:hover:not(:disabled) { border-color: var(--accent); color: var(--tex
 .code-tree-item.file.active { background: var(--accent-soft); color: var(--text); }
 .code-tree-item.dir { color: var(--text); font-weight: 550; }
 .code-tree-children { padding-left: 12px; }
+.code-tree-item.editing { display: flex; align-items: center; gap: 0; cursor: default; }
+.code-tree-item.editing:hover { background: none; }
+.tree-rename-input {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg-raised);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 2px 6px;
+    outline: none;
+}
+.tree-menu { min-width: 180px; max-width: 240px; }
+.source-control { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.sc-list { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 12px; }
+.sc-commit { display: flex; flex-direction: column; gap: 6px; padding: 4px 13px 10px 17px; flex: none; }
+.sc-message {
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--text);
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    outline: none;
+    resize: vertical;
+    min-height: 44px;
+}
+.sc-message:focus { border-color: var(--accent); }
+.sc-actions { display: flex; align-items: center; gap: 2px; }
+.sc-commit-icon { color: var(--accent); }
+.sc-notice { padding: 2px 13px 8px 17px; font-size: 11.5px; color: var(--text-dim); overflow-wrap: anywhere; }
+.sc-group { padding: 0 6px 8px; }
+.sc-group-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 7px 2px 11px; }
+.sc-group-title { font-size: 11px; font-weight: 650; color: var(--text-dim); }
+.sc-row { display: flex; align-items: center; gap: 2px; border-radius: 5px; padding-right: 4px; }
+.sc-row:hover { background: var(--bg-overlay); }
+.sc-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    padding: 5px 4px 5px 10px;
+}
 .code-empty, .code-placeholder {
     color: var(--text-dim);
     padding: 16px;

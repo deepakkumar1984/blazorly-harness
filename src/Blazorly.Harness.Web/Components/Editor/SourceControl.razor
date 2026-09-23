@@ -1,0 +1,282 @@
+@implements IDisposable
+
+<div class="source-control" aria-label="Source control">
+    <div class="explorer-heading">
+        <span class="explorer-title" title="@Root">Changes@(BranchLabel is { } branch ? $" — {branch}" : "")</span>
+        <span class="explorer-actions">
+            <button type="button" class="icon" title="Refresh changes" aria-label="Refresh changes" @onclick="RefreshNow">
+                <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M13 5A5.5 5.5 0 1 0 13.3 10M13 1.5V5H9.5" /></svg>
+            </button>
+        </span>
+    </div>
+    @if (string.IsNullOrWhiteSpace(Root))
+    {
+        <div class="explorer-empty">Select a workspace to see its changes.</div>
+    }
+    else if (_notRepo)
+    {
+        <div class="explorer-empty">Not a git repository. Changes appear once the folder is versioned.</div>
+    }
+    else if (_status is null)
+    {
+        <div class="explorer-empty" role="status">@(_error ?? "Loading changes…")</div>
+    }
+    else
+    {
+        @if (_error is not null)
+        {
+            <div class="explorer-empty" role="alert">@_error</div>
+        }
+        <div class="sc-commit">
+            <textarea class="sc-message" rows="2" placeholder="Commit message" aria-label="Commit message"
+                      value="@_message" @oninput="OnMessageInput"></textarea>
+            <div class="sc-actions">
+                <button type="button" class="icon sc-commit-icon" disabled="@(!CanCommit)" title="@CommitHint" aria-label="@CommitLabel" @onclick="Commit">
+                    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3.2 3.2L12.5 4.5" /></svg>
+                </button>
+                <button type="button" class="icon" disabled="@(!CanRemote)" title="Fast-forward pull" aria-label="Pull" @onclick="Pull">
+                    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8.5M4.7 7.2 8 10.5l3.3-3.3M2.5 13.5h11" /></svg>
+                </button>
+                <button type="button" class="icon" disabled="@(!CanRemote)" title="Push the current branch" aria-label="Push" @onclick="Push">
+                    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10.5V2M4.7 5.3 8 2l3.3 3.3M2.5 13.5h11" /></svg>
+                </button>
+                <button type="button" class="icon" disabled="@(!CanRemote)" title="Pull then push" aria-label="Sync" @onclick="Sync">
+                    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M13 5A5.5 5.5 0 1 0 13.3 10M13 1.5V5H9.5" /></svg>
+                </button>
+            </div>
+        </div>
+        @if (_notice is not null)
+        {
+            <div class="sc-notice" role="status">@_notice</div>
+        }
+        @if (_status.Total == 0)
+        {
+            <div class="explorer-empty">No changes. The working tree is clean.</div>
+        }
+        <div class="sc-list">
+            @RenderGroup("Staged", _status.Staged, true)
+            @RenderGroup("Changes", _status.Unstaged, false)
+            @RenderGroup("Untracked", _status.Untracked, false)
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Root { get; set; }
+    [Parameter] public bool Visible { get; set; }
+
+    private string? _root;
+    private GitStatus? _status;
+    private string? _error;
+    private bool _notRepo;
+    private string _message = "";
+    private string? _notice;
+    private bool _busy;
+    private bool _disposed;
+    private System.Timers.Timer? _poll;
+
+    private string? BranchLabel
+    {
+        get
+        {
+            if (_status is null || _status.Branch.Length == 0) return null;
+            var tracking = "";
+            if (_status.Ahead > 0 || _status.Behind > 0)
+                tracking = $" ↑{_status.Ahead}↓{_status.Behind}";
+            return _status.Branch + tracking;
+        }
+    }
+
+    private bool CanCommit => !_busy && _status is not null && _message.Trim().Length > 0
+        && (_status.Staged.Count > 0 || _status.Unstaged.Count > 0);
+
+    private bool CanRemote => !_busy && _status is not null;
+
+    private string CommitLabel
+    {
+        get
+        {
+            if (_busy) return "Working…";
+            if (_status is { Staged.Count: > 0 } s) return $"Commit ({s.Staged.Count})";
+            if (_status is { Unstaged.Count: > 0 }) return "Commit all";
+            return "Commit";
+        }
+    }
+
+    private string CommitHint
+    {
+        get
+        {
+            if (_busy) return "Working…";
+            if (_status is null) return "Loading…";
+            if (_message.Trim().Length == 0) return "Write a commit message first.";
+            if (_status is { Staged.Count: 0, Unstaged.Count: 0 }) return "Stage or modify some tracked files first.";
+            if (_status.Staged.Count == 0) return "No staged changes — committing stages all tracked changes.";
+            return CommitLabel;
+        }
+    }
+
+    private void OnMessageInput(ChangeEventArgs args) => _message = args.Value?.ToString() ?? "";
+
+    protected override void OnInitialized()
+    {
+        _poll = new System.Timers.Timer(3000);
+        _poll.Elapsed += (_, _) => _ = InvokeAsync(() =>
+        {
+            if (!_disposed && Visible && Refresh()) StateHasChanged();
+        });
+        _poll.Start();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (_root == Root) return;
+        _root = Root;
+        _status = null;
+        _error = null;
+        _notRepo = false;
+        _message = "";
+        Refresh();
+    }
+
+    private void RefreshNow() => Refresh();
+
+    private bool Refresh()
+    {
+        if (string.IsNullOrWhiteSpace(Root)) return false;
+        try
+        {
+            var status = GitService.Status(Root);
+            var changed = _status is null || _error is not null || _notRepo
+                || status.Branch != _status.Branch || status.Ahead != _status.Ahead || status.Behind != _status.Behind
+                || !status.Staged.SequenceEqual(_status.Staged) || !status.Unstaged.SequenceEqual(_status.Unstaged)
+                || !status.Untracked.SequenceEqual(_status.Untracked);
+            _status = status;
+            _error = null;
+            _notRepo = false;
+            return changed;
+        }
+        catch (GitNotRepositoryException)
+        {
+            var changed = !_notRepo;
+            _notRepo = true;
+            _status = null;
+            _error = null;
+            return changed;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            if (_error == ex.Message) return false;
+            _error = ex.Message;
+            return true;
+        }
+    }
+
+    private void Act(Func<(GitStatus Status, string? Notice)> work)
+    {
+        if (Root is null || _busy) return;
+        _busy = true;
+        _error = null;
+        _notice = null;
+        try
+        {
+            var (status, notice) = work();
+            _status = status;
+            _notice = notice;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _error = ex.Message;
+        }
+        finally { _busy = false; }
+    }
+
+    private void Stage(string path) => Act(() => { GitService.Stage(Root!, [path]); return (GitService.Status(Root!), (string?)null); });
+    private void Unstage(string path) => Act(() => { GitService.Unstage(Root!, [path]); return (GitService.Status(Root!), (string?)null); });
+
+    private void StageAll(IReadOnlyList<GitChange> changes)
+        => Act(() => { GitService.Stage(Root!, changes.Select(c => c.Path)); return (GitService.Status(Root!), (string?)null); });
+
+    private void UnstageAll(IReadOnlyList<GitChange> changes)
+        => Act(() => { GitService.Unstage(Root!, changes.Select(c => c.Path)); return (GitService.Status(Root!), (string?)null); });
+
+    private void Commit() => Act(() =>
+    {
+        // Nothing staged: commit all tracked changes, leaving untracked files alone.
+        if (_status?.Staged.Count == 0 && _status.Unstaged.Count > 0)
+            GitService.Stage(Root!, _status.Unstaged.Select(c => c.Path));
+        GitService.Commit(Root!, _message);
+        _message = "";
+        return (GitService.Status(Root!), "Committed.");
+    });
+
+    private void Pull() => Act(() =>
+    {
+        var receipt = GitService.Pull(Root!);
+        return (GitService.Status(Root!), receipt);
+    });
+
+    private void Push() => Act(() =>
+    {
+        var receipt = GitService.Push(Root!);
+        return (GitService.Status(Root!), receipt);
+    });
+
+    private void Sync() => Act(() =>
+    {
+        var receipt = GitService.Sync(Root!);
+        return (GitService.Status(Root!), receipt);
+    });
+
+    private RenderFragment RenderGroup(string title, IReadOnlyList<GitChange> changes, bool staged) => builder =>
+    {
+        if (changes.Count == 0) return;
+        var seq = 0;
+        builder.OpenElement(seq++, "div");
+        builder.AddAttribute(seq++, "class", "sc-group");
+        builder.OpenElement(seq++, "div");
+        builder.AddAttribute(seq++, "class", "sc-group-head");
+        builder.OpenElement(seq++, "span");
+        builder.AddAttribute(seq++, "class", "sc-group-title");
+        builder.AddContent(seq++, $"{title} ({changes.Count})");
+        builder.CloseElement();
+        builder.OpenElement(seq++, "button");
+        builder.AddAttribute(seq++, "type", "button");
+        builder.AddAttribute(seq++, "class", "icon");
+        builder.AddAttribute(seq++, "title", staged ? "Unstage all" : "Stage all");
+        builder.AddAttribute(seq++, "aria-label", staged ? $"Unstage all {title}" : $"Stage all {title}");
+        builder.AddAttribute(seq++, "onclick", EventCallback.Factory.Create(this,
+            () => { if (staged) UnstageAll(changes); else StageAll(changes); }));
+        builder.AddContent(seq++, staged ? "−" : "＋");
+        builder.CloseElement();
+        builder.CloseElement();
+        foreach (var change in changes)
+        {
+            builder.OpenElement(seq++, "div");
+            builder.AddAttribute(seq++, "class", "sc-row");
+            builder.AddAttribute(seq++, "title", change.Path);
+            builder.OpenElement(seq++, "span");
+            builder.AddAttribute(seq++, "class", "sc-path");
+            builder.AddContent(seq++, change.Display);
+            builder.CloseElement();
+            builder.OpenElement(seq++, "button");
+            builder.AddAttribute(seq++, "type", "button");
+            builder.AddAttribute(seq++, "class", "icon");
+            builder.AddAttribute(seq++, "title", staged ? $"Unstage {change.Path}" : $"Stage {change.Path}");
+            builder.AddAttribute(seq++, "aria-label", staged ? $"Unstage {change.Path}" : $"Stage {change.Path}");
+            var path = change.Path;
+            builder.AddAttribute(seq++, "onclick", EventCallback.Factory.Create(this,
+                () => { if (staged) Unstage(path); else Stage(path); }));
+            builder.AddContent(seq++, staged ? "−" : "＋");
+            builder.CloseElement();
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+    };
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _poll?.Dispose();
+    }
+}

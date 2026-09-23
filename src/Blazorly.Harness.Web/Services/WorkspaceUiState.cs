@@ -9,6 +9,15 @@ public sealed record WorkspaceTab(string Key, string Title, string? SessionId = 
     public static string FileKey(string path) => "file:" + path;
 }
 
+/// <summary>One path rename inside the workspace file tree.</summary>
+public sealed record WorkspaceFileRename(string OldPath, string NewPath);
+
+/// <summary>Versioned file-tree sync for the editor: paths the explorer deleted or
+/// renamed since the last acknowledgement. The editor applies it to its open
+/// documents; the tab strip is updated eagerly by the notify methods below.</summary>
+public sealed record WorkspaceFileSync(string? Root, IReadOnlyList<string> Closed,
+    IReadOnlyList<WorkspaceFileRename> Renamed, long Version);
+
 /// <summary>Navigation shared by the sidebar and editor in one browser circuit.</summary>
 public sealed class WorkspaceUiState
 {
@@ -22,7 +31,10 @@ public sealed class WorkspaceUiState
     public IReadOnlyList<WorkspaceTab> Tabs => _tabs;
     public WorkspaceTab? ActiveTab => _tabs.FirstOrDefault(t => t.Key == ActiveTabKey);
     public string SidebarTab { get; private set; } = "chats";
+    public WorkspaceFileSync? FileSync { get; private set; }
     private readonly List<WorkspaceTab> _tabs = [];
+    private readonly List<string> _pendingClosed = [];
+    private readonly List<WorkspaceFileRename> _pendingRenamed = [];
     private string? _deletedRoot;
     private long _version;
 
@@ -31,6 +43,9 @@ public sealed class WorkspaceUiState
         if (!WasDeleted(root) && (Root == root || WorkspaceFiles.SameRoot(Root, root))) return;
         Root = root;
         _tabs.Clear();
+        _pendingClosed.Clear();
+        _pendingRenamed.Clear();
+        FileSync = null;
         ActiveTabKey = ActiveFile = null;
         if (FileRequest is { } request && !WorkspaceFiles.SameRoot(root, request.Root)) FileRequest = null;
         _deletedRoot = null;
@@ -65,6 +80,12 @@ public sealed class WorkspaceUiState
     public void ShowFiles()
     {
         SidebarTab = "files";
+        Changed?.Invoke();
+    }
+
+    public void ShowChanges()
+    {
+        SidebarTab = "changes";
         Changed?.Invoke();
     }
 
@@ -140,6 +161,69 @@ public sealed class WorkspaceUiState
         FileRequest = null;
         SelectionVersion++;
         Changed?.Invoke();
+    }
+
+    private static bool IsUnderOrEqual(string? path, string prefix) =>
+        path is not null && (path == prefix || path.StartsWith(prefix + "/", StringComparison.Ordinal));
+
+    private static string Remap(string path, string oldPrefix, string newPrefix) =>
+        newPrefix + path[oldPrefix.Length..];
+
+    /// <summary>
+    /// The explorer deleted paths: drop their editor tabs (exact path plus anything
+    /// under a deleted folder) so no tab points at a missing file. Tabs with unsaved
+    /// edits are kept as conflict markers — saving recreates the file.
+    /// </summary>
+    public void NotifyFilesDeleted(string? root, IEnumerable<string> paths)
+    {
+        if (!WorkspaceFiles.SameRoot(root, Root)) return;
+        var deleted = paths.ToList();
+        _tabs.RemoveAll(t => t.RelativePath is not null && !t.Dirty && deleted.Any(p => IsUnderOrEqual(t.RelativePath, p)));
+        if (ActiveTabKey is not null && !_tabs.Any(t => t.Key == ActiveTabKey))
+        {
+            ActiveTabKey = _tabs.LastOrDefault()?.Key;
+            ActiveFile = _tabs.LastOrDefault()?.RelativePath;
+            SelectionVersion++;
+        }
+        if (ActiveFile is not null && !_tabs.Any(t => t.RelativePath == ActiveFile)) ActiveFile = null;
+        _pendingClosed.AddRange(deleted);
+        BumpFileSync(root);
+        Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// The explorer renamed a file or folder: retitle the affected editor tabs
+    /// (exact path plus anything under a renamed folder) so the tab shows the new
+    /// name. Document text and dirty state are preserved by the editor itself.
+    /// </summary>
+    public void NotifyFileRenamed(string? root, string oldPath, string newPath)
+    {
+        if (!WorkspaceFiles.SameRoot(root, Root)) return;
+        for (var i = 0; i < _tabs.Count; i++)
+        {
+            var tab = _tabs[i];
+            if (tab.RelativePath is null || !IsUnderOrEqual(tab.RelativePath, oldPath)) continue;
+            var mapped = Remap(tab.RelativePath, oldPath, newPath);
+            var key = WorkspaceTab.FileKey(mapped);
+            if (ActiveTabKey == tab.Key) ActiveTabKey = key;
+            if (ActiveFile == tab.RelativePath) ActiveFile = mapped;
+            _tabs[i] = tab with { Key = key, Title = Path.GetFileName(mapped), RelativePath = mapped };
+        }
+        _pendingRenamed.Add(new WorkspaceFileRename(oldPath, newPath));
+        BumpFileSync(root);
+        Changed?.Invoke();
+    }
+
+    private void BumpFileSync(string? root)
+        => FileSync = new WorkspaceFileSync(root, [.. _pendingClosed], [.. _pendingRenamed], ++_version);
+
+    /// <summary>Clears the pending file sync once the editor has applied it.</summary>
+    public void AcknowledgeFileSync(long version)
+    {
+        if (FileSync?.Version != version) return;
+        _pendingClosed.Clear();
+        _pendingRenamed.Clear();
+        FileSync = null;
     }
 
     public void WorkspaceDeleted(string root)

@@ -103,6 +103,73 @@ public static class WorkspaceFiles
         catch (DecoderFallbackException) { return new(canonical, "", true, false, count, version); }
     }
 
+    /// <summary>Creates an empty file, including missing parent folders. Errors when it already exists.</summary>
+    public static string CreateFile(string root, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative)) throw new InvalidOperationException("Name the new file.");
+        lock (WriteGate)
+        {
+            var path = Resolve(root, relative);
+            if (File.Exists(path) || Directory.Exists(path)) throw new InvalidOperationException("That name is already taken.");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            Resolve(root, relative);
+            File.WriteAllBytes(path, []);
+            return Path.GetRelativePath(NormalizeRoot(root), path).Replace('\\', '/');
+        }
+    }
+
+    /// <summary>Creates a folder, including missing parents. Errors when it already exists.</summary>
+    public static string CreateDirectory(string root, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative)) throw new InvalidOperationException("Name the new folder.");
+        lock (WriteGate)
+        {
+            var path = Resolve(root, relative);
+            if (File.Exists(path) || Directory.Exists(path)) throw new InvalidOperationException("That name is already taken.");
+            Directory.CreateDirectory(path);
+            Resolve(root, relative);
+            return Path.GetRelativePath(NormalizeRoot(root), path).Replace('\\', '/');
+        }
+    }
+
+    /// <summary>Renames or moves a file or folder inside the workspace. The repository metadata itself is never a valid target.</summary>
+    public static string Rename(string root, string relative, string newName)
+    {
+        if (string.IsNullOrWhiteSpace(relative)) throw new InvalidOperationException("Nothing selected to rename.");
+        if (string.IsNullOrWhiteSpace(newName) || newName.IndexOfAny(['/', '\\']) >= 0)
+            throw new InvalidOperationException("Enter a plain name without path separators.");
+        lock (WriteGate)
+        {
+            var path = Resolve(root, relative);
+            if (!File.Exists(path) && !Directory.Exists(path)) throw new InvalidOperationException("That path no longer exists.");
+            var canonical = Path.GetRelativePath(NormalizeRoot(root), path).Replace('\\', '/');
+            if (canonical == ".git" || canonical.StartsWith(".git/", StringComparison.Ordinal))
+                throw new InvalidOperationException("The repository metadata cannot be renamed.");
+            var target = Path.Combine(Path.GetDirectoryName(path)!, newName);
+            if (!IsInside(NormalizeRoot(root), target)) throw new InvalidOperationException("Path escapes the workspace.");
+            if (File.Exists(target) || Directory.Exists(target)) throw new InvalidOperationException("That name is already taken.");
+            if (Directory.Exists(path)) Directory.Move(path, target);
+            else File.Move(path, target);
+            return Path.GetRelativePath(NormalizeRoot(root), target).Replace('\\', '/');
+        }
+    }
+
+    /// <summary>Permanently deletes a file or folder (recursive). Root and repository metadata are refused.</summary>
+    public static void Delete(string root, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative)) throw new InvalidOperationException("Nothing selected to delete.");
+        lock (WriteGate)
+        {
+            var path = Resolve(root, relative);
+            var canonical = Path.GetRelativePath(NormalizeRoot(root), path).Replace('\\', '/');
+            if (canonical is "" or "." or ".git" || canonical.StartsWith(".git/", StringComparison.Ordinal))
+                throw new InvalidOperationException("That path cannot be deleted from here.");
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+            else if (File.Exists(path)) File.Delete(path);
+            else throw new InvalidOperationException("That path no longer exists.");
+        }
+    }
+
     public static WorkspaceDocument Write(string root, string relative, string content, string? expectedVersion = null)
     {
         if (string.IsNullOrWhiteSpace(relative)) throw new InvalidOperationException("Choose a file, not the workspace root.");

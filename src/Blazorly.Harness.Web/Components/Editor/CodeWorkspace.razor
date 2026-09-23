@@ -105,6 +105,7 @@
     private bool _bindEditor;
     private bool _disposed;
     private long _requestVersion;
+    private long _syncVersion;
     private readonly List<EditorTab> _tabs = [];
     private ElementReference _editor;
     private ElementReference _gutter;
@@ -143,7 +144,46 @@
             _requestVersion = request.Version;
             await OpenFile(request.RelativePath);
         }
+        if (WorkspaceUi.FileSync is { } sync && sync.Version != _syncVersion && WorkspaceFiles.SameRoot(sync.Root, Root))
+        {
+            _syncVersion = sync.Version;
+            ApplyFileSync(sync);
+            WorkspaceUi.AcknowledgeFileSync(sync.Version);
+        }
     }
+
+    /// <summary>
+    /// Applies explorer deletes/renames to the open documents: clean docs for deleted
+    /// paths close (dirty ones stay as conflict markers — saving recreates the file),
+    /// renamed docs keep their text and rebind the editor under the new path.
+    /// </summary>
+    private void ApplyFileSync(WorkspaceFileSync sync)
+    {
+        foreach (var rename in sync.Renamed)
+        {
+            foreach (var tab in _tabs.Where(t => IsUnderOrEqual(t.Relative, rename.OldPath)).ToList())
+                tab.Relative = rename.NewPath + tab.Relative[rename.OldPath.Length..];
+            if (_active is not null && IsUnderOrEqual(_active, rename.OldPath))
+                _active = rename.NewPath + _active[rename.OldPath.Length..];
+            if (_boundFile is not null && IsUnderOrEqual(_boundFile, rename.OldPath))
+            {
+                _boundFile = null;
+                _bindEditor = true;
+            }
+            if (_pendingDiscard is not null && IsUnderOrEqual(_pendingDiscard, rename.OldPath))
+                _pendingDiscard = rename.NewPath + _pendingDiscard[rename.OldPath.Length..];
+        }
+        foreach (var closed in sync.Closed)
+        {
+            foreach (var relative in _tabs.Where(t => !t.Dirty && IsUnderOrEqual(t.Relative, closed)).Select(t => t.Relative).ToList())
+                CloseTab(relative);
+            if (_pendingDiscard is not null && IsUnderOrEqual(_pendingDiscard, closed))
+                _pendingDiscard = null;
+        }
+    }
+
+    private static bool IsUnderOrEqual(string? path, string prefix) =>
+        path is not null && (path == prefix || path.StartsWith(prefix + "/", StringComparison.Ordinal));
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -441,7 +481,7 @@
             Relative = document.RelativePath;
             Load(document);
         }
-        public string Relative { get; }
+        public string Relative { get; set; }
         public string Name => Path.GetFileName(Relative);
         public string Text { get; set; } = "";
         public string SavedText { get; set; } = "";

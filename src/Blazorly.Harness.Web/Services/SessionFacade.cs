@@ -52,10 +52,34 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     public async Task<Core.Sessions.Session> OpenSessionAsync(string id)
     {
         var existing = harness.Sessions.Get(id);
-        if (existing is not null) return existing;
+        if (existing is not null)
+        {
+            await ReconcileDelegationsAsync(existing.Id).ConfigureAwait(false);
+            return existing;
+        }
         var session = await harness.Sessions.OpenAsync(id);
         AttachAgent(session, WorkspaceOf(session));
+        await ReconcileDelegationsAsync(session.Id).ConfigureAwait(false);
         return session;
+    }
+
+    /// <summary>
+    /// Best-effort healing of orphaned "running" delegation rows whenever a session is
+    /// opened for viewing: a child that settled while nobody was watching (restart,
+    /// abandoned await, dead monitor) flips to its real outcome instead of claiming to
+    /// run forever. Never breaks the open itself.
+    /// </summary>
+    private async Task ReconcileDelegationsAsync(string sessionId)
+    {
+        try
+        {
+            var subagents = harness.Subagents;
+            if (subagents is not null) await subagents.ReconcileAsync(sessionId).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Healing is advisory; the session view must open regardless.
+        }
     }
 
     public Agent EnsureAgent(Core.Sessions.Session session)

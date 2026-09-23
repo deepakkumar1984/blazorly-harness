@@ -28,6 +28,13 @@ public interface ISessionPersistence
 
 public sealed record SessionMeta(string? Cwd = null, string? ParentSession = null, int DelegationDepth = 0, string? AgentPreset = null);
 
+/// <summary>Emitted on the event bus when a session-log write does not reach the persistence seam.</summary>
+public sealed record SessionPersistFailed(string SessionId, int Seq, string EventType, string ErrorKind, string Error);
+
+/// <summary>Emitted when crash-repair restructured a log mid-stream, which the append-only
+/// seam cannot make durable — later appends will fail loudly instead of rotting silently.</summary>
+public sealed record SessionRepairNotDurable(string SessionId, string Reason, int StoredCount, int RepairedCount);
+
 /// <summary>ctx.sessions — the in-memory session store and durable event feed.</summary>
 public sealed class SessionStore
 {
@@ -35,6 +42,7 @@ public sealed class SessionStore
 
     private readonly HarnessContext _ctx;
     private readonly Dictionary<string, Session> _live = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _persistFailures = new(StringComparer.Ordinal);
     private readonly object _gate = new();
 
     public SessionStore(HarnessContext ctx, ISessionPersistence? persistence = null)
@@ -82,9 +90,62 @@ public sealed class SessionStore
             throw new Kernel.HarnessException("NO_PERSISTENCE", "no persistence backend is mounted");
         var (header, events) = await Persistence.LoadAsync(sessionId, ct).ConfigureAwait(false);
         var repaired = SessionRepair.Repair(events);
+        await PersistRepairSuffixAsync(sessionId, events, repaired, ct).ConfigureAwait(false);
         var session = new Session(header, repaired);
         Attach(session, created: false);
         return session;
+    }
+
+    /// <summary>
+    /// Crash-repair closes an interrupted tail with synthetic events that exist only in
+    /// memory — but <see cref="Session.Append"/> numbers new events from the live log
+    /// length while backends expect the stored next-seq, so an undurable suffix rejects
+    /// EVERY later append. A pure tail suffix is itself appendable: make it durable now so
+    /// the live log and the stored log agree again. Interior restructuring (a duplicate
+    /// turn/start mid-log) cannot be expressed on the append-only seam; that case is
+    /// announced and left to fail loudly per write rather than rotting silently.
+    /// </summary>
+    private async Task PersistRepairSuffixAsync(
+        string sessionId,
+        IReadOnlyList<SessionEvent> stored,
+        IReadOnlyList<SessionEvent> repaired,
+        CancellationToken ct)
+    {
+        if (Persistence is null || repaired.Count < stored.Count) return;
+        for (var i = 0; i < stored.Count; i++)
+        {
+            if (!ReferenceEquals(repaired[i], stored[i]))
+            {
+                _ = _ctx.Events.EmitAsync("session/repair-not-durable",
+                    new SessionRepairNotDurable(sessionId, "repair restructured the stored prefix", stored.Count, repaired.Count),
+                    sessionId);
+                return;
+            }
+        }
+        if (repaired.Count == stored.Count) return;
+        var suffix = repaired.Skip(stored.Count).ToList();
+        for (var i = 0; i < suffix.Count; i++)
+        {
+            if (suffix[i].Seq != stored.Count + i)
+            {
+                _ = _ctx.Events.EmitAsync("session/repair-not-durable",
+                    new SessionRepairNotDurable(sessionId, "repair suffix is not sequence-contiguous", stored.Count, repaired.Count),
+                    sessionId);
+                return;
+            }
+        }
+        try
+        {
+            await Persistence.AppendAsync(sessionId, suffix, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Opening must not fail for this; the per-write observer reports every
+            // subsequent append loudly instead of losing the session quietly.
+            _ = _ctx.Events.EmitAsync("session/repair-not-durable",
+                new SessionRepairNotDurable(sessionId, $"repair suffix write failed: {ex.GetType().Name}: {ex.Message}", stored.Count, repaired.Count),
+                sessionId);
+        }
     }
 
     public async Task<IReadOnlyList<SessionHeader>> ListPersistedAsync(CancellationToken ct = default)
@@ -97,11 +158,38 @@ public sealed class SessionStore
         {
             if (Persistence is not null)
             {
-                _ = Persistence.AppendAsync(session.Id, [e]);
+                _ = PersistOneAsync(session, e);
             }
             _ = _ctx.Events.EmitAsync("session/event", new SessionEventNotification(session, e), session);
         });
         _ = _ctx.Events.EmitAsync(created ? "session/created" : "session/resumed", session);
+    }
+
+    /// <summary>
+    /// Observed fire-and-forget write: appends stay off the hot path, but a failure is
+    /// counted and announced instead of vanishing. This matters because backends reject
+    /// off-sequence batches — one lost write used to desync the session permanently while
+    /// the UI kept working, so hours of turns, todos, and delegation statuses lived only
+    /// in RAM until the next restart wiped them.
+    /// </summary>
+    private async Task PersistOneAsync(Session session, SessionEvent e)
+    {
+        try
+        {
+            await Persistence!.AppendAsync(session.Id, [e]).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            lock (_gate) _persistFailures[session.Id] = _persistFailures.GetValueOrDefault(session.Id) + 1;
+            _ = _ctx.Events.EmitAsync("session/persist-failed",
+                new SessionPersistFailed(session.Id, e.Seq, e.Type, ex.GetType().Name, ex.Message), session);
+        }
+    }
+
+    /// <summary>Sessions with at least one failed persistence write since this store attached them.</summary>
+    public int PersistFailureCount(string sessionId)
+    {
+        lock (_gate) return _persistFailures.GetValueOrDefault(sessionId);
     }
 
     public Session? Get(string id)

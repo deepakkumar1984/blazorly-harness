@@ -119,13 +119,96 @@ public sealed class SubagentService
         child.Followup(Message.CreateUserText(prompt));
         _ = Task.Run(async () =>
         {
-            await child.WhenIdleAsync().ConfigureAwait(false);
-            await FlushChildAsync(childSession.Id, CancellationToken.None).ConfigureAwait(false);
-            var (summary, finishKind) = LastAssistantOutput(childSession);
-            RecordStatus(parent.Session, childSession.Id, request.Description, StatusOf(finishKind), summary);
+            try
+            {
+                await child.WhenIdleAsync().ConfigureAwait(false);
+                await FlushChildAsync(childSession.Id, CancellationToken.None).ConfigureAwait(false);
+                var (summary, finishKind) = LastAssistantOutput(childSession);
+                RecordStatus(parent.Session, childSession.Id, request.Description, StatusOf(finishKind), summary);
+                _ = _ctx.Events.EmitAsync("subagent/finished", new { childSessionId = childSession.Id, finishKind }, parent);
+            }
+            catch (Exception ex)
+            {
+                // The monitor is the only writer of the finished row: an unobserved throw
+                // here used to leave "running" in the parent panel forever with no signal.
+                RecordStatus(parent.Session, childSession.Id, request.Description, "error",
+                    $"subagent monitor failed: {ex.GetType().Name}: {ex.Message}");
+                _ = _ctx.Events.EmitAsync("subagent/failed", new { childSessionId = childSession.Id, error = ex.Message }, parent);
+            }
         });
 
         return new SubagentResult(childSession.Id, "", "running");
+    }
+
+    /// <summary>
+    /// Heals stale "running" delegation rows. A child that reached a turn boundary after its
+    /// running-status was recorded — but whose completion was never recorded because the
+    /// monitor died with a restart, the parent turn was abandoned mid-await, or the monitor
+    /// threw — gets its settled outcome recorded now, so the parent panel stops claiming
+    /// work that finished hours ago and the result lands where the parent can see it.
+    /// Live-running children are never touched; missing or unreadable children are left
+    /// alone rather than inventing an outcome; children with no turn boundary since the
+    /// status stay running. Returns the number of rows healed.
+    /// </summary>
+    public async Task<int> ReconcileAsync(string parentSessionId, CancellationToken ct = default)
+    {
+        var sessions = _ctx.Get<SessionStore>("sessions");
+        var parent = sessions.Get(parentSessionId);
+        if (parent is null) return 0;
+        var running = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var e in parent.Events)
+        {
+            if (e.Type != SessionEventTypes.SubagentStatus) continue;
+            SessionPayloads.SubagentStatusPayload payload;
+            try
+            {
+                payload = SessionEventRead.SubagentStatusOf(e);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+            if (payload.Status == "running") running[payload.ChildSessionId] = e.Time;
+            else running.Remove(payload.ChildSessionId);
+        }
+        if (running.Count == 0) return 0;
+        var agents = _ctx.TryGet<AgentRuntime>("agents");
+        var healed = 0;
+        foreach (var (childId, statusTime) in running)
+        {
+            // Genuinely at work: the live driver will record the outcome itself.
+            if (agents?.Get(childId) is { Status: AgentStatus.Running }) continue;
+            Session child;
+            try
+            {
+                child = sessions.Get(childId) ?? await sessions.OpenAsync(childId, ct).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+            if (!SettledAfter(child, statusTime)) continue;
+            var (summary, finishKind) = LastAssistantOutput(child);
+            RecordStatus(parent, childId, null, StatusOf(finishKind), summary);
+            _ = _ctx.Events.EmitAsync("subagent/reconciled",
+                new { parentSessionId, childSessionId = childId, finishKind }, parent);
+            healed++;
+        }
+        return healed;
+    }
+
+    /// <summary>
+    /// Whether the child closed a turn at or after the running-status was recorded. The
+    /// time gate matters because forked children inherit the parent's older turn/ends in
+    /// their seed — only a boundary newer than the delegation counts as its outcome.
+    /// </summary>
+    private static bool SettledAfter(Session child, long statusTime)
+    {
+        foreach (var e in child.Events)
+        {
+            if (e.Type == SessionEventTypes.TurnEnd && e.Time >= statusTime) return true;
+        }
+        return false;
     }
 
     /// <summary>
