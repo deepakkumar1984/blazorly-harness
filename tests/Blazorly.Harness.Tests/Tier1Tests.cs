@@ -787,6 +787,192 @@ public class AnthropicAdapterTests
         var exception = await Assert.ThrowsAsync<LlmException>(async () => await Collect(adapter.Stream(Options([Llm.Message.CreateUserText("hi")]))));
         Assert.Equal(LlmErrorCodes.EmptyResponse, exception.Failure.Code);
     }
+
+    [Fact]
+    public void ReasoningBlock_LegacyLogsWithoutSignature_StillFold()
+    {
+        // Sessions persisted before signatures were captured have no signature member; a throw
+        // here would blank the whole transcript view instead of one block.
+        var legacy = JsonSerializer.Deserialize<ContentBlock>("""{"type":"reasoning","text":"old thought"}""", SessionJson.Options);
+        var reasoning = Assert.IsType<ReasoningBlock>(legacy);
+        Assert.Equal("old thought", reasoning.Text);
+        Assert.Null(reasoning.Signature);
+
+        // And routes that never sign write the same bytes they always did.
+        var written = SessionJson.ToElement(new ReasoningBlock("t"));
+        Assert.False(written.TryGetProperty("signature", out _));
+    }
+
+    private static Dictionary<string, object?> ThinkingOf(IReadOnlyDictionary<string, object?> fields)
+        => (Dictionary<string, object?>)fields["thinking"];
+
+    private static GenerateOptions ThinkingOptions(string? effort, int? maxTokens = null, string? purpose = null, double? temperature = null)
+        => new()
+        {
+            Provider = "anthropic",
+            Model = "claude-test",
+            Messages = [Llm.Message.CreateUserText("hi")],
+            ReasoningEffort = effort,
+            MaxTokens = maxTokens,
+            Purpose = purpose,
+            Temperature = temperature,
+        };
+
+    // Anthropic only streams thinking when the request asks for it. Without the thinking field the
+    // effort picker was a no-op on Anthropic routes and the gateway answered with a blank thinking
+    // block (observed live on Azure: one empty thinking_delta per tool-use step).
+    [Fact]
+    public void Thinking_EffortEnablesThinkingWithBudget_OffDisables_UnsetOmits()
+    {
+        var adapter = Adapter(_ => Sse(""));
+
+        var high = adapter.BuildThinkingFields(ThinkingOptions("high", maxTokens: 64_000));
+        Assert.Equal("enabled", ThinkingOf(high)["type"]);
+        Assert.Equal(16_384, ThinkingOf(high)["budget_tokens"]);
+
+        Assert.Equal("disabled", ThinkingOf(adapter.BuildThinkingFields(ThinkingOptions("off", maxTokens: 64_000)))["type"]);
+        Assert.Empty(adapter.BuildThinkingFields(ThinkingOptions(null, maxTokens: 64_000)));
+
+        // Titles stay cheap even when the session runs at max.
+        Assert.Equal("disabled", ThinkingOf(adapter.BuildThinkingFields(
+            ThinkingOptions("max", maxTokens: 64_000, purpose: "session-title")))["type"]);
+    }
+
+    [Fact]
+    public void Thinking_BudgetStaysBelowMaxTokens_AndIsDroppedWhenThereIsNoRoom()
+    {
+        var adapter = Adapter(_ => Sse(""));
+
+        // "max" wants 32768; a 2000-token request cannot grant it.
+        Assert.Equal(1_999, ThinkingOf(adapter.BuildThinkingFields(ThinkingOptions("max", maxTokens: 2_000)))["budget_tokens"]);
+
+        // budget_tokens must be >= 1024 and < max_tokens, so a small request thinks not at all
+        // rather than provoking a 400.
+        Assert.Empty(adapter.BuildThinkingFields(ThinkingOptions("high", maxTokens: AnthropicAdapter.MinThinkingBudget)));
+        Assert.Empty(adapter.BuildThinkingFields(ThinkingOptions("high", maxTokens: 256)));
+
+        // Unset keeps the default ceiling and still leaves room to think.
+        Assert.Equal(8_191, ThinkingOf(adapter.BuildThinkingFields(ThinkingOptions("high")))["budget_tokens"]);
+    }
+
+    [Fact]
+    public void Thinking_EnabledDropsTemperature_DisabledKeepsIt()
+    {
+        var adapter = Adapter(_ => Sse(""));
+
+        var enabled = (Dictionary<string, object?>)adapter.BuildWireBody(ThinkingOptions("high", maxTokens: 64_000, temperature: 0.2));
+        Assert.False(enabled.ContainsKey("temperature")); // Anthropic rejects a set temperature next to thinking
+        Assert.Equal("enabled", ThinkingOf(enabled)["type"]);
+
+        var disabled = (Dictionary<string, object?>)adapter.BuildWireBody(ThinkingOptions("off", maxTokens: 64_000, temperature: 0.2));
+        Assert.Equal(0.2, disabled["temperature"]);
+
+        var unset = (Dictionary<string, object?>)adapter.BuildWireBody(ThinkingOptions(null, maxTokens: 64_000, temperature: 0.2));
+        Assert.Equal(0.2, unset["temperature"]);
+    }
+
+    [Fact]
+    public async Task Stream_BlankThinkingBlock_ProducesNoReasoningBlock()
+    {
+        // The shape Azure's Anthropic endpoint returns on tool-use turns: a thinking block that
+        // opens, carries one empty delta and a signature, and never any text. Opening the block on
+        // content_block_start used to leave an empty reasoning block in every transcript.
+        var sse = """
+            event: message_start
+            data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}
+
+            event: content_block_start
+            data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+            event: content_block_delta
+            data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+            event: content_block_delta
+            data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqQBCgIY"}}
+
+            event: content_block_start
+            data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tc_9","name":"bash"}}
+
+            event: content_block_delta
+            data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}
+
+            event: message_delta
+            data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}
+
+            event: message_stop
+            data: {"type":"message_stop"}
+
+            """;
+        var adapter = Adapter(_ => Sse(sse));
+
+        var chunks = await Collect(adapter.Stream(Options([Llm.Message.CreateUserText("hi")])));
+
+        Assert.DoesNotContain(chunks, c => c is ReasoningDeltaChunk);
+        Assert.DoesNotContain(chunks, c => c is BlockStartChunk { BlockType: "reasoning" });
+        Assert.DoesNotContain(chunks.OfType<BlockEndChunk>(), c => c.Block is ReasoningBlock);
+        Assert.Contains(chunks.OfType<BlockEndChunk>(), c => c.Block is ToolCallBlock { Id: "tc_9" });
+    }
+
+    [Fact]
+    public async Task Stream_Thinking_CapturesSignature_AndReplaysItAheadOfTheTurn()
+    {
+        var sse = """
+            event: message_start
+            data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}
+
+            event: content_block_start
+            data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+            event: content_block_delta
+            data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me "}}
+
+            event: content_block_delta
+            data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"check."}}
+
+            event: content_block_delta
+            data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}
+
+            event: content_block_start
+            data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+            event: content_block_delta
+            data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Answer"}}
+
+            event: message_delta
+            data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}
+
+            event: message_stop
+            data: {"type":"message_stop"}
+
+            """;
+        var adapter = Adapter(_ => Sse(sse));
+
+        var chunks = await Collect(adapter.Stream(Options([Llm.Message.CreateUserText("hi")])));
+
+        Assert.Equal("Let me check.", string.Concat(chunks.OfType<ReasoningDeltaChunk>().Select(d => d.Text)));
+        var reasoning = Assert.IsType<ReasoningBlock>(chunks.OfType<BlockEndChunk>().First(c => c.Block is ReasoningBlock).Block);
+        Assert.Equal("Let me check.", reasoning.Text);
+        Assert.Equal("sig-abc", reasoning.Signature);
+
+        // Signed thinking replays, and leads the turn: Anthropic rejects a tool_use that arrives
+        // without the thinking block in front of it. Unsigned thinking still cannot be replayed.
+        var assistant = new Llm.Message("m1", "assistant",
+            [new TextBlock("Answer"), reasoning, new ReasoningBlock("unsigned thought"), new ToolCallBlock("tc_1", "bash", "{}")],
+            Llm.MessageSource.FromModel("anthropic", "claude-test"));
+        var wire = ((Dictionary<string, object?>)adapter.BuildWireBody(new GenerateOptions
+        {
+            Provider = "anthropic",
+            Model = "claude-test",
+            Messages = [assistant],
+        }))["messages"];
+        var blocks = Assert.IsType<List<object>>(Assert.IsType<List<Dictionary<string, object?>>>(wire).Single()["content"]);
+        var types = blocks.Cast<Dictionary<string, object?>>()
+            .Select(b => (string)b["type"]!)
+            .ToList();
+        Assert.Equal(["thinking", "text", "tool_use"], types);
+        Assert.Equal("sig-abc", Assert.IsType<Dictionary<string, object?>>(blocks[0])["signature"]);
+        Assert.Equal("Let me check.", Assert.IsType<Dictionary<string, object?>>(blocks[0])["thinking"]);
+    }
 }
 
 public class SessionTitleTests : IDisposable

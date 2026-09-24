@@ -14,8 +14,10 @@ public abstract record ContentBlock;
 
 public sealed record TextBlock(string Text) : ContentBlock;
 
-/// <summary>Chain-of-thought output, distinct from visible text.</summary>
-public sealed record ReasoningBlock(string Text) : ContentBlock;
+/// <summary>Chain-of-thought output, distinct from visible text. <see cref="Signature"/> carries the
+/// provider attestation on routes that refuse to replay an unsigned thinking block (Anthropic);
+/// it is null everywhere else and absent from logs written before signatures were captured.</summary>
+public sealed record ReasoningBlock(string Text, string? Signature = null) : ContentBlock;
 
 public sealed record ImageBlock(string AttachmentId, string MimeType) : ContentBlock;
 

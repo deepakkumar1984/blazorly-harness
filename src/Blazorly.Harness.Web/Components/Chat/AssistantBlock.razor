@@ -5,7 +5,7 @@
 {
     <div class="markdown">@((MarkupString)Markdown.ToHtml(text.Text))</div>
 }
-else if (Block is ReasoningBlock reasoning)
+else if (Block is ReasoningBlock { Text.Length: > 0 } reasoning)
 {
     var streaming = StepStatus == "streaming";
     // Live thinking must be visible while it streams — it settles back to collapsed once done.

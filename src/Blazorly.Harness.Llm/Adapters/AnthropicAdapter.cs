@@ -8,8 +8,9 @@ namespace Blazorly.Harness.Llm.Adapters;
 /// <summary>
 /// Streams from the Anthropic Messages API (POST /v1/messages SSE). Tool results replay as
 /// user tool_result blocks, tool calls as tool_use blocks with parsed input objects, and the
-/// system prompt rides the top-level system parameter. Reasoning deltas stream in as
-/// thinking blocks but are dropped on replay (Anthropic requires signed thinking blocks).
+/// system prompt rides the top-level system parameter. Extended thinking is requested through the
+/// <c>thinking</c> parameter; thinking blocks stream in as reasoning deltas and replay only when
+/// they carry the signature Anthropic attested them with.
 /// </summary>
 public sealed class AnthropicAdapter : LlmAdapter
 {
@@ -168,10 +169,55 @@ public sealed class AnthropicAdapter : LlmAdapter
                 input_schema = ToolParameterSchemas.Normalize(t.Parameters),
             }).ToList();
         }
-        if (options.Temperature is not null) body["temperature"] = options.Temperature;
+        var thinking = BuildThinkingFields(options);
+        foreach (var (key, value) in thinking) body[key] = value;
+        // Anthropic rejects any temperature it did not default while thinking is enabled.
+        if (options.Temperature is not null && !ThinkingEnabled(thinking)) body["temperature"] = options.Temperature;
         if (options.Stop is { Count: > 0 }) body["stop_sequences"] = options.Stop.ToList();
         return body;
     }
+
+    /// <summary>
+    /// Extended thinking for the Messages API. Anthropic only emits thinking blocks when the
+    /// request asks for them, so without this field the effort picker is a no-op on Anthropic
+    /// routes and the gateway answers with a blank thinking block — observed live on Azure's
+    /// Anthropic endpoint as one empty <c>thinking_delta</c> per tool-use step, with real
+    /// thinking never reaching the transcript. <c>budget_tokens</c> must sit strictly below
+    /// <c>max_tokens</c>, so a request with no room for reasoning leaves thinking out instead of
+    /// provoking a 400. Title requests always run thinking-disabled.
+    /// </summary>
+    public IReadOnlyDictionary<string, object?> BuildThinkingFields(GenerateOptions options)
+    {
+        var effort = options.ReasoningEffort;
+        if (options.Purpose == "session-title" || effort == "off") return DisabledThinking;
+        if (effort is null) return NoThinkingFields; // unset keeps the provider default
+        var maxTokens = options.MaxTokens ?? DefaultMaxTokens;
+        if (maxTokens <= MinThinkingBudget) return NoThinkingFields;
+        return new Dictionary<string, object?>
+        {
+            ["thinking"] = new Dictionary<string, object?>
+            {
+                ["type"] = "enabled",
+                ["budget_tokens"] = Math.Min(OpenAiCompatibleAdapter.ThinkingBudgetTokens(effort), maxTokens - 1),
+            },
+        };
+    }
+
+    /// <summary>Anthropic's floor for <c>budget_tokens</c>; also the room a request needs to think at all.</summary>
+    public const int MinThinkingBudget = 1024;
+
+    private static readonly IReadOnlyDictionary<string, object?> NoThinkingFields = new Dictionary<string, object?>();
+
+    private static readonly IReadOnlyDictionary<string, object?> DisabledThinking = new Dictionary<string, object?>
+    {
+        ["thinking"] = new Dictionary<string, object?> { ["type"] = "disabled" },
+    };
+
+    private static bool ThinkingEnabled(IReadOnlyDictionary<string, object?> fields)
+        => fields.TryGetValue("thinking", out var value)
+           && value is Dictionary<string, object?> thinking
+           && thinking.TryGetValue("type", out var type)
+           && type is "enabled";
 
     /// <summary>Wire messages with consecutive same-role entries merged (the API requires alternating roles).</summary>
     internal List<Dictionary<string, object?>> BuildWireMessages(GenerateOptions options)
@@ -210,6 +256,18 @@ public sealed class AnthropicAdapter : LlmAdapter
             blocks.Add(result);
             return ("user", blocks);
         }
+        // Signed thinking leads the turn it came from: Anthropic replays it only with its
+        // signature and rejects a tool_use that arrives without the thinking block preceding it.
+        foreach (var reasoning in message.Content.OfType<ReasoningBlock>())
+        {
+            if (reasoning.Signature is not { Length: > 0 } signature) continue;
+            blocks.Add(new Dictionary<string, object?>
+            {
+                ["type"] = "thinking",
+                ["thinking"] = reasoning.Text,
+                ["signature"] = signature,
+            });
+        }
         foreach (var block in message.Content)
         {
             switch (block)
@@ -218,7 +276,7 @@ public sealed class AnthropicAdapter : LlmAdapter
                     blocks.Add(new Dictionary<string, object?> { ["type"] = "text", ["text"] = text.Text });
                     break;
                 case ReasoningBlock:
-                    break; // unsigned thinking cannot be replayed to Anthropic
+                    break; // replayed above when signed; unsigned thinking cannot be replayed
                 case ImageBlock image when message.Role == "user":
                 {
                     var resolved = _attachmentResolver?.Invoke(image.AttachmentId);
@@ -299,6 +357,7 @@ public sealed class AnthropicAdapter : LlmAdapter
         private readonly Dictionary<int, StringBuilder> _toolArgs = new();
         private readonly StringBuilder _text = new();
         private readonly StringBuilder _reasoning = new();
+        private string? _signature;
         private bool _textOpened;
         private bool _reasoningOpened;
 
@@ -312,14 +371,9 @@ public sealed class AnthropicAdapter : LlmAdapter
             var type = block.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
             switch (type)
             {
-                case "text":
-                    _textOpened = true;
-                    yield return new BlockStartChunk(TextIndex, "text");
-                    break;
-                case "thinking":
-                    _reasoningOpened = true;
-                    yield return new BlockStartChunk(ReasoningIndex, "reasoning");
-                    break;
+                // text and thinking open lazily on their first non-empty delta. Gateways answer a
+                // tool-use turn with a thinking block that carries no text at all, and opening the
+                // block here left an empty reasoning block in every transcript.
                 case "tool_use":
                 {
                     var id = block.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String ? idEl.GetString() : null;
@@ -340,12 +394,34 @@ public sealed class AnthropicAdapter : LlmAdapter
             switch (type)
             {
                 case "text_delta" when delta.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String:
-                    _text.Append(text.GetString());
-                    yield return new TextDeltaChunk(TextIndex, text.GetString() ?? "");
+                {
+                    var value = text.GetString() ?? "";
+                    if (value.Length == 0) yield break;
+                    if (!_textOpened)
+                    {
+                        _textOpened = true;
+                        yield return new BlockStartChunk(TextIndex, "text");
+                    }
+                    _text.Append(value);
+                    yield return new TextDeltaChunk(TextIndex, value);
                     break;
+                }
                 case "thinking_delta" when delta.TryGetProperty("thinking", out var thinking) && thinking.ValueKind == JsonValueKind.String:
-                    _reasoning.Append(thinking.GetString());
-                    yield return new ReasoningDeltaChunk(ReasoningIndex, thinking.GetString() ?? "");
+                {
+                    var value = thinking.GetString() ?? "";
+                    if (value.Length == 0) yield break;
+                    if (!_reasoningOpened)
+                    {
+                        _reasoningOpened = true;
+                        yield return new BlockStartChunk(ReasoningIndex, "reasoning");
+                    }
+                    _reasoning.Append(value);
+                    yield return new ReasoningDeltaChunk(ReasoningIndex, value);
+                    break;
+                }
+                case "signature_delta" when delta.TryGetProperty("signature", out var signature) && signature.ValueKind == JsonValueKind.String:
+                    // The attestation that lets this thinking block be replayed on the next turn.
+                    _signature = signature.GetString();
                     break;
                 case "input_json_delta" when delta.TryGetProperty("partial_json", out var json) && json.ValueKind == JsonValueKind.String:
                 {
@@ -372,11 +448,11 @@ public sealed class AnthropicAdapter : LlmAdapter
                     InputUsage.CacheReadTokens,
                     InputUsage.CacheWriteTokens)));
             }
-            if (_reasoningOpened && _reasoning.Length > 0)
+            if (_reasoning.Length > 0)
             {
-                chunks.Add(new BlockEndChunk(ReasoningIndex, new ReasoningBlock(_reasoning.ToString())));
+                chunks.Add(new BlockEndChunk(ReasoningIndex, new ReasoningBlock(_reasoning.ToString(), _signature)));
             }
-            if (_textOpened && _text.Length > 0)
+            if (_text.Length > 0)
             {
                 chunks.Add(new BlockEndChunk(TextIndex, new TextBlock(_text.ToString())));
             }
@@ -385,7 +461,7 @@ public sealed class AnthropicAdapter : LlmAdapter
                 var (id, name) = _tools[index];
                 chunks.Add(new BlockEndChunk(index, new ToolCallBlock(id, name ?? "", _toolArgs[index].ToString())));
             }
-            if ((!_textOpened || _text.Length == 0) && !_reasoningOpened && _tools.Count == 0)
+            if (_text.Length == 0 && _reasoning.Length == 0 && _tools.Count == 0)
             {
                 throw new LlmException(LlmErrorCodes.EmptyResponse, "provider returned no content");
             }
