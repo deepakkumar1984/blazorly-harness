@@ -36,7 +36,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     {
         _attachmentResolver = attachmentResolver;
         _provider = provider;
-        _baseUrl = baseUrl.TrimEnd('/');
+        _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/chat/completions");
         _apiKey = apiKey;
         _requireApiKey = requireApiKey;
         _models = models;
@@ -175,24 +175,27 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     /// </summary>
     public object BuildWireBody(GenerateOptions options)
     {
+        // Absent fields are omitted, never null: System.Text.Json writes null dictionary
+        // values through, and strict gateways 400 on them.
         var body = new Dictionary<string, object?>
         {
             ["model"] = options.Model,
             ["messages"] = BuildWireMessages(options),
             ["stream"] = true,
             ["stream_options"] = new { include_usage = true },
-            ["tools"] = options.Tools is { Count: > 0 }
-                ? options.Tools.Select(t => (object)new
-                {
-                    type = "function",
-                    function = new { name = t.Name, description = t.Description, parameters = ToolParameterSchemas.Normalize(t.Parameters) },
-                }).ToList()
-                : null,
-            ["tool_choice"] = options.Tools is { Count: > 0 } ? "auto" : null,
-            ["temperature"] = options.Temperature,
-            ["max_tokens"] = options.MaxTokens,
-            ["stop"] = options.Stop is { Count: > 0 } ? options.Stop.ToList() : null,
         };
+        if (options.Tools is { Count: > 0 })
+        {
+            body["tools"] = options.Tools.Select(t => (object)new
+            {
+                type = "function",
+                function = new { name = t.Name, description = t.Description, parameters = ToolParameterSchemas.Normalize(t.Parameters) },
+            }).ToList();
+            body["tool_choice"] = "auto";
+        }
+        if (options.Temperature is not null) body["temperature"] = options.Temperature;
+        if (options.MaxTokens is not null) body["max_tokens"] = options.MaxTokens;
+        if (options.Stop is { Count: > 0 }) body["stop"] = options.Stop.ToList();
         foreach (var (key, value) in BuildThinkingFields(options)) body[key] = value;
         return body;
     }
@@ -407,20 +410,24 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
                     var reasoning = message.Content.OfType<ReasoningBlock>().FirstOrDefault()?.Text;
                     var assistantText = Flatten(message.Content);
                     var toolCalls = message.Content.OfType<ToolCallBlock>().ToList();
-                    messages.Add(new Dictionary<string, object?>
+                    // Absent fields are omitted, never null: null dictionary values serialize
+                    // through, and strict gateways 400 on them.
+                    var assistant = new Dictionary<string, object?>
                     {
                         ["role"] = "assistant",
                         ["content"] = assistantText.Length > 0 ? assistantText : "",
-                        ["reasoning_content"] = string.IsNullOrWhiteSpace(reasoning) ? null : reasoning,
-                        ["tool_calls"] = toolCalls.Count > 0
-                            ? toolCalls.Select(tc => (object)new
-                            {
-                                id = tc.Id,
-                                type = "function",
-                                function = new { name = tc.Name, arguments = ToolCallWireFormat.CoerceArgumentsJson(tc.Arguments) },
-                            }).ToList()
-                            : null,
-                    });
+                    };
+                    if (!string.IsNullOrWhiteSpace(reasoning)) assistant["reasoning_content"] = reasoning;
+                    if (toolCalls.Count > 0)
+                    {
+                        assistant["tool_calls"] = toolCalls.Select(tc => (object)new
+                        {
+                            id = tc.Id,
+                            type = "function",
+                            function = new { name = tc.Name, arguments = ToolCallWireFormat.CoerceArgumentsJson(tc.Arguments) },
+                        }).ToList();
+                    }
+                    messages.Add(assistant);
                     break;
                 }
             }

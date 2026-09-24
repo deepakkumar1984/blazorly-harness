@@ -110,6 +110,19 @@ public class MultiProviderTests
     }
 
     [Fact]
+    public void BaseUrlFor_LegacyNullBaseUrlProvider_BelongsToActiveOnly()
+    {
+        // Null BaseUrlProvider means the typed field belongs to the ACTIVE provider; background
+        // routes resolve their own stash or the catalog default — never the active route's URL.
+        var settings = new HarnessSettings { Provider = "deepseek", BaseUrl = "https://api.deepseek.com" };
+        settings.ProviderBaseUrls["anthropic"] = "https://api.anthropic.com";
+
+        Assert.Equal("https://api.deepseek.com", settings.BaseUrlFor("deepseek"));
+        Assert.Equal("https://api.anthropic.com", settings.BaseUrlFor("anthropic"));
+        Assert.Equal(ProviderCatalog.Info("xai")!.DefaultBaseUrl, settings.BaseUrlFor("xai"));
+    }
+
+    [Fact]
     public void SelectProvider_SwapsACatalogDefaultUrlAndRestoresLegacySettings()
     {
         var settings = new HarnessSettings

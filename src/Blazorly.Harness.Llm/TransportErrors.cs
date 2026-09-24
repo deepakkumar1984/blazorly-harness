@@ -24,6 +24,31 @@ public static class TransportErrors
                 + "crashed (OOM), a proxy rejected the payload size, or the prompt is larger than the model's context "
                 + $"window. Underlying error: {RootMessage(exception)}";
 
+    /// <summary>
+    /// Normalizes a user-configured base URL before an adapter appends its call path. Portal
+    /// consoles hand out full URLs, so users paste the version/call suffix in
+    /// (…/anthropic/v1, …/v1/messages, …/chat/completions) — and a doubled segment 404s on
+    /// strict gateways. Longest suffix first; exact (ordinal) match only.
+    /// </summary>
+    public static string TrimApiSuffixes(string baseUrl, params string[] suffixes)
+    {
+        var root = baseUrl.TrimEnd('/');
+        bool stripped;
+        do
+        {
+            stripped = false;
+            foreach (var suffix in suffixes)
+            {
+                if (root.EndsWith(suffix, StringComparison.Ordinal))
+                {
+                    root = root[..^suffix.Length].TrimEnd('/');
+                    stripped = true;
+                }
+            }
+        } while (stripped);
+        return root;
+    }
+
     /// <summary>Describes a request that never completed: no response headers, no partial output.</summary>
     public static string DescribeTimeout(string endpoint, Exception? exception = null)
         => $"the request to {endpoint} timed out before the provider answered. Usual causes: the endpoint is "

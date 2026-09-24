@@ -151,6 +151,11 @@ public sealed class AgentDriver
         var maxTokens = options.MaxTokens;
         if (effort is null && maxTokens is null) return message;
         var lower = message.ToLowerInvariant();
+        // A 404 names the wrong endpoint or model path — never a bad parameter — so it must
+        // not speculate about effort/max_tokens (that misdiagnosis hides doubled URL segments).
+        // ("Not supported" stays out: effort-unsupported 400s use that phrasing legitimately.)
+        if (lower.Contains("404") || lower.Contains("not found") || lower.Contains("no route"))
+            return $"{message} The endpoint or model path was not found — check the route's base URL and model id (Settings → Providers).";
         string hint;
         if (effort is not null && (lower.Contains("reasoning") || lower.Contains("thinking") || lower.Contains("effort")))
             hint = $"The route rejected reasoning effort '{effort}': the model may not support it. Reset with /effort default or pick another level in the model dialog.";

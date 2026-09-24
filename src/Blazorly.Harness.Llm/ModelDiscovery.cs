@@ -11,11 +11,17 @@ namespace Blazorly.Harness.Llm;
 public static class LlmModelDiscovery
 {
     public static async Task<IReadOnlyList<LlmModelInfo>> DiscoverAsync(
-        string provider, string baseUrl, string apiKey, HttpClient http, Action<HttpRequestMessage>? configure = null, CancellationToken ct = default)
+        string provider, string baseUrl, string apiKey, HttpClient http, Action<HttpRequestMessage>? configure = null, CancellationToken ct = default,
+        bool anthropicModelsPath = false)
     {
         // Anthropic serves its model list under /v1/models with x-api-key auth; OpenAI-compatible routes use /models + bearer.
-        var path = provider == "anthropic" ? "/v1/models" : "/models";
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl.TrimEnd('/')}{path}");
+        // Either way the version/call suffix may already be pasted into the base URL — strip before appending.
+        var anthropic = provider == "anthropic" || anthropicModelsPath;
+        var path = anthropic ? "/v1/models" : "/models";
+        var endpointRoot = anthropic
+            ? TransportErrors.TrimApiSuffixes(baseUrl, "/v1/models", "/models", "/v1")
+            : TransportErrors.TrimApiSuffixes(baseUrl, "/models");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{endpointRoot}{path}");
         if (configure is not null)
         {
             configure(request);

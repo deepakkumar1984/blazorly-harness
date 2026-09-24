@@ -218,7 +218,21 @@ public class OpenAiAdapterWireTests
     public void MapsHarnessMessagesToWireFormat()
     {
         var adapter = new OpenAiCompatibleAdapter("test", "http://localhost", "k", [], new HttpClient());
-        var body = (System.Collections.Generic.Dictionary<string, object?>)adapter.BuildWireBody(Options("be brief"));
+        var options = Options("be brief") with
+        {
+            Messages =
+            [
+                Message.CreateUserText("hello"),
+                Message.CreateAssistant("test", "m1",
+                [
+                    new ReasoningBlock("let me think"),
+                    new TextBlock("thinking..."),
+                    new ToolCallBlock("call_1", "bash", "{\"command\":\"ls\"}"),
+                ]),
+                Message.CreateToolResult("call_1", [new TextBlock("file-a\nfile-b")]),
+            ],
+        };
+        var body = (System.Collections.Generic.Dictionary<string, object?>)adapter.BuildWireBody(options);
         var messages = (List<object>)body["messages"]!;
         Assert.Equal(4, messages.Count);
         var json = System.Text.Json.JsonSerializer.Serialize(body);
@@ -226,7 +240,19 @@ public class OpenAiAdapterWireTests
         Assert.Contains("\"role\":\"tool\"", json);
         Assert.Contains("\"tool_call_id\":\"call_1\"", json);
         Assert.Contains("\"function\":{\"name\":\"bash\"", json);
-        Assert.Contains("\"reasoning_content\"", json); // assistant reasoning replayed
+        Assert.Contains("\"reasoning_content\":\"let me think\"", json); // assistant reasoning replayed
+    }
+
+    [Fact]
+    public void AbsentFields_AreOmittedNeverNull()
+    {
+        // Null dictionary values serialize through, and strict gateways 400 on them —
+        // so unset optionals must not appear on the wire at all.
+        var adapter = new OpenAiCompatibleAdapter("test", "http://localhost", "k", [], new HttpClient());
+        var json = System.Text.Json.JsonSerializer.Serialize(adapter.BuildWireBody(Options("be brief")));
+        Assert.DoesNotContain("\"reasoning_content\"", json);
+        Assert.DoesNotContain("\"temperature\"", json);
+        Assert.DoesNotContain(":null", json);
     }
 
     // Thinking controls are provider-specific and were verified live against the token-plan

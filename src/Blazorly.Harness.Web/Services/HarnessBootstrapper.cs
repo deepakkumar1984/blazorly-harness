@@ -32,6 +32,9 @@ public sealed class HarnessSettings
     public string? BaseUrlProvider { get; set; }
     /// <summary>Endpoint stash per provider id, so switching routes keeps each provider's URL typed once.</summary>
     public Dictionary<string, string> ProviderBaseUrls { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>Wire-protocol override per built-in provider id: "openai" (default) or "anthropic".
+    /// Custom gateways carry their own <see cref="CustomProviderConfig.ApiType"/> instead.</summary>
+    public Dictionary<string, string> ProviderApiTypes { get; set; } = new(StringComparer.Ordinal);
     public string WorkspaceRoot { get; set; } = Directory.GetCurrentDirectory();
     public string SandboxMode { get; set; } = SandboxPolicy.FullAccess;
     /// <summary>
@@ -207,11 +210,12 @@ public sealed class HarnessSettings
         Model = !string.IsNullOrWhiteSpace(model) ? model! : ProviderCatalog.DefaultModel(provider);
     }
 
-    /// <summary>Endpoint for a provider route (active or background): the URL the user
-    /// configured for that provider — the typed field when it belongs to them, else their
-    /// stash — falling back to the catalog default.</summary>
+    /// <summary>Endpoint for a provider route (active or background): the typed field when
+    /// it belongs to them — a null <see cref="BaseUrlProvider"/> means the active provider —
+    /// else their own stash, falling back to the catalog default. Background routes never
+    /// inherit the active route's URL (route registration resolves the same way).</summary>
     public string BaseUrlFor(string provider)
-        => string.IsNullOrWhiteSpace(BaseUrlProvider) || BaseUrlProvider == provider
+        => (string.IsNullOrWhiteSpace(BaseUrlProvider) ? Provider : BaseUrlProvider) == provider
             ? BaseUrl
             : ProviderBaseUrls.TryGetValue(provider, out var stashed) && stashed.Length > 0
                 ? stashed
@@ -312,13 +316,15 @@ public sealed class DiscoveredModelInfoConverter : System.Text.Json.Serializatio
     }
 }
 
-/// <summary>An extra OpenAI-compatible provider route configured from the Settings UI.</summary>
+/// <summary>An extra provider route configured from the Settings UI (OpenAI-compatible by default).</summary>
 public sealed class CustomProviderConfig
 {
     public string Name { get; set; } = "";
     public string BaseUrl { get; set; } = "";
     public string? ApiKey { get; set; }
     public string? ApiKeyEnv { get; set; }
+    /// <summary>Wire protocol: "openai" (OpenAI-compatible, default) or "anthropic" (Anthropic Messages API).</summary>
+    public string ApiType { get; set; } = "openai";
     public List<string> Models { get; set; } = [];
 
     /// <summary>Comma-separated editor view of the model ids (the Settings page binds this).</summary>
@@ -665,8 +671,23 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         return read is null ? null : (read.Data, read.MimeType);
     };
 
+    /// <summary>Effective wire protocol for a route: a custom gateway's own API type,
+    /// else a per-provider override, else the catalog default (Anthropic for Anthropic,
+    /// OpenAI-compatible everywhere else).</summary>
+    public static string ResolveApiType(HarnessSettings settings, string provider)
+    {
+        if (settings.CustomProviders.FirstOrDefault(c => c.Name == provider) is { } custom)
+            return ProviderCatalog.NormalizeApiType(custom.ApiType);
+        if (settings.ProviderApiTypes.TryGetValue(provider, out var overrideType))
+            return ProviderCatalog.NormalizeApiType(overrideType);
+        return ProviderCatalog.Info(provider)?.DefaultApiType ?? "openai";
+    }
+
+    /// <summary>Effective wire protocol for a route under the live settings.</summary>
+    public string ApiTypeFor(string provider) => ResolveApiType(Settings, provider);
+
     private LlmAdapter BuildRoute(string provider, string baseUrl, string? apiKey, IReadOnlyList<LlmModelInfo> models)
-        => provider == "anthropic"
+        => ResolveApiType(Settings, provider) == "anthropic"
             ? new AnthropicAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver())
             : ProviderCatalog.UsesResponsesApi(provider)
                 ? new ResponsesApiAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
@@ -873,13 +894,13 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         property.SetValue(settings, false);
     }
     public async Task<(IReadOnlyList<string> Models, string? Error)> DiscoverModelsAsync(
-        string provider, string? typedBaseUrl = null, string? typedApiKey = null, TimeSpan? timeout = null, CancellationToken ct = default)
+        string provider, string? typedBaseUrl = null, string? typedApiKey = null, TimeSpan? timeout = null, CancellationToken ct = default,
+        string? apiType = null)
     {
         if (string.IsNullOrWhiteSpace(provider)) return ([], "provider is required");
         var custom = Settings.CustomProviders.FirstOrDefault(c => c.Name == provider);
         string baseUrl;
         string apiKey;
-        Action<HttpRequestMessage>? configure = null;
         if (custom is not null)
         {
             baseUrl = typedBaseUrl ?? custom.BaseUrl;
@@ -890,17 +911,60 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         }
         else
         {
-            baseUrl = typedBaseUrl ?? Settings.BaseUrl;
-            apiKey = typedApiKey ?? Settings.EffectiveApiKey ?? "";
-            if (provider == "anthropic")
+            baseUrl = typedBaseUrl ?? Settings.BaseUrlFor(provider);
+            apiKey = typedApiKey ?? Settings.ApiKeyFor(provider) ?? "";
+        }
+        // Anthropic-model endpoints take x-api-key auth (built-in Anthropic, an overridden
+        // built-in, or a custom gateway on the Anthropic wire); the modal can preview an
+        // unsaved API type via the override.
+        var effectiveApiType = ProviderCatalog.NormalizeApiType(apiType ?? ResolveApiType(Settings, provider));
+        Action<HttpRequestMessage>? configure = null;
+        if (effectiveApiType == "anthropic")
+        {
+            var anthropicKey = apiKey;
+            configure = request =>
             {
-                configure = request =>
-                {
-                    request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
-                    request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-                };
+                request.Headers.TryAddWithoutValidation("x-api-key", anthropicKey);
+                request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+            };
+        }
+        var (models, fetchError) = await FetchModelListAsync(provider, baseUrl, apiKey, effectiveApiType, timeout, ct).ConfigureAwait(false);
+        if (fetchError is not null) return ([], fetchError);
+        if (models is null) return ([], null); // caller cancelled: silent, no list and no error
+        var ids = models.Select(m => m.Id).ToList();
+        var entries = models.Select(m => new DiscoveredModelInfo(m.Id, m.ContextWindowTokens, m.MaxOutputTokens)).ToList();
+        if (custom is not null)
+        {
+            foreach (var id in ids)
+            {
+                if (!custom.Models.Contains(id)) custom.Models.Add(id);
             }
         }
+        else
+        {
+            Settings.DiscoveredModels[provider] = entries;
+        }
+        SaveSettings();
+        ApplyProviderSelection();
+        return (ids, null);
+    }
+
+    /// <summary>Fetches a provider's model list without persisting anything, for the Add/Edit
+    /// provider modal's List-models preview (typed URL/key/API type, unsaved by design).
+    /// Null list + null error means the caller cancelled.</summary>
+    public async Task<(IReadOnlyList<LlmModelInfo>? Models, string? Error)> PreviewModelsAsync(
+        string provider, string baseUrl, string apiKey, string? apiType = null, TimeSpan? timeout = null, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(provider)) return ([], "provider is required");
+        var effectiveApiType = ProviderCatalog.NormalizeApiType(apiType ?? ResolveApiType(Settings, provider));
+        return await FetchModelListAsync(provider, baseUrl, apiKey, effectiveApiType, timeout, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>One GET /models (or /v1/models) round-trip with URL validation, timeout and
+    /// error mapping. Null list + null error means the caller cancelled.</summary>
+    private static async Task<(IReadOnlyList<LlmModelInfo>? Models, string? Error)> FetchModelListAsync(
+        string provider, string baseUrl, string apiKey, string effectiveApiType, TimeSpan? timeout, CancellationToken ct)
+    {
         // A pasted URL with whitespace or no scheme must fail with a message, not with an
         // unhandled UriFormatException/InvalidOperationException on the caller's context.
         baseUrl = (baseUrl ?? "").Trim();
@@ -909,6 +973,16 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
             return ([], $"'{baseUrl}' is not an absolute http(s) URL — include the scheme, e.g. https://host/v1");
+        Action<HttpRequestMessage>? configure = null;
+        if (effectiveApiType == "anthropic")
+        {
+            var anthropicKey = apiKey;
+            configure = request =>
+            {
+                request.Headers.TryAddWithoutValidation("x-api-key", anthropicKey);
+                request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+            };
+        }
         try
         {
             // Discovery rides the streaming client, whose timeout is infinite (long generations);
@@ -917,27 +991,13 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             // The caller's token (the UI Cancel button) links in beside the timeout.
             using var discoveryCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(ct);
             discoveryCts.CancelAfter(timeout ?? TimeSpan.FromSeconds(30));
-            var models = await LlmModelDiscovery.DiscoverAsync(provider, baseUrl, apiKey, StreamingHttp, configure, discoveryCts.Token).ConfigureAwait(false);
-            var ids = models.Select(m => m.Id).ToList();
-            var entries = models.Select(m => new DiscoveredModelInfo(m.Id, m.ContextWindowTokens, m.MaxOutputTokens)).ToList();
-            if (custom is not null)
-            {
-                foreach (var id in ids)
-                {
-                    if (!custom.Models.Contains(id)) custom.Models.Add(id);
-                }
-            }
-            else
-            {
-                Settings.DiscoveredModels[provider] = entries;
-            }
-            SaveSettings();
-            ApplyProviderSelection();
-            return (ids, null);
+            var models = await LlmModelDiscovery.DiscoverAsync(provider, baseUrl, apiKey, StreamingHttp, configure, discoveryCts.Token,
+                anthropicModelsPath: effectiveApiType == "anthropic").ConfigureAwait(false);
+            return (models, null);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return ([], null); // caller cancelled: silent, no list and no error
+            return (null, null); // caller cancelled: silent, no list and no error
         }
         catch (OperationCanceledException)
         {
@@ -1166,12 +1226,14 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 
 /// <summary>A built-in provider route: display metadata plus defaults for the Settings UI.</summary>
 /// <param name="Category">cloud | local — drives the grouped picker ("generic" survives on the legacy record only).</param>
+/// <param name="DefaultApiType">"openai" (OpenAI-compatible) or "anthropic" (Anthropic Messages API).</param>
 public sealed record ProviderInfo(
     string Id,
     string Name,
     string Category,
     string DefaultBaseUrl,
-    string? ApiKeyEnv = null)
+    string? ApiKeyEnv = null,
+    string DefaultApiType = "openai")
 {
     public bool Local => Category == "local";
 }
@@ -1187,7 +1249,7 @@ public static class ProviderCatalog
     [
         // Cloud (hosted APIs)
         new("openai", "OpenAI", "cloud", "https://api.openai.com/v1", "OPENAI_API_KEY"),
-        new("anthropic", "Anthropic", "cloud", "https://api.anthropic.com", "ANTHROPIC_API_KEY"),
+        new("anthropic", "Anthropic", "cloud", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "anthropic"),
         new("xai", "xAI (Grok)", "cloud", "https://api.x.ai/v1", "XAI_API_KEY"),
         new("google", "Google (Gemini)", "cloud", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
         new("mistral", "Mistral AI", "cloud", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
@@ -1252,6 +1314,14 @@ public static class ProviderCatalog
     /// still speak /chat/completions.
     /// </summary>
     public static bool UsesResponsesApi(string provider) => provider is "xai" or "openai" or "zai-coding";
+
+    /// <summary>Normalizes a stored API type to "anthropic" or "openai" (default).</summary>
+    public static string NormalizeApiType(string? apiType)
+        => string.Equals(apiType, "anthropic", StringComparison.OrdinalIgnoreCase) ? "anthropic" : "openai";
+
+    /// <summary>Short display label for an API type value.</summary>
+    public static string ApiTypeLabel(string? apiType)
+        => NormalizeApiType(apiType) == "anthropic" ? "Anthropic" : "OpenAI-compatible";
 
     public static IReadOnlyList<string> Categories => ["cloud", "local"];
 

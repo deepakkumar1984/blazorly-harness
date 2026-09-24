@@ -32,7 +32,7 @@ public sealed class ResponsesApiAdapter : LlmAdapter
     {
         _attachmentResolver = attachmentResolver;
         _provider = provider;
-        _baseUrl = baseUrl.TrimEnd('/');
+        _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/responses");
         _apiKey = apiKey;
         _requireApiKey = requireApiKey;
         _models = models;
@@ -105,28 +105,31 @@ public sealed class ResponsesApiAdapter : LlmAdapter
 
     public object BuildWireBody(GenerateOptions options)
     {
+        // Absent fields are omitted, never null: System.Text.Json writes null dictionary
+        // values through, and strict gateways 400 on them.
         var body = new Dictionary<string, object?>
         {
             ["model"] = options.Model,
             ["input"] = BuildInput(options),
-            ["instructions"] = string.IsNullOrEmpty(options.System) ? null : options.System,
             ["stream"] = true,
             ["store"] = false,
-            ["tools"] = options.Tools is { Count: > 0 }
-                ? options.Tools.Select(t => (object)new Dictionary<string, object?>
-                {
-                    ["type"] = "function",
-                    ["name"] = t.Name,
-                    ["description"] = t.Description,
-                    ["parameters"] = ToolParameterSchemas.Normalize(t.Parameters),
-                }).ToList()
-                : null,
-            ["tool_choice"] = options.Tools is { Count: > 0 } ? "auto" : null,
-            ["temperature"] = options.Temperature,
-            ["max_output_tokens"] = options.MaxTokens,
-            ["prompt_cache_key"] = string.IsNullOrWhiteSpace(options.SessionId) ? null : options.SessionId,
             ["include"] = new[] { "reasoning.encrypted_content" },
         };
+        if (!string.IsNullOrEmpty(options.System)) body["instructions"] = options.System;
+        if (options.Tools is { Count: > 0 })
+        {
+            body["tools"] = options.Tools.Select(t => (object)new Dictionary<string, object?>
+            {
+                ["type"] = "function",
+                ["name"] = t.Name,
+                ["description"] = t.Description,
+                ["parameters"] = ToolParameterSchemas.Normalize(t.Parameters),
+            }).ToList();
+            body["tool_choice"] = "auto";
+        }
+        if (options.Temperature is not null) body["temperature"] = options.Temperature;
+        if (options.MaxTokens is not null) body["max_output_tokens"] = options.MaxTokens;
+        if (!string.IsNullOrWhiteSpace(options.SessionId)) body["prompt_cache_key"] = options.SessionId;
         foreach (var (key, value) in BuildReasoningFields(options)) body[key] = value;
         if (options.Stop is { Count: > 0 } && options.ReasoningEffort is null)
             body["stop"] = options.Stop.ToList();

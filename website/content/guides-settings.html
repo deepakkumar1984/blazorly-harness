@@ -6,43 +6,25 @@
   <p class="muted">The Settings page is five tabs along the top, a Save button, and a file on disk at <code>~/.blazorly/settings.json</code>. Open it from the sidebar. Nothing here is a cloud console — the keys stay on this machine.</p>
 
   <div class="answer">
-    <p>Blazorly Settings has five tabs: <strong>Model &amp; API</strong>, <strong>Custom providers</strong>, <strong>Sessions &amp; context</strong>, <strong>Capabilities</strong>, and <strong>Permissions &amp; sandbox</strong>. Model &amp; API is where a new install starts: pick a provider, load models from that provider’s API, paste a key. Custom providers add extra OpenAI-compatible routes. Sessions &amp; context chooses JSONL or SQLite and the compaction window. Capabilities toggles tools (web, MCP, terminals, teams, System One, tool-gate). Permissions &amp; sandbox sets the default preset for new sessions. Click Save. A live session can still switch model and permission from its own top bar without revisiting this page.</p>
+    <p>Blazorly Settings has five tabs: <strong>Appearance</strong>, <strong>Providers</strong>, <strong>Sessions &amp; context</strong>, <strong>Capabilities</strong>, and <strong>Permissions &amp; sandbox</strong>. Providers is where a new install starts: it sets the default provider and model for <em>new</em> sessions and lists every configured route — built-ins and custom gateways — with its API type, endpoint, models and key status. Sessions &amp; context chooses JSONL or SQLite and the compaction window. Capabilities toggles tools (web, MCP, terminals, teams, System One, tool-gate). Permissions &amp; sandbox sets the default preset for new sessions. Click Save. A live session can still switch model and permission from its own top bar without revisiting this page.</p>
   </div>
 </article>
 
-<section>
-  <div class="wrap">
-    <figure class="shot">
-      <img src="/assets/img/ui-settings-provider.webp" width="1440" height="900" alt="Blazorly Settings on the Model and API tab, with DeepSeek selected, models loaded from the API, and a masked API key.">
-      <figcaption>Model &amp; API — first tab after install. Load models from the provider, then Save.</figcaption>
-    </figure>
-  </div>
-</section>
-
 <article class="prose prose-wrap">
-  <h2>Model &amp; API</h2>
-  <p>This tab is the default. It sets the provider and model used for <em>new</em> sessions. Keys are stored per provider, so you can keep DeepSeek, Anthropic, and a local Ollama endpoint configured at once and pick among them from the session chip.</p>
-  <ul>
-    <li><strong>Provider</strong> — grouped into cloud, local, and other. Changing it clears the model list until you load again.</li>
-    <li><strong>Model</strong> — filled by “Load models from the API”, not a hardcoded menu. Enter the key first if the provider needs one.</li>
-    <li><strong>Base URL</strong> — override the default endpoint; a chip resets it.</li>
-    <li><strong>API key</strong> — password field. The matching environment variable wins if this field is empty. A DeepSeek key is never sent to an OpenAI route.</li>
-  </ul>
-  <p>Local setups (Ollama, LM Studio) show a “runs on your machine” chip and treat the key as optional.</p>
-
-  <h2>Custom providers</h2>
+  <h2>Providers</h2>
+  <p>This tab is the default. The top picks the provider and model used for <em>new</em> sessions. Keys are stored per provider, so you can keep DeepSeek, Anthropic, and a local Ollama endpoint configured at once and pick among them from the session chip — a DeepSeek key is never sent to an OpenAI route. Local setups treat the key as optional.</p>
 </article>
 <section>
   <div class="wrap">
     <figure class="shot">
-      <img src="/assets/img/ui-settings-custom.webp" width="1440" height="900" loading="lazy" alt="Blazorly Settings Custom providers tab listing a local LM Studio route and an office OpenAI-compatible gateway.">
-      <figcaption>Custom providers — extra OpenAI-compatible routes next to the built-ins.</figcaption>
+      <img src="/assets/img/ui-settings-custom.webp" width="1440" height="900" loading="lazy" alt="Blazorly Settings Providers tab listing a local LM Studio route and an office gateway.">
+      <figcaption>Providers — every configured route, built-in or custom, in one table.</figcaption>
     </figure>
   </div>
 </section>
 <article class="prose prose-wrap">
-  <p>Use this tab when the model is behind a proxy, a company gateway, or a local server that speaks the OpenAI protocol but is not in the built-in catalog. Each row is a name, a base URL (include <code>/v1</code>), an optional key or env var, and a list of model ids. After Save, the name appears in the session model picker beside DeepSeek and the rest.</p>
-  <p>Name must be unique and must not collide with a built-in provider id. Discover models after saving if you would rather not type ids by hand.</p>
+  <p>Add a provider to open the setup dialog: pick a built-in or a custom gateway, choose the API type (OpenAI-compatible by default, Anthropic Messages where the endpoint speaks it), paste the key, then List models and tick the ones to keep — filter the list, Select all, or paste ids comma-separated. Saving adds a row to the table, where each route can be edited, rediscovered or removed. Use a custom gateway when the model is behind a proxy, a company gateway, or a local server that is not in the built-in catalog (include <code>/v1</code> in the base URL for OpenAI-compatible gateways).</p>
+  <p>A custom name must be unique and must not collide with a built-in provider id. After Save, every row appears in the session model picker beside DeepSeek and the rest.</p>
 
   <h2>Sessions &amp; context</h2>
 </article>

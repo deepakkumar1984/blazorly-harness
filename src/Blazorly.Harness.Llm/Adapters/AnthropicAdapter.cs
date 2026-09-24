@@ -33,7 +33,7 @@ public sealed class AnthropicAdapter : LlmAdapter
     {
         _attachmentResolver = attachmentResolver;
         _provider = provider;
-        _baseUrl = baseUrl.TrimEnd('/');
+        _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/v1/messages", "/messages", "/v1");
         _apiKey = apiKey;
         _models = models;
         _http = http;
@@ -147,24 +147,31 @@ public sealed class AnthropicAdapter : LlmAdapter
         foreach (var chunk in fold.ToChunks()) yield return chunk;
     }
 
-    public object BuildWireBody(GenerateOptions options) => new Dictionary<string, object?>
+    /// <summary>Absent fields are omitted, never null: System.Text.Json writes null
+    /// dictionary values through, and strict gateways (Azure Pydantic) 400 on them.</summary>
+    public object BuildWireBody(GenerateOptions options)
     {
-        ["model"] = options.Model,
-        ["max_tokens"] = options.MaxTokens ?? DefaultMaxTokens,
-        ["stream"] = true,
-        ["system"] = string.IsNullOrEmpty(options.System) ? null : options.System,
-        ["messages"] = BuildWireMessages(options),
-        ["tools"] = options.Tools is { Count: > 0 }
-            ? options.Tools.Select(t => (object)new
+        var body = new Dictionary<string, object?>
+        {
+            ["model"] = options.Model,
+            ["max_tokens"] = options.MaxTokens ?? DefaultMaxTokens,
+            ["stream"] = true,
+            ["messages"] = BuildWireMessages(options),
+        };
+        if (!string.IsNullOrEmpty(options.System)) body["system"] = options.System;
+        if (options.Tools is { Count: > 0 })
+        {
+            body["tools"] = options.Tools.Select(t => (object)new
             {
                 name = t.Name,
                 description = t.Description,
                 input_schema = ToolParameterSchemas.Normalize(t.Parameters),
-            }).ToList()
-            : null,
-        ["temperature"] = options.Temperature,
-        ["stop_sequences"] = options.Stop is { Count: > 0 } ? options.Stop.ToList() : null,
-    };
+            }).ToList();
+        }
+        if (options.Temperature is not null) body["temperature"] = options.Temperature;
+        if (options.Stop is { Count: > 0 }) body["stop_sequences"] = options.Stop.ToList();
+        return body;
+    }
 
     /// <summary>Wire messages with consecutive same-role entries merged (the API requires alternating roles).</summary>
     internal List<Dictionary<string, object?>> BuildWireMessages(GenerateOptions options)
@@ -191,13 +198,16 @@ public sealed class AnthropicAdapter : LlmAdapter
         if (message.Role == "user" && message.Content.OfType<ToolResultBlock>().FirstOrDefault() is { } toolResult)
         {
             var toolText = Flatten(toolResult.Content);
-            blocks.Add(new Dictionary<string, object?>
+            var result = new Dictionary<string, object?>
             {
                 ["type"] = "tool_result",
                 ["tool_use_id"] = toolResult.ToolCallId,
                 ["content"] = new List<object> { new Dictionary<string, object?> { ["type"] = "text", ["text"] = toolText.Length > 0 ? toolText : "(no output)" } },
-                ["is_error"] = toolResult.IsError == true ? true : null,
-            });
+            };
+            // Omitted when false: null dictionary values serialize through, and strict
+            // gateways 400 on them.
+            if (toolResult.IsError == true) result["is_error"] = true;
+            blocks.Add(result);
             return ("user", blocks);
         }
         foreach (var block in message.Content)
