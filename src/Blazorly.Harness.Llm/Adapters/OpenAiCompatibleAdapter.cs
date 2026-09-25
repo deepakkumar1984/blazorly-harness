@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
@@ -7,10 +8,9 @@ using System.Text.Json.Serialization;
 namespace Blazorly.Harness.Llm.Adapters;
 
 /// <summary>
-/// Streams from OpenAI-compatible chat-completions endpoints (DeepSeek, Groq, vLLM, Ollama, …)
-/// via server-sent events. xAI and OpenAI use <see cref="ResponsesApiAdapter"/> instead — Chat
-/// Completions is legacy on those hosts. Harness tool-result blocks map to role:'tool' wire
-/// messages; reasoning maps to DeepSeek's reasoning_content field.
+/// Streams from OpenAI-compatible endpoints via server-sent events. GPT-5 and GPT-6 models
+/// use <see cref="ResponsesApiAdapter"/>, including on custom gateways. Other models retain
+/// the Chat Completions wire used by DeepSeek, Groq, vLLM and Ollama.
 /// </summary>
 public sealed class OpenAiCompatibleAdapter : LlmAdapter
 {
@@ -28,6 +28,9 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     private readonly IReadOnlyList<LlmModelInfo> _models;
     private readonly string _userAgent;
     private readonly Func<string, (byte[] Data, string MimeType)?>? _attachmentResolver;
+    private readonly ConcurrentDictionary<string, string> _tokenLimitParameters = new(StringComparer.Ordinal);
+    private readonly ResponsesApiAdapter _responses;
+    private readonly bool _responsesEndpoint;
 
     /// <param name="attachmentResolver">Resolves attachment ids into bytes for image input (inline base64).</param>
     /// <param name="requireApiKey">Keyless routes (local servers, open gateways) stream without an
@@ -36,12 +39,14 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     {
         _attachmentResolver = attachmentResolver;
         _provider = provider;
-        _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/chat/completions");
+        _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/chat/completions", "/responses");
         _apiKey = apiKey;
         _requireApiKey = requireApiKey;
         _models = models;
         _http = http;
         _userAgent = userAgent ?? "blazorly-harness";
+        _responsesEndpoint = baseUrl.TrimEnd('/').EndsWith("/responses", StringComparison.Ordinal);
+        _responses = new ResponsesApiAdapter(provider, _baseUrl, apiKey, models, http, userAgent, attachmentResolver, requireApiKey);
     }
 
     public override string Provider => _provider;
@@ -50,55 +55,20 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
 
     public override async IAsyncEnumerable<StreamChunk> Stream(GenerateOptions options, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
+        if (UseResponses(options))
+        {
+            await foreach (var chunk in _responses.Stream(options, ct).ConfigureAwait(false)) yield return chunk;
+            yield break;
+        }
         if (string.IsNullOrWhiteSpace(_apiKey) && _requireApiKey)
             throw new LlmException(LlmErrorCodes.MissingCredential, $"api key for provider '{_provider}' is not configured");
 
-        var body = JsonSerializer.Serialize(BuildWireBody(options), WireOptions);
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions")
-        {
-            Content = new StringContent(body, Encoding.UTF8, "application/json"),
-        };
-        if (!string.IsNullOrWhiteSpace(_apiKey))
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-        request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
-
-        HttpResponseMessage response;
-        try
-        {
-            response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw new LlmException(LlmErrorCodes.Aborted, "request cancelled");
-        }
-        catch (TaskCanceledException ex)
-        {
-            // Reached only when the caller did not cancel: the HTTP client's own timeout fired.
-            throw new LlmException(LlmErrorCodes.Timeout, TransportErrors.DescribeTimeout($"{_baseUrl}/chat/completions", ex));
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/chat/completions", body.Length));
-        }
-        catch (IOException ex)
-        {
-            // The peer closed the connection during the request-body upload: no HTTP status ever arrived.
-            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/chat/completions", body.Length));
-        }
-
-        using var _ = response;
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            throw ClassifyHttp((int)response.StatusCode, errorBody, response.Headers);
-        }
-
+        using var response = await SendWithTokenLimitFallback(options, ct).ConfigureAwait(false);
         var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
         var fold = new AdapterFold();
-        await foreach (var payload in TransportErrors.GuardSse(SsePayloads(reader, ct), $"{_baseUrl}/chat/completions", ct).ConfigureAwait(false))
+        await foreach (var payload in TransportErrors.GuardSse(SsePayloads(reader, ct, () => fold.Done = true), $"{_baseUrl}/chat/completions", ct).ConfigureAwait(false))
         {
             if (payload is null) continue;
             using var doc = JsonDocument.Parse(payload);
@@ -141,11 +111,80 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
             if (finish is not null)
             {
                 fold.FinishReasonWire = finish;
-                break;
+                // With include_usage, the usage-only chunk follows the finished choice.
+                // Keep reading through [DONE]/EOF so reported token counts are retained.
             }
         }
 
         foreach (var chunk in fold.ToChunks()) yield return chunk;
+    }
+
+    private async Task<HttpResponseMessage> SendWithTokenLimitFallback(GenerateOptions options, CancellationToken ct)
+    {
+        var parameter = TokenLimitParameter(options.Model);
+        for (var attempt = 0; ; attempt++)
+        {
+            var body = JsonSerializer.Serialize(BuildWireBody(options, parameter), WireOptions);
+            var response = await Send(body, ct).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                if (options.MaxTokens is not null) _tokenLimitParameters[options.Model] = parameter;
+                return response;
+            }
+
+            using (response)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                var alternative = parameter == "max_tokens" ? "max_completion_tokens" : "max_tokens";
+                // Negotiate only an explicit validation rejection, before any stream starts.
+                // Keep the cap and all other options; general retries belong to RetryService.
+                var (_, message) = ProviderError(errorBody);
+                if (string.IsNullOrWhiteSpace(message)) message = errorBody;
+                if (attempt == 0 && (int)response.StatusCode == 400 && options.MaxTokens is not null
+                    && TokenLimitErrors.UnsupportedParameter(message) == parameter
+                    && message.Contains(alternative, StringComparison.OrdinalIgnoreCase))
+                {
+                    parameter = alternative;
+                    continue;
+                }
+                throw ClassifyHttp((int)response.StatusCode, errorBody, response.Headers);
+            }
+        }
+    }
+
+    private async Task<HttpResponseMessage> Send(string body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        if (!string.IsNullOrWhiteSpace(_apiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
+
+        try
+        {
+            return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new LlmException(LlmErrorCodes.Aborted, "request cancelled");
+        }
+        catch (TaskCanceledException ex)
+        {
+            // Reached only when the caller did not cancel: the HTTP client's own timeout fired.
+            throw new LlmException(LlmErrorCodes.Timeout, TransportErrors.DescribeTimeout($"{_baseUrl}/chat/completions", ex));
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/chat/completions", body.Length));
+        }
+        catch (IOException ex)
+        {
+            // The peer closed the connection during the request-body upload: no HTTP status ever arrived.
+            throw new LlmException(LlmErrorCodes.Transport, TransportErrors.DescribeSendFailure(ex, $"{_baseUrl}/chat/completions", body.Length));
+        }
     }
 
     private static TokenUsage? ParseUsage(JsonElement usage)
@@ -169,11 +208,17 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
     }
 
     /// <summary>
-    /// Chat Completions wire body. Tool parameters are normalized because some OpenAI-compatible
-    /// servers (LM Studio, xAI's legacy route) reject argument-less tools whose schema omits
-    /// <c>properties</c>.
+    /// Wire body for the model's selected protocol. Tool parameters are normalized because
+    /// some OpenAI-compatible servers reject argument-less tools whose schema omits <c>properties</c>.
     /// </summary>
     public object BuildWireBody(GenerateOptions options)
+        => UseResponses(options) ? _responses.BuildWireBody(options) : BuildWireBody(options, TokenLimitParameter(options.Model));
+
+    private bool UseResponses(GenerateOptions options) => _responsesEndpoint || OpenAiProtocol.UsesResponsesForModel(options.Model);
+
+    private string TokenLimitParameter(string model) => _tokenLimitParameters.GetValueOrDefault(model, "max_tokens");
+
+    private object BuildWireBody(GenerateOptions options, string tokenLimitParameter)
     {
         // Absent fields are omitted, never null: System.Text.Json writes null dictionary
         // values through, and strict gateways 400 on them.
@@ -194,7 +239,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
             body["tool_choice"] = "auto";
         }
         if (options.Temperature is not null) body["temperature"] = options.Temperature;
-        if (options.MaxTokens is not null) body["max_tokens"] = options.MaxTokens;
+        if (options.MaxTokens is not null) body[tokenLimitParameter] = options.MaxTokens;
         if (options.Stop is { Count: > 0 }) body["stop"] = options.Stop.ToList();
         foreach (var (key, value) in BuildThinkingFields(options)) body[key] = value;
         return body;
@@ -443,7 +488,8 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
         => string.Concat(blocks.OfType<TextBlock>().Select(b => b.Text));
 
     /// <summary>Yields SSE data payloads; the stream ends at the literal [DONE] or EOF.</summary>
-    internal static async IAsyncEnumerable<string?> SsePayloads(StreamReader reader, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    internal static async IAsyncEnumerable<string?> SsePayloads(StreamReader reader, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct,
+        Action? onDone = null)
     {
         var data = new StringBuilder();
         while (true)
@@ -463,6 +509,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
                 {
                     var trailing = data.ToString();
                     if (trailing != "[DONE]") yield return trailing;
+                    else onDone?.Invoke();
                 }
                 yield break;
             }
@@ -472,7 +519,11 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
                 {
                     var payload = data.ToString();
                     data.Clear();
-                    if (payload == "[DONE]") yield break;
+                    if (payload == "[DONE]")
+                    {
+                        onDone?.Invoke();
+                        yield break;
+                    }
                     yield return payload;
                 }
                 continue;
@@ -502,6 +553,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
 
         public TokenUsage? Usage { get; set; }
         public string? FinishReasonWire { get; set; }
+        public bool Done { get; set; }
 
         public IEnumerable<StreamChunk> ReasoningDelta(string delta)
         {
@@ -549,6 +601,8 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
 
         public IReadOnlyList<StreamChunk> ToChunks()
         {
+            if (FinishReasonWire is null && !Done)
+                throw new LlmException(LlmErrorCodes.StreamClosed, "Provider stream ended before a completion was reported.");
             var chunks = new List<StreamChunk>();
             if (Usage is not null) chunks.Add(new UsageChunk(Usage));
             if (_reasoningOpened && _reasoning.Length > 0)
@@ -568,7 +622,7 @@ public sealed class OpenAiCompatibleAdapter : LlmAdapter
                 var block = new ToolCallBlock(id, _toolNames.GetValueOrDefault(index) ?? "", _toolArgs.GetValueOrDefault(index)?.ToString() ?? "{}");
                 chunks.Add(new BlockEndChunk(index, block));
             }
-            chunks.Add(new FinishChunk(MapFinish(FinishReasonWire)));
+            chunks.Add(new FinishChunk(MapFinish(FinishReasonWire ?? (_toolIds.Count > 0 ? "tool_calls" : "stop"))));
             return chunks;
         }
 

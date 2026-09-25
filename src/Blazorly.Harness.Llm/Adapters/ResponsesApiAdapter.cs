@@ -32,7 +32,7 @@ public sealed class ResponsesApiAdapter : LlmAdapter
     {
         _attachmentResolver = attachmentResolver;
         _provider = provider;
-        _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/responses");
+        _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/chat/completions", "/responses");
         _apiKey = apiKey;
         _requireApiKey = requireApiKey;
         _models = models;
@@ -246,7 +246,9 @@ public sealed class ResponsesApiAdapter : LlmAdapter
             if (type is null)
             {
                 // Some gateways omit event types and send a completed response object.
-                if (root.TryGetProperty("output", out _) || root.TryGetProperty("status", out _))
+                if (root.TryGetProperty("status", out var status)
+                    && status.ValueKind == JsonValueKind.String
+                    && status.GetString() is "completed" or "incomplete" or "failed")
                     return HandleCompleted(root);
                 return [];
             }
@@ -494,6 +496,8 @@ public sealed class ResponsesApiAdapter : LlmAdapter
 
         public IReadOnlyList<StreamChunk> ToChunks()
         {
+            if (FinishReasonWire is null)
+                throw new LlmException(LlmErrorCodes.StreamClosed, "Provider stream ended before a completion was reported.");
             var chunks = new List<StreamChunk>();
             if (Usage is not null) chunks.Add(new UsageChunk(Usage));
             if (_reasoningOpened && _reasoning.Length > 0)

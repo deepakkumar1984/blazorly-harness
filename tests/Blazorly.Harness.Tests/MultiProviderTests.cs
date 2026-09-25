@@ -5,8 +5,36 @@ namespace Blazorly.Harness.Tests;
 
 /// <summary>Multi-provider routing: several providers keep live routes at once so the
 /// session topbar can switch models across all of them.</summary>
-public class MultiProviderTests
+[Collection("BlazorlyHome")]
+public class MultiProviderTests : IDisposable
 {
+    private readonly Dictionary<string, string?> _environment = new[]
+    {
+        "XAI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "OPENAI_COMPATIBLE_API_KEY",
+        "ZAI_API_KEY", "ANTHROPIC_API_KEY", "MISTRAL_API_KEY",
+    }.ToDictionary(name => name, Environment.GetEnvironmentVariable);
+
+    public MultiProviderTests()
+    {
+        foreach (var name in _environment.Keys) Environment.SetEnvironmentVariable(name, null);
+    }
+
+    public void Dispose()
+    {
+        foreach (var (name, value) in _environment) Environment.SetEnvironmentVariable(name, value);
+    }
+
+    [Theory]
+    [InlineData("DEEPSEEK_API_KEY", "openai")]
+    [InlineData("OPENAI_API_KEY", "deepseek")]
+    [InlineData("DEEPSEEK_API_KEY", "openai-compatible")]
+    [InlineData("OPENAI_API_KEY", "openai-compatible")]
+    public void ApiKeyFor_NeverBorrowsAnUnrelatedProviderEnvironmentKey(string envName, string route)
+    {
+        Environment.SetEnvironmentVariable(envName, "test-unrelated-key");
+        Assert.Null(new HarnessSettings { Provider = route }.ApiKeyFor(route));
+    }
+
     [Fact]
     public void ApiKeyFor_ResolvesPerProviderWithoutCrossLeak()
     {
@@ -58,7 +86,7 @@ public class MultiProviderTests
             Assert.Equal(gateway, settings.ProviderBaseUrls["openai-compatible"]);
             Assert.Equal("zai-key", settings.ApiKey);
             Assert.Equal("sk-gateway", settings.ProviderKeys["openai-compatible"]); // stashed, never sent to z.ai
-            Assert.Equal(ProviderCatalog.DefaultModel("zai"), settings.Model);
+            Assert.Empty(settings.Model); // no model was configured for this route
 
             // Switching back restores the stashed endpoint; an explicit model override wins over the default.
             settings.SelectProvider("zai", "openai-compatible", "glm-5.3");
@@ -143,17 +171,18 @@ public class MultiProviderTests
     }
 
     [Fact]
-    public void ApiKeyFor_EnvFallbacksFollowTheDocumentedRules()
+    public void ApiKeyFor_EnvironmentKeysStayWithTheirOwnProvider()
     {
         try
         {
             Environment.SetEnvironmentVariable("XAI_API_KEY", "sk-env");
             Environment.SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-ds-env");
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", null);
             var settings = new HarnessSettings { Provider = "deepseek" };
 
             Assert.Equal("sk-env", settings.ApiKeyFor("xai")); // catalog env hint
             Assert.Equal("sk-ds-env", settings.ApiKeyFor("deepseek")); // provider-specific env
-            Assert.Equal("sk-ds-env", settings.ApiKeyFor("openai")); // documented deepseek→openai legacy fallback
+            Assert.Null(settings.ApiKeyFor("openai"));
             Assert.Null(settings.ApiKeyFor("anthropic")); // never inherits an unrelated key
         }
         finally
@@ -164,7 +193,7 @@ public class MultiProviderTests
     }
 
     [Fact]
-    public void DesiredRoutes_ActiveLocalsKeyedCloudAndCustoms()
+    public void DesiredRoutes_OnlyExplicitlyConfiguredProviders()
     {
         try
         {
@@ -177,11 +206,11 @@ public class MultiProviderTests
 
             var routes = HarnessBootstrapper.DesiredRouteProviders(settings);
 
-            // Active provider, keyed cloud providers, every local server, custom gateways.
+            // An active provider, a saved provider key and a custom gateway are explicit configuration.
             Assert.Contains("deepseek", routes);
             Assert.Contains("xai", routes);
             foreach (var local in new[] { "ollama", "lmstudio", "omlx", "unsloth" })
-                Assert.Contains(local, routes);
+                Assert.DoesNotContain(local, routes);
             Assert.Contains("my-gateway", routes);
             // Keyless cloud routes and the generic placeholder stay out.
             Assert.DoesNotContain("openai", routes);
@@ -206,13 +235,13 @@ public class MultiProviderTests
     }
 
     [Fact]
-    public void DesiredRoutes_EnvKeyIsEnoughForACloudRoute()
+    public void DesiredRoutes_EnvKeyDoesNotCreateACloudRoute()
     {
         try
         {
             Environment.SetEnvironmentVariable("ZAI_API_KEY", "sk-zai-env");
             var settings = new HarnessSettings { Provider = "deepseek" };
-            Assert.Contains("zai", HarnessBootstrapper.DesiredRouteProviders(settings));
+            Assert.DoesNotContain("zai", HarnessBootstrapper.DesiredRouteProviders(settings));
         }
         finally
         {

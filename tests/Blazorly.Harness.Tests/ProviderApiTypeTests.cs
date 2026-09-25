@@ -15,7 +15,9 @@ public class ProviderApiTypeTests
     [InlineData("", "openai")]
     [InlineData("openai", "openai")]
     [InlineData("OPENAI", "openai")]
-    [InlineData("responses", "openai")]
+    [InlineData("responses", "responses")]
+    [InlineData("Responses", "responses")]
+    [InlineData("bogus", "openai")]
     [InlineData("anthropic", "anthropic")]
     [InlineData("Anthropic", "anthropic")]
     public void NormalizeApiType_FallsBackToOpenAi(string? stored, string expected)
@@ -25,6 +27,7 @@ public class ProviderApiTypeTests
     [InlineData(null, "OpenAI-compatible")]
     [InlineData("openai", "OpenAI-compatible")]
     [InlineData("anthropic", "Anthropic")]
+    [InlineData("responses", "OpenAI Responses")]
     public void ApiTypeLabel_ShortDisplayName(string? stored, string expected)
         => Assert.Equal(expected, ProviderCatalog.ApiTypeLabel(stored));
 
@@ -34,7 +37,9 @@ public class ProviderApiTypeTests
         var settings = new HarnessSettings();
         Assert.Equal("anthropic", HarnessBootstrapper.ResolveApiType(settings, "anthropic"));
         Assert.Equal("openai", HarnessBootstrapper.ResolveApiType(settings, "deepseek"));
-        Assert.Equal("openai", HarnessBootstrapper.ResolveApiType(settings, "openai"));
+        Assert.Equal("responses", HarnessBootstrapper.ResolveApiType(settings, "openai"));
+        Assert.Equal("responses", HarnessBootstrapper.ResolveApiType(settings, "xai"));
+        Assert.Equal("responses", HarnessBootstrapper.ResolveApiType(settings, "zai-coding"));
         Assert.Equal("openai", HarnessBootstrapper.ResolveApiType(settings, "ollama"));
         Assert.Equal("openai", HarnessBootstrapper.ResolveApiType(settings, "openai-compatible"));
     }
@@ -45,10 +50,12 @@ public class ProviderApiTypeTests
         var settings = new HarnessSettings();
         settings.CustomProviders.Add(new CustomProviderConfig { Name = "gw-openai", BaseUrl = "https://gw.internal/v1" });
         settings.CustomProviders.Add(new CustomProviderConfig { Name = "gw-anthropic", BaseUrl = "https://gw.internal", ApiType = "anthropic" });
+        settings.CustomProviders.Add(new CustomProviderConfig { Name = "gw-responses", BaseUrl = "https://gw.internal/v1", ApiType = "responses" });
         settings.CustomProviders.Add(new CustomProviderConfig { Name = "gw-garbage", BaseUrl = "https://gw.internal/v1", ApiType = "bogus" });
 
         Assert.Equal("openai", HarnessBootstrapper.ResolveApiType(settings, "gw-openai"));
         Assert.Equal("anthropic", HarnessBootstrapper.ResolveApiType(settings, "gw-anthropic"));
+        Assert.Equal("responses", HarnessBootstrapper.ResolveApiType(settings, "gw-responses"));
         Assert.Equal("openai", HarnessBootstrapper.ResolveApiType(settings, "gw-garbage"));
     }
 
@@ -62,21 +69,35 @@ public class ProviderApiTypeTests
 
         Assert.Equal("anthropic", HarnessBootstrapper.ResolveApiType(settings, "deepseek"));
         Assert.Equal("openai", HarnessBootstrapper.ResolveApiType(settings, "anthropic"));
-        Assert.Equal("openai", HarnessBootstrapper.ResolveApiType(settings, "xai"));
+        Assert.Equal("responses", HarnessBootstrapper.ResolveApiType(settings, "xai"));
+    }
+
+    [Theory]
+    [InlineData("openai")]
+    [InlineData("xai")]
+    [InlineData("zai-coding")]
+    public void LegacyOpenAiSetting_KeepsMigratedProviderOnResponses(string provider)
+    {
+        var settings = new HarnessSettings();
+        settings.ProviderApiTypes[provider] = "openai";
+        Assert.Equal("responses", HarnessBootstrapper.ResolveApiType(settings, provider));
     }
 
     private static readonly JsonSerializerOptions CamelCase = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
-    [Fact]
-    public void CustomProviderConfig_ApiTypeRoundTripsThroughJson()
+    [Theory]
+    [InlineData("anthropic")]
+    [InlineData("responses")]
+    public void CustomProviderConfig_ApiTypeRoundTripsThroughJson(string apiType)
     {
         var settings = new HarnessSettings();
-        settings.CustomProviders.Add(new CustomProviderConfig { Name = "gw", BaseUrl = "https://gw.internal", ApiType = "anthropic" });
+        settings.CustomProviders.Add(new CustomProviderConfig { Name = "gw", BaseUrl = "https://gw.internal", ApiType = apiType });
         var json = JsonSerializer.Serialize(settings, CamelCase);
-        Assert.Contains("\"apiType\":\"anthropic\"", json);
+        Assert.Contains($"\"apiType\":\"{apiType}\"", json);
 
         var back = JsonSerializer.Deserialize<HarnessSettings>(json, CamelCase)!;
-        Assert.Equal("anthropic", back.CustomProviders.Single().ApiType);
+        Assert.Equal(apiType, back.CustomProviders.Single().ApiType);
+        Assert.Equal(apiType, HarnessBootstrapper.ResolveApiType(back, "gw"));
     }
 
     [Fact]
@@ -87,14 +108,16 @@ public class ProviderApiTypeTests
         Assert.Equal("openai", back.CustomProviders.Single().ApiType);
     }
 
-    [Fact]
-    public void ProviderApiTypes_RoundTripThroughJson()
+    [Theory]
+    [InlineData("anthropic")]
+    [InlineData("responses")]
+    public void ProviderApiTypes_RoundTripThroughJson(string apiType)
     {
         var settings = new HarnessSettings();
-        settings.ProviderApiTypes["deepseek"] = "anthropic";
+        settings.ProviderApiTypes["deepseek"] = apiType;
         var back = JsonSerializer.Deserialize<HarnessSettings>(JsonSerializer.Serialize(settings, CamelCase), CamelCase)!;
-        Assert.Equal("anthropic", back.ProviderApiTypes["deepseek"]);
-        Assert.Equal("anthropic", HarnessBootstrapper.ResolveApiType(back, "deepseek"));
+        Assert.Equal(apiType, back.ProviderApiTypes["deepseek"]);
+        Assert.Equal(apiType, HarnessBootstrapper.ResolveApiType(back, "deepseek"));
     }
 }
 
@@ -105,6 +128,34 @@ public class ProviderApiTypeRouteTests : BootstrapperTestBase
     private static void WriteSettings(string home, object settings)
         => File.WriteAllText(Path.Combine(home, "settings.json"),
             JsonSerializer.Serialize(settings, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+    [Fact]
+    public async Task ResponsesSelection_UsesResponsesForCustomAliasesAndSurvivesReload()
+    {
+        WriteSettings(Home, new
+        {
+            provider = "deepseek",
+            baseUrl = "http://127.0.0.1:1/v1",
+            providerApiTypes = new Dictionary<string, string> { ["deepseek"] = "responses" },
+            customProviders = new[]
+            {
+                new { name = "gw-responses", baseUrl = "https://gw.test/v1", apiType = "responses", models = new[] { "deployment-alias" } },
+            },
+        });
+        for (var reload = 0; reload < 2; reload++)
+        {
+            var boot = new HarnessBootstrapper();
+            await boot.StartAsync(CancellationToken.None);
+            try
+            {
+                Assert.IsType<ResponsesApiAdapter>(boot.Llm.GetAdapter("deepseek"));
+                Assert.IsType<ResponsesApiAdapter>(boot.Llm.GetAdapter("gw-responses"));
+                Assert.Equal("responses", boot.ApiTypeFor("gw-responses"));
+                boot.SaveSettings();
+            }
+            finally { await boot.DisposeAsync(); }
+        }
+    }
 
     [Fact]
     public async Task ApplyProviderSelection_AnthropicRoutesUseTheMessagesAdapter()
@@ -167,6 +218,7 @@ public class ProviderApiTypeRouteTests : BootstrapperTestBase
         public string? SeenPath;
         public string? SeenApiKey;
         public string? SeenVersion;
+        public string? SeenAuthorization;
 
         public FakeAnthropicModelsServer(params string[] modelIds)
         {
@@ -196,6 +248,7 @@ public class ProviderApiTypeRouteTests : BootstrapperTestBase
                         SeenPath = context.Request.Url?.AbsolutePath;
                         SeenApiKey = context.Request.Headers["x-api-key"];
                         SeenVersion = context.Request.Headers["anthropic-version"];
+                        SeenAuthorization = context.Request.Headers["Authorization"];
                         var joined = string.Join(",", modelIds.Select(id => $$"""{"id":"{{id}}"}"""));
                         var body = Encoding.UTF8.GetBytes($$"""{"data":[{{joined}}]}""");
                         context.Response.ContentType = "application/json";
@@ -267,5 +320,25 @@ public class ProviderApiTypeRouteTests : BootstrapperTestBase
         {
             await boot.DisposeAsync();
         }
+    }
+
+    [Fact]
+    public async Task Preview_ResponsesGateway_UsesModelsPathAndBearerAuth()
+    {
+        using var server = new FakeAnthropicModelsServer("deployment-alias");
+        WriteSettings(Home, new { provider = "deepseek", baseUrl = "http://127.0.0.1:1/v1" });
+        var boot = new HarnessBootstrapper();
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var (models, error) = await boot.PreviewModelsAsync("gw", server.BaseUrl + "/v1/responses", "sk-gw", apiType: "responses");
+            Assert.Null(error);
+            Assert.Equal("deployment-alias", Assert.Single(models!).Id);
+            Assert.Equal("/v1/models", server.SeenPath);
+            Assert.Equal("Bearer sk-gw", server.SeenAuthorization);
+            Assert.Null(server.SeenApiKey);
+            Assert.Null(server.SeenVersion);
+        }
+        finally { await boot.DisposeAsync(); }
     }
 }

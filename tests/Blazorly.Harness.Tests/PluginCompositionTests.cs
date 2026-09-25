@@ -134,7 +134,7 @@ public class PatchTests : IDisposable
         var settings = Patched("""{"set": {"contextWindowTokens": 100000, "ENABLETEAMS": true}}""");
         Assert.Equal(100000, settings.ContextWindowTokens);
         Assert.True(settings.EnableTeams);
-        Assert.Equal("deepseek", settings.Provider); // untouched keys survive
+        Assert.Empty(settings.Provider); // unrelated patches do not configure a provider
     }
 
     [Fact]

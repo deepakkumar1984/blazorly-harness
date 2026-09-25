@@ -14,6 +14,37 @@ namespace Blazorly.Harness.Tests;
 /// </summary>
 public class ConversationFoldTests
 {
+    [Fact]
+    public async Task ContextUsage_ShowsLatestProviderSample_SeparatelyFromSessionTotals()
+    {
+        await using var harness = TestHarness.Create();
+        var meter = Blazorly.Harness.Core.TokenMeter.TokenMeterService.Mount(harness.Ctx);
+        var agent = harness.CreateAgent();
+        var folder = new ConversationAssembler(harness.Tools, meter).CreateFolder(agent.Session);
+        Assert.Null(folder.Update(agent).Context!.ProviderPressureTokens);
+        agent.Session.Append(SessionEventTypes.TurnStart, new SessionPayloads.TurnStart(1));
+
+        void AppendUsage(int step, TokenUsage usage)
+        {
+            agent.Session.Append(SessionEventTypes.StepStart, new SessionPayloads.StepStart(1, step));
+            agent.Session.Append(SessionEventTypes.AssistantMessage,
+                new SessionPayloads.AssistantMessage(1, step,
+                    Message.CreateAssistant("scripted", "test", [new TextBlock("answer")]), usage),
+                new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+            agent.Session.Append(SessionEventTypes.StepEnd, new SessionPayloads.StepEnd(1, step));
+        }
+        AppendUsage(1, new TokenUsage(InputTokens: 100, OutputTokens: 10, CacheReadTokens: 25));
+        var first = folder.Update(agent).Context!;
+        Assert.Equal(125, first.ProviderPressureTokens);
+        AppendUsage(2, new TokenUsage(InputTokens: 200, OutputTokens: 20, CacheReadTokens: 50, CacheWriteTokens: 5));
+        var second = folder.Update(agent).Context!;
+        Assert.Equal(255, second.ProviderPressureTokens);
+        Assert.Equal(300, second.TotalInputTokens);
+        Assert.Equal(30, second.TotalOutputTokens);
+        Assert.Equal(75, second.TotalCacheReadTokens);
+        Assert.Equal(meter.Measure(agent), second); // the incremental UI fold agrees with a full replay
+    }
+
     private static (TestHarness Harness, Session Session) Create()
     {
         var harness = TestHarness.Create();
@@ -130,7 +161,7 @@ public class ConversationFoldTests
 
         Assert.Equal(0, folder.FoldFailures);
         var node = snapshot.Nodes.Single(n => n.CommandName == "compaction");
-        Assert.Equal("0 tokens", node.CommandArgs); // no seqs known → fall back to the token count
+        Assert.Equal("~0 tokens", node.CommandArgs); // no seqs known → show the token estimate
         Assert.True(node.CommandOk);
     }
 

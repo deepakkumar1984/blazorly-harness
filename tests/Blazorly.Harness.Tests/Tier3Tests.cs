@@ -19,6 +19,7 @@ public class BlazorlyHomeCollection { }
 public abstract class BootstrapperTestBase : IDisposable
 {
     protected readonly string Home = Path.Combine(Path.GetTempPath(), "blazorly-cli-" + Guid.NewGuid().ToString("N")[..8]);
+    private readonly string? _previousHome = Environment.GetEnvironmentVariable("BLAZORLY_HOME");
 
     protected BootstrapperTestBase()
     {
@@ -28,7 +29,7 @@ public abstract class BootstrapperTestBase : IDisposable
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("BLAZORLY_HOME", null);
+        Environment.SetEnvironmentVariable("BLAZORLY_HOME", _previousHome);
         try { Directory.Delete(Home, recursive: true); } catch (IOException) { }
     }
 }

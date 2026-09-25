@@ -147,6 +147,8 @@ public sealed class AgentDriver
     /// </summary>
     public static string WithInvalidRequestHint(string message, AgentOptions options)
     {
+        if (OpenAiProtocol.RequiresResponsesApi(message))
+            return $"{message} Select OpenAI Responses as this provider's API type in Settings → Providers.";
         var effort = options.ReasoningEffort;
         var maxTokens = options.MaxTokens;
         if (effort is null && maxTokens is null) return message;
@@ -156,11 +158,14 @@ public sealed class AgentDriver
         // ("Not supported" stays out: effort-unsupported 400s use that phrasing legitimately.)
         if (lower.Contains("404") || lower.Contains("not found") || lower.Contains("no route"))
             return $"{message} The endpoint or model path was not found — check the route's base URL and model id (Settings → Providers).";
+        // Keep the provider's parameter-name diagnosis; lowering its value cannot repair it.
+        if (TokenLimitErrors.UnsupportedParameter(message) is not null) return message;
+        var tokenLimitParameter = TokenLimitErrors.NamedParameter(message);
         string hint;
-        if (effort is not null && (lower.Contains("reasoning") || lower.Contains("thinking") || lower.Contains("effort")))
+        if (maxTokens is not null && tokenLimitParameter is not null)
+            hint = $"{tokenLimitParameter} {maxTokens} exceeds what this route allows. Lower Max output tokens in Settings → Context.";
+        else if (effort is not null && (lower.Contains("reasoning") || lower.Contains("thinking") || lower.Contains("effort")))
             hint = $"The route rejected reasoning effort '{effort}': the model may not support it. Reset with /effort default or pick another level in the model dialog.";
-        else if (maxTokens is not null && (lower.Contains("max_tokens") || lower.Contains("max output") || lower.Contains("max_output")))
-            hint = $"max_tokens {maxTokens} exceeds what this route allows. Lower Max output tokens in Settings → Context.";
         else if (lower.Contains("argument") || lower.Contains("tool_call") || lower.Contains("tool call"))
             hint = "The route rejected a tool call's arguments as invalid JSON. Stored calls are coerced to {} on the wire — inspect the failing call in the trajectory if this repeats.";
         else
@@ -308,10 +313,14 @@ public sealed class AgentDriver
     private async Task<LlmCallConfig> BuildRequestAsync(int turn, int step, CancellationToken ct)
     {
         var session = _agent.Session;
+        if (string.IsNullOrWhiteSpace(_agent.Options.Provider))
+            throw new LlmException(LlmErrorCodes.NoAdapter, "No provider configured. Add a provider and select a model in Settings → Providers, or pass --provider and --model in the CLI.");
+        if (string.IsNullOrWhiteSpace(_agent.Options.Model))
+            throw new LlmException(LlmErrorCodes.NoAdapter, "No model selected. Discover models or enter a model ID in Settings → Providers, or pass --model in the CLI.");
         var proposal = new LlmCallConfig
         {
-            Provider = _agent.Options.Provider ?? throw new LlmException(LlmErrorCodes.NoAdapter, "no provider configured for this agent"),
-            Model = _agent.Options.Model ?? throw new LlmException(LlmErrorCodes.NoAdapter, "no model configured for this agent"),
+            Provider = _agent.Options.Provider,
+            Model = _agent.Options.Model,
             MaxTokens = _agent.Options.MaxTokens,
             ReasoningEffort = _agent.Options.ReasoningEffort,
         };

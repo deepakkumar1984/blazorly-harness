@@ -75,14 +75,10 @@ public sealed record LlmModelInfo(
     /// </summary>
     public static readonly string[] FallbackReasoningEfforts = ["low", "medium", "high", "xhigh", "max"];
 
-    public const string FallbackDefaultEffort = "high";
-
     /// <summary>Catalog levels when present, otherwise the generic fallback (never empty).</summary>
     public string[] EffectiveReasoningEfforts
         => ReasoningEfforts is { Length: > 0 } efforts ? efforts : FallbackReasoningEfforts;
 
-    /// <summary>Catalog default when set, otherwise "high" when the effective list offers it.</summary>
-    public string? EffectiveDefaultEffort
-        => DefaultEffort
-            ?? (EffectiveReasoningEfforts.Contains(FallbackDefaultEffort, StringComparer.Ordinal) ? FallbackDefaultEffort : null);
+    /// <summary>A known default, or null when the provider's default is unspecified.</summary>
+    public string? EffectiveDefaultEffort => DefaultEffort;
 }

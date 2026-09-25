@@ -158,8 +158,8 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
         await boot.StartAsync(CancellationToken.None);
         try
         {
-            // Before discovery the catalog seeds serve as the fallback list.
-            Assert.Contains(boot.RuntimeModels("deepseek"), m => m.Id == "deepseek-v4-pro");
+            // Before discovery, only the explicitly saved model is available.
+            Assert.Equal("deepseek-v4-flash", Assert.Single(boot.RuntimeModels("deepseek")).Id);
 
             var (ids, error) = await boot.DiscoverModelsAsync("deepseek");
             Assert.Null(error);
@@ -231,7 +231,7 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
             Assert.Equal(1_048_576, mystery.ContextWindowTokens);
             Assert.Equal(65_536, mystery.MaxOutputTokens);
             Assert.Null(runtime.Single(m => m.Id == "plain-model").ContextWindowTokens);
-            Assert.Equal("high", mystery.EffectiveDefaultEffort);
+            Assert.Null(mystery.EffectiveDefaultEffort);
         }
         finally
         {
@@ -413,7 +413,7 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
             // Same list the adapter was registered with: picker and route agree.
             Assert.Equal(["gw-a", "gw-b"], [.. boot.Llm.ListModels("mygw").Select(m => m.Id)]);
             var empty = boot.RuntimeModels("emptygw");
-            Assert.Equal("default", Assert.Single(empty).Id);
+            Assert.Empty(empty);
         }
         finally
         {
@@ -443,12 +443,101 @@ public class ApiModelDiscoveryTests : BootstrapperTestBase
             Assert.Null(error);
             Assert.Equal(["gw-model-a", "gw-model-b"], [.. ids]);
             var custom = boot.Settings.CustomProviders.Single(c => c.Name == "mygw");
-            Assert.Contains("old-model", custom.Models); // existing entries are kept
-            Assert.Contains("gw-model-a", custom.Models);
+            Assert.Equal(["gw-model-a", "gw-model-b"], custom.Models); // stale ids are removed
         }
         finally
         {
             await boot.DisposeAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Discover_EmptyListClearsStaleModels_IncludingAfterRestart(bool custom)
+    {
+        using var server = new FakeModelsServer();
+        var id = custom ? "empty-gateway" : "deepseek";
+        await using (var boot = new HarnessBootstrapper())
+        {
+            if (custom)
+                boot.Settings.CustomProviders.Add(new CustomProviderConfig
+                {
+                    Name = id, BaseUrl = server.BaseUrl, Models = ["stale-model"],
+                });
+            boot.Settings.Provider = id;
+            boot.Settings.Model = "stale-model";
+            boot.Settings.BaseUrl = server.BaseUrl;
+            await boot.StartAsync(default);
+
+            var (models, error) = await boot.DiscoverModelsAsync(id);
+            Assert.Null(error);
+            Assert.Empty(models);
+            Assert.Empty(boot.RuntimeModels(id));
+            Assert.Empty(boot.Llm.ListModels(id));
+            Assert.Empty(boot.Settings.Model);
+            Assert.Empty(boot.Loop.DefaultSelection.Model);
+        }
+        await using var restarted = new HarnessBootstrapper();
+        await restarted.StartAsync(default);
+        Assert.Empty(restarted.RuntimeModels(id));
+        Assert.Empty(restarted.Settings.Model);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Discover_PreservesApiLimitsForKnownAndCustomModels_AcrossRestart(bool custom)
+    {
+        using var server = FakeModelsServer.WithItems(
+            """{"id":"deepseek-v4-flash","context_length":16384,"max_completion_tokens":1024}""");
+        var id = custom ? "sized-gateway" : "deepseek";
+        await using (var boot = new HarnessBootstrapper())
+        {
+            boot.Settings.Provider = id;
+            boot.Settings.BaseUrl = server.BaseUrl;
+            if (custom)
+                boot.Settings.CustomProviders.Add(new CustomProviderConfig { Name = id, BaseUrl = server.BaseUrl });
+            await boot.StartAsync(default);
+            var (_, error) = await boot.DiscoverModelsAsync(id);
+            Assert.Null(error);
+            var model = Assert.Single(boot.RuntimeModels(id));
+            Assert.Equal(16384, model.ContextWindowTokens);
+            Assert.Equal(1024, model.MaxOutputTokens);
+            Assert.Equal(1024, HarnessBootstrapper.ResolveMaxOutputTokens(boot.Settings, boot.RuntimeModels(id), model.Id));
+        }
+
+        await using var restarted = new HarnessBootstrapper();
+        await restarted.StartAsync(default);
+        var persisted = Assert.Single(restarted.RuntimeModels(id));
+        Assert.Equal(16384, persisted.ContextWindowTokens);
+        Assert.Equal(1024, persisted.MaxOutputTokens);
+    }
+
+    [Fact]
+    public async Task Discover_CustomSavedKeyHasTheSamePrecedenceAsGeneration()
+    {
+        const string envName = "BLAZORLY_TEST_MODEL_DISCOVERY_API_KEY";
+        var previous = Environment.GetEnvironmentVariable(envName);
+        try
+        {
+            Environment.SetEnvironmentVariable(envName, "test-env-key");
+            using var server = new FakeModelsServer("actual-model");
+            await using var boot = new HarnessBootstrapper();
+            boot.Settings.CustomProviders.Add(new CustomProviderConfig
+            {
+                Name = "authenticated-gateway", BaseUrl = server.BaseUrl,
+                ApiKey = "test-saved-key", ApiKeyEnv = envName,
+            });
+            await boot.StartAsync(default);
+            var (_, error) = await boot.DiscoverModelsAsync("authenticated-gateway");
+            Assert.Null(error);
+            Assert.Equal("Bearer test-saved-key", server.SeenAuthorization);
+            Assert.Equal("test-saved-key", boot.Settings.ApiKeyFor("authenticated-gateway"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(envName, previous);
         }
     }
 }

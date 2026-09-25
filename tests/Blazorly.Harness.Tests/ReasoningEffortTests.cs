@@ -79,7 +79,7 @@ public class ReasoningEffortTests
     {
         var bare = new LlmModelInfo("openai-compatible", "mystery-model", "mystery-model");
         Assert.Equal(["low", "medium", "high", "xhigh", "max"], bare.EffectiveReasoningEfforts);
-        Assert.Equal("high", bare.EffectiveDefaultEffort);
+        Assert.Null(bare.EffectiveDefaultEffort);
     }
 
     [Fact]
@@ -92,10 +92,10 @@ public class ReasoningEffortTests
     }
 
     [Fact]
-    public void EffectiveDefault_UsesHighWhenCatalogListLacksADefault()
+    public void EffectiveDefault_StaysUnknownWhenCatalogListLacksADefault()
     {
         var known = new LlmModelInfo("x", "y", "y", ReasoningEfforts: ["low", "medium", "high"]);
-        Assert.Equal("high", known.EffectiveDefaultEffort);
+        Assert.Null(known.EffectiveDefaultEffort);
     }
 
     [Fact]

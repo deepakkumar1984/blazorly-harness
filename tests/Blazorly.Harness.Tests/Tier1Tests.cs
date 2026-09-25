@@ -325,14 +325,35 @@ public class RetryServiceTests
         Assert.Equal(64000, reduced);
     }
 
-    [Fact]
-    public void TryReduceMaxTokens_NamedMaxTokensAlwaysAdapts()
+    [Theory]
+    [InlineData("max_tokens")]
+    [InlineData("max_completion_tokens")]
+    [InlineData("max_output_tokens")]
+    public void TryReduceMaxTokens_NamedLimitExceededAdapts(string parameter)
     {
         // An explicit max_tokens complaint wins even when the message also says reasoning.
         Assert.True(RetryService.TryReduceMaxTokens(
-            new LlmFailure("max_tokens 128000 exceeds the per-request limit for reasoning models", LlmErrorCodes.InvalidRequest),
+            new LlmFailure($"{parameter} 128000 exceeds the per-request limit for reasoning models", LlmErrorCodes.InvalidRequest),
             128000, out var reduced));
         Assert.Equal(64000, reduced);
+    }
+
+    [Theory]
+    [InlineData("Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.")]
+    [InlineData("Unsupported parameter: 'max_completion_tokens' is not supported with this model. Use 'max_tokens' instead.")]
+    [InlineData("Unknown parameter: max_output_tokens")]
+    [InlineData("Unrecognized request argument supplied: max_tokens")]
+    [InlineData("'max_tokens' is not supported by this model")]
+    public void TryReduceMaxTokens_UnsupportedParameterKeepsTheBudget(string message)
+    {
+        Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure(message, LlmErrorCodes.InvalidRequest), 2048, out _));
+    }
+
+    [Fact]
+    public void TryReduceMaxTokens_ResponsesRequiredKeepsTheBudget()
+    {
+        var failure = new LlmFailure(OpenAiCompatibleRoutingTests.RequiresResponses, LlmErrorCodes.InvalidRequest);
+        Assert.False(RetryService.TryReduceMaxTokens(failure, 2048, out _));
     }
 
     [Fact]
@@ -558,7 +579,19 @@ public class ModelDiscoveryTests
     }
 
     [Fact]
-    public async Task Discover_OpenAiCompatibleRoute_MergesOverCatalog()
+    public async Task Discover_UnexpectedJsonIsAnError_NotAnEmptySuccessfulList()
+    {
+        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"message":"not a models endpoint"}"""),
+        }));
+        var error = await Assert.ThrowsAsync<JsonException>(() =>
+            LlmModelDiscovery.DiscoverAsync("test", "http://unused.test/v1", "", client));
+        Assert.Contains("did not return a model list", error.Message);
+    }
+
+    [Fact]
+    public async Task Discover_OpenAiCompatibleRoute_DescribesOnlyReturnedIds()
     {
         HttpRequestMessage? seen = null;
         var handler = new StubHandler(request =>
@@ -572,14 +605,18 @@ public class ModelDiscoveryTests
         var client = new HttpClient(handler);
 
         var discovered = await LlmModelDiscovery.DiscoverAsync("acme", "https://gw.test/v1", "sk-test", client);
-        var known = new List<LlmModelInfo> { new("acme", "known-model", "Known Model", ContextWindowTokens: 99_999) };
+        var known = new List<LlmModelInfo>
+        {
+            new("acme", "gw-large", "Known Model", ContextWindowTokens: 99_999),
+            new("acme", "unavailable-model", "Unavailable"),
+        };
         var models = LlmModelDiscovery.Merge("acme", discovered.Select(m => m.Id), known);
 
         Assert.EndsWith("/models", seen!.RequestUri!.ToString(), StringComparison.Ordinal);
-        Assert.Equal(3, models.Count);
-        Assert.Equal("Known Model", models.Single(m => m.Id == "known-model").Name);
-        Assert.Equal(99_999, models.Single(m => m.Id == "known-model").ContextWindowTokens);
-        Assert.Contains(models, m => m.Id == "gw-large");
+        Assert.Equal(2, models.Count);
+        Assert.Equal("Known Model", models.Single(m => m.Id == "gw-large").Name);
+        Assert.Equal(99_999, models.Single(m => m.Id == "gw-large").ContextWindowTokens);
+        Assert.DoesNotContain(models, m => m.Id == "unavailable-model");
     }
 
     [Fact]

@@ -68,6 +68,7 @@ public class EndpointUrlTests
     [Theory]
     [InlineData("https://api.openai.com/v1", "https://api.openai.com/v1/responses")]
     [InlineData("https://gw.example.com/v1/responses", "https://gw.example.com/v1/responses")]
+    [InlineData("https://gw.example.com/v1/chat/completions", "https://gw.example.com/v1/responses")]
     public async Task Responses_PostsToSingleResponsesPath(string baseUrl, string expected)
     {
         HttpRequestMessage? seen = null;

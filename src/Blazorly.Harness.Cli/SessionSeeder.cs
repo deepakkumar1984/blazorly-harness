@@ -45,7 +45,7 @@ public static class SessionSeeder
         }
 
         Directory.CreateDirectory(home);
-        Console.WriteLine($"seed: {turns} turns → {persistenceKind} under {home}");
+        Console.WriteLine($"synthetic load-test seed (no provider or tools executed): {turns} turns → {persistenceKind} under {home}");
 
         // ---- generate a valid event stream (Session validates every append) ------------------
         var header = new SessionHeader
@@ -55,6 +55,7 @@ public static class SessionSeeder
             Cwd = Directory.GetCurrentDirectory(),
         };
         var session = new Session(header);
+        session.Append(SessionEventTypes.SessionTitle, new { title = $"Synthetic load test ({turns} turns)" });
         var events = new List<SessionEvent>(turns * 10);
         var random = new Random(42);
         var sw = Stopwatch.StartNew();
@@ -70,7 +71,7 @@ public static class SessionSeeder
                 new SessionPayloads.AssistantChunk(turn, 1, new TextDeltaChunk(0, part)));
             session.Append(SessionEventTypes.AssistantMessage, new SessionPayloads.AssistantMessage(
                 turn, 1,
-                Message.CreateAssistant("deepseek", "deepseek-v4-flash", [new TextBlock(string.Concat(prose))]),
+                Message.CreateAssistant("synthetic", "load-test", [new TextBlock(string.Concat(prose))]),
                 new TokenUsage(InputTokens: 1200 + random.Next(400), OutputTokens: 300 + random.Next(150),
                     CacheReadTokens: 24000 + random.Next(4000))),
                 new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));

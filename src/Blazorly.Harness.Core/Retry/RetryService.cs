@@ -182,8 +182,11 @@ public sealed class RetryService
         reduced = 0;
         if (failure.Code != LlmErrorCodes.InvalidRequest) return false;
         if (maxTokens is null or <= AdaptiveMaxTokensFloor) return false;
+        if (OpenAiProtocol.RequiresResponsesApi(failure.Message)) return false;
+        // An unsupported field fails at every value; the adapter handles wire-name negotiation.
+        if (TokenLimitErrors.UnsupportedParameter(failure.Message) is not null) return false;
         var lower = failure.Message.ToLowerInvariant();
-        var namesMaxTokens = lower.Contains("max_tokens") || lower.Contains("max output") || lower.Contains("max_output");
+        var namesMaxTokens = TokenLimitErrors.NamedParameter(failure.Message) is not null;
         if (!namesMaxTokens)
         {
             if (lower.Contains("reasoning") || lower.Contains("thinking") || lower.Contains("effort")) return false;

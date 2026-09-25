@@ -59,7 +59,8 @@ public sealed class TokenMeterService
     /// <summary>Same measurement with usage totals supplied by an incremental folder (skips
     /// the full event scan). <paramref name="declaredWindow"/> is the latest request/context
     /// declaration; the resolver (current route's catalog window) still wins when set.</summary>
-    public ContextMeterReading Measure(Agent.Agent agent, (long Input, long Output, long CacheRead, long CacheWrite)? totals, long? declaredWindow)
+    public ContextMeterReading Measure(Agent.Agent agent, (long Input, long Output, long CacheRead, long CacheWrite)? totals,
+        long? declaredWindow, TokenUsage? latestUsage = null)
     {
         var assembly = _systemPrompt.Assemble(agent, agent.Session.Header.Cwd);
         var systemText = SystemPromptService.RenderPrompt(assembly);
@@ -77,7 +78,8 @@ public sealed class TokenMeterService
             output = t.Output;
             cacheRead = t.CacheRead;
             cacheWrite = t.CacheWrite;
-            providerPressure = t.Input + t.CacheRead + t.CacheWrite;
+            providerPressure = latestUsage is { } usage
+                ? usage.InputTokens + (usage.CacheReadTokens ?? 0) + (usage.CacheWriteTokens ?? 0) : null;
         }
         else
         {

@@ -439,6 +439,8 @@ public sealed class AnthropicAdapter : LlmAdapter
 
         public IReadOnlyList<StreamChunk> ToChunks()
         {
+            if (!Stopped && StopReason is null)
+                throw new LlmException(LlmErrorCodes.StreamClosed, "Provider stream ended before a completion was reported.");
             var chunks = new List<StreamChunk>();
             if (InputUsage is not null)
             {

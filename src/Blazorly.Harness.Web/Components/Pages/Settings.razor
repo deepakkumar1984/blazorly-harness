@@ -17,10 +17,15 @@
         <div class="settings-actions">
             @if (_tab != "appearance")
             {
-                <button class="primary" @onclick="Save">Save settings</button>
+                <button class="primary" @onclick="Save" disabled="@(Facade.Harness.SettingsLoadError is not null)">Save settings</button>
             }
         </div>
     </div>
+
+    @if (Facade.Harness.SettingsLoadError is { } loadError)
+    {
+        <p class="discover-error" role="alert">@loadError</p>
+    }
 
     <nav class="settings-tabs" role="tablist" aria-label="Settings categories" @onkeydown="OnSettingsTabKey">
         @foreach (var (id, label) in Tabs)
@@ -39,11 +44,12 @@
             case "providers":
                 <p class="settings-note">Default route for new sessions, plus every configured route — built-ins and
                     custom gateways alike. Each appears in the per-session model picker.
-                    Saved to <code>~/.blazorly/settings.json</code>.</p>
+                    Saved to <code>@Facade.Harness.SettingsFilePath</code>.</p>
                 <div class="default-route">
                     <label>
                         <span>Default provider</span>
                         <select @bind="_settings.Provider" @bind:after="DefaultProviderChanged">
+                            <option value="">Select a configured provider</option>
                             @foreach (var row in ProviderRows)
                             {
                                 <option value="@row.Id">@row.DisplayName@(row.KeyClass == "missing" ? " — key missing" : "")</option>
@@ -55,7 +61,7 @@
                         <select @bind="_settings.Model">
                             @if (_models.Count == 0)
                             {
-                                <option value="@_settings.Model">— no models on this route —</option>
+                                <option value="">Discover models or enter model IDs</option>
                             }
                             @foreach (var model in _models)
                             {
@@ -92,11 +98,11 @@
                                     <td><span class="api-chip">@row.ApiTypeLabel</span></td>
                                     <td><span class="provider-cell-models" title="@row.ModelsTitle">@row.ModelsSummary</span></td>
                                     <td class="provider-actions">
-                                        <button type="button" class="ghost small" @onclick="() => DiscoverProviderRow(row)" disabled="@(_rowDiscovering is not null)">
+                                        <button type="button" class="ghost small" @onclick="() => DiscoverProviderRow(row)" disabled="@(_rowDiscovering is not null || Facade.Harness.SettingsLoadError is not null)">
                                             @(_rowDiscovering == row.Id ? "Loading…" : "Discover")
                                         </button>
-                                        <button type="button" class="ghost small" @onclick="() => EditProvider(row)">Edit</button>
-                                        <button type="button" class="icon danger" title="Remove provider" @onclick="() => RemoveProvider(row)">✕</button>
+                                        <button type="button" class="ghost small" @onclick="() => EditProvider(row)" disabled="@(Facade.Harness.SettingsLoadError is not null)">Edit</button>
+                                        <button type="button" class="icon danger" title="Remove provider" @onclick="() => RemoveProvider(row)" disabled="@(Facade.Harness.SettingsLoadError is not null)">✕</button>
                                     </td>
                                 </tr>
                             }
@@ -104,7 +110,7 @@
                     </table>
                 </div>
                 <div class="discover-row">
-                    <button type="button" class="ghost" @onclick="AddProvider">＋ Add provider</button>
+                    <button type="button" class="ghost" @onclick="AddProvider" disabled="@(Facade.Harness.SettingsLoadError is not null)">＋ Add provider</button>
                     @if (_rowDiscoverError is not null)
                     {
                         <span class="discover-error">@_rowDiscoverError</span>
@@ -353,6 +359,7 @@
                     <label class="modal-field">
                         <span>Provider</span>
                         <select value="@_providerModal.ProviderId" @onchange="ModalProviderChanged" disabled="@(!_isNewProvider)">
+                            <option value="">Select a provider</option>
                             @foreach (var category in ProviderCatalog.Categories)
                             {
                                 var group = ProviderCatalog.All.Where(p => p.Category == category).ToList();
@@ -377,7 +384,8 @@
                     <label class="modal-field">
                         <span>API type</span>
                         <select @bind="_providerModal.ApiType">
-                            <option value="openai">OpenAI-compatible</option>
+                            <option value="responses">OpenAI Responses</option>
+                            <option value="openai">OpenAI-compatible (automatic)</option>
                             <option value="anthropic">Anthropic Messages</option>
                         </select>
                     </label>
@@ -485,10 +493,6 @@
                         else
                         {
                             <div class="custom-empty">no models listed yet — List models above, or type ids below</div>
-                            @if (ModalFallbackNote() is { } fallback)
-                            {
-                                <div class="models-shown">@fallback</div>
-                            }
                         }
                         <span class="models-manual-label">Or paste model ids (comma separated)</span>
                         <textarea rows="2" @bind="_providerModal.ModelsText" @onblur="ModalModelsTextBlurred" placeholder="model-a, model-b, …"></textarea>
@@ -632,15 +636,15 @@
         RefreshModels();
     }
 
-    /// <summary>Default-model dropdown options: the route's full list (discovered API list
-    /// when present, else catalog seeds). Repairs the selection when it names a model the
+    /// <summary>Default-model dropdown options: the route's saved model list.
+    /// Repairs the selection when it names a model the
     /// route no longer lists.</summary>
     private void RefreshModels()
     {
         _models = Facade.Harness.RuntimeModels(_settings.Provider);
-        if (_models.Count > 0 && _models.All(m => m.Id != _settings.Model))
+        if (_models.All(m => m.Id != _settings.Model))
         {
-            _settings.Model = _models[0].Id;
+            _settings.Model = _models.FirstOrDefault()?.Id ?? "";
         }
     }
 
@@ -693,7 +697,7 @@
             var models = HarnessBootstrapper.CustomRouteModels(custom);
             var (keyStatus, keyClass) = CustomKeyBadge(custom);
             rows.Add(new ProviderRow(
-                custom.Name, custom.Name, true, false,
+                custom.Name, custom.Name, true, custom.Name == _settings.Provider,
                 ProviderCatalog.ApiTypeLabel(custom.ApiType),
                 custom.BaseUrl,
                 $"{models.Count} model{(models.Count == 1 ? "" : "s")}",
@@ -708,7 +712,7 @@
 
     private (string Status, string Class) BuiltinKeyBadge(string id, ProviderInfo info)
     {
-        var saved = _settings.ProviderKeys.ContainsKey(id)
+        var saved = !string.IsNullOrWhiteSpace(_settings.ProviderKeys.GetValueOrDefault(id))
             || (id == _settings.Provider && !string.IsNullOrWhiteSpace(_settings.ApiKey));
         if (saved) return ("saved", "ok");
         if (!string.IsNullOrWhiteSpace(_settings.ApiKeyFor(id))) return ("env", "env");
@@ -760,11 +764,7 @@
 
     private void AddProvider()
     {
-        // Default to the first built-in with nothing on file, so Add usually means "set up the next one".
-        var configured = new HashSet<string>(ProviderRows.Select(r => r.Id), StringComparer.Ordinal);
-        var firstOpen = ProviderCatalog.All.Select(p => p.Id).FirstOrDefault(id => !configured.Contains(id));
-        var modal = new ProviderModalState { ProviderId = firstOpen ?? CustomSentinel };
-        if (!modal.IsCustom) PrefillModalForBuiltin(modal);
+        var modal = new ProviderModalState();
         _providerModal = modal;
         _isNewProvider = true;
         _editingCustom = null;
@@ -790,8 +790,10 @@
             };
             foreach (var id in custom.Models)
             {
-                modal.Options.Add(new ModalModelOption(id, id, false));
+                var metadata = custom.ModelMetadata.FirstOrDefault(m => m.Id == id);
+                modal.Options.Add(new ModalModelOption(id, id, false, metadata?.ContextWindowTokens));
                 modal.Selected.Add(id);
+                if (metadata is not null) modal.Sizes[id] = (metadata.ContextWindowTokens, metadata.MaxOutputTokens);
             }
             modal.ModelsText = string.Join(", ", custom.Models);
         }
@@ -817,11 +819,7 @@
         var info = ProviderCatalog.Info(id);
         // The active route edits its live endpoint; any other built-in starts from its own
         // stashed URL or the catalog default — never the active route's URL.
-        modal.BaseUrl = id == _settings.Provider
-            ? _settings.BaseUrl
-            : _settings.ProviderBaseUrls.TryGetValue(id, out var stashed) && stashed.Length > 0
-                ? stashed
-                : info?.DefaultBaseUrl ?? "";
+        modal.BaseUrl = _settings.BaseUrlFor(id);
         modal.ApiType = HarnessBootstrapper.ResolveApiType(_settings, id);
         modal.ApiKey = id == _settings.Provider
             ? (_settings.ApiKey ?? _settings.ProviderKeys.GetValueOrDefault(id) ?? "")
@@ -841,12 +839,18 @@
                 // Display names/sizes may come from the catalog for a real id; the id itself
                 // is only ever listed because discovery or the user put it there.
                 byId.TryGetValue(entry.Id, out var known);
-                modal.Options.Add(new ModalModelOption(entry.Id, known?.Name ?? entry.Id, true,
+                modal.Options.Add(new ModalModelOption(entry.Id, known?.Name ?? entry.Id, false,
                     entry.ContextWindowTokens ?? known?.ContextWindowTokens));
                 modal.Selected.Add(entry.Id);
                 if (entry.ContextWindowTokens is not null || entry.MaxOutputTokens is not null)
                     modal.Sizes[entry.Id] = (entry.ContextWindowTokens, entry.MaxOutputTokens);
             }
+        }
+        else if (!_settings.DiscoveredModels.ContainsKey(id) && id == _settings.Provider
+            && !string.IsNullOrWhiteSpace(_settings.Model))
+        {
+            modal.Options.Add(new ModalModelOption(_settings.Model, _settings.Model, false));
+            modal.Selected.Add(_settings.Model);
         }
         modal.ModelsText = string.Join(", ", SelectedModalIdsInOrder(modal));
     }
@@ -957,16 +961,6 @@
         }
     }
 
-    /// <summary>When a built-in route has no saved list, the pickers fall back to catalog
-    /// seeds; the dialog says so in one line without listing them as if they were real.</summary>
-    private string? ModalFallbackNote()
-    {
-        var modal = _providerModal;
-        if (modal is null || modal.IsCustom || modal.Options.Count > 0) return null;
-        var seeds = ProviderCatalog.For(modal.ProviderId, "");
-        return seeds.Count == 0 ? null : $"Until then, pickers fall back to {seeds.Count} catalog models for this route.";
-    }
-
     /// <summary>Compact context-window label for a checklist row ("1M", "262K").</summary>
     private static string FormatContextWindow(long tokens) => tokens switch
     {
@@ -1012,8 +1006,8 @@
 
     private System.Threading.CancellationTokenSource? _modalListCts;
 
-    /// <summary>Lists the modal's typed endpoint without persisting: newly seen ids join the
-    /// checklist ticked, so Save keeps exactly what the dialog shows.</summary>
+    /// <summary>Replaces the preview with the API's current list. Save keeps exactly what
+    /// the dialog shows; manually entered ids can be added after discovery.</summary>
     private async Task ListModalModels()
     {
         var modal = _providerModal;
@@ -1025,15 +1019,22 @@
         try
         {
             var probeId = modal.EffectiveId.Length > 0 ? modal.EffectiveId : "custom";
+            var apiKey = !string.IsNullOrWhiteSpace(modal.ApiKey) ? modal.ApiKey
+                : modal.IsCustom
+                    ? (!string.IsNullOrWhiteSpace(modal.ApiKeyEnv) ? Environment.GetEnvironmentVariable(modal.ApiKeyEnv) : null)
+                    : _settings.ApiKeyFor(probeId);
             var (models, error) = await Facade.Harness.PreviewModelsAsync(
-                probeId, modal.BaseUrl, modal.ApiKey, modal.ApiType, ct: _modalListCts.Token);
+                probeId, modal.BaseUrl, apiKey ?? "", modal.ApiType, ct: _modalListCts.Token);
             if (error is not null)
             {
                 modal.ListError = error;
             }
             else if (models is not null)
             {
-                var known = new HashSet<string>(modal.Options.Select(o => o.Id), StringComparer.Ordinal);
+                modal.Options.Clear();
+                modal.Selected.Clear();
+                modal.Sizes.Clear();
+                var known = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var model in models)
                 {
                     if (model.ContextWindowTokens is not null || model.MaxOutputTokens is not null)
@@ -1104,10 +1105,15 @@
         ModalModelsTextBlurred(); // typed ids join the selection
         var finalIds = SelectedModalIdsInOrder(modal);
         var apiType = ProviderCatalog.NormalizeApiType(modal.ApiType);
+        var metadata = finalIds.Select(fid => modal.Sizes.TryGetValue(fid, out var size)
+            ? new DiscoveredModelInfo(fid, size.Window, size.Output) : new DiscoveredModelInfo(fid)).ToList();
+        var makeDefault = string.IsNullOrWhiteSpace(_settings.Provider)
+            || (_editingCustom is not null && _settings.Provider == _editingCustom.Name);
+        var selectedModel = finalIds.Contains(_settings.Model, StringComparer.Ordinal) ? _settings.Model : null;
 
         if (modal.IsCustom)
         {
-            if (_editingCustom is not null) _settings.CustomProviders.Remove(_editingCustom);
+            if (_editingCustom is not null) _settings.RemoveProvider(_editingCustom.Name);
             _settings.CustomProviders.Add(new CustomProviderConfig
             {
                 Name = id,
@@ -1116,6 +1122,7 @@
                 ApiKeyEnv = modal.ApiKeyEnv.Trim().Length > 0 ? modal.ApiKeyEnv.Trim() : null,
                 ApiType = apiType,
                 Models = finalIds,
+                ModelMetadata = metadata,
             });
         }
         else
@@ -1138,30 +1145,17 @@
             }
             // The dialog always stores the wire explicitly: the dataview shows what is stored.
             _settings.ProviderApiTypes[id] = apiType;
-            if (finalIds.Count > 0)
-            {
-                _settings.DiscoveredModels[id] = finalIds.Select(fid =>
-                    modal.Sizes.TryGetValue(fid, out var size)
-                        ? new DiscoveredModelInfo(fid, size.Window, size.Output)
-                        : new DiscoveredModelInfo(fid)).ToList();
-            }
-            else
-            {
-                _settings.DiscoveredModels.Remove(id);
-            }
-            if (id == _settings.Provider && finalIds.Count > 0
-                && !finalIds.Contains(_settings.Model, StringComparer.Ordinal))
-            {
-                _settings.Model = finalIds[0];
-            }
+            _settings.DiscoveredModels[id] = metadata;
         }
+
+        if (makeDefault) _settings.SelectProvider(_settings.Provider, id, selectedModel);
 
         _editingCustom = null;
         _providerModal = null;
         _providerModalError = "";
         Facade.Harness.ApplyProviderSelection();
-        Facade.Harness.SaveSettings();
         SyncDefaultSelection();
+        Facade.Harness.SaveSettings();
     }
 
     private void CloseProviderModal()
@@ -1180,29 +1174,10 @@
 
     private void RemoveProvider(ProviderRow row)
     {
-        if (row.IsCustom)
-        {
-            var custom = _settings.CustomProviders.FirstOrDefault(c => c.Name == row.Id);
-            if (custom is not null) _settings.CustomProviders.Remove(custom);
-        }
-        else
-        {
-            _settings.ProviderKeys.Remove(row.Id);
-            _settings.ProviderBaseUrls.Remove(row.Id);
-            _settings.DiscoveredModels.Remove(row.Id);
-            _settings.ProviderApiTypes.Remove(row.Id);
-            if (row.Id == _settings.Provider)
-            {
-                // The active route keeps its slot but drops back to catalog defaults.
-                _settings.ApiKey = null;
-                _settings.BaseUrl = ProviderCatalog.Info(row.Id)?.DefaultBaseUrl ?? _settings.BaseUrl;
-                _settings.BaseUrlProvider = row.Id;
-                _settings.Model = ProviderCatalog.DefaultModel(row.Id);
-            }
-        }
+        _settings.RemoveProvider(row.Id);
         Facade.Harness.ApplyProviderSelection();
-        Facade.Harness.SaveSettings();
         SyncDefaultSelection();
+        Facade.Harness.SaveSettings();
         StateHasChanged();
     }
 
@@ -1211,6 +1186,8 @@
     private void SyncDefaultSelection()
     {
         RefreshModels();
+        _lastProvider = _settings.Provider;
+        Facade.Harness.ApplyDefaultSelection();
     }
 
     private string? _rowDiscovering;

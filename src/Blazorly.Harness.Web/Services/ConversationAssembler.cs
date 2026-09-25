@@ -103,7 +103,7 @@ public sealed record CompactionSummaryPayload(
     /// <summary>Chip label: message count when known, otherwise the token estimate.</summary>
     public string CountLabel => Shadowed.Count > 0
         ? $"{Shadowed.Count} messages"
-        : $"{ShadowedTokenCount} tokens";
+        : $"~{ShadowedTokenCount} tokens";
 }
 
 /// <summary>Inclusive surface range the summary replaced.</summary>
@@ -185,6 +185,7 @@ public sealed class ConversationFolder
     private IReadOnlyList<TodoItem> _todos = [];
     private readonly Dictionary<string, DelegationView> _delegations = new(StringComparer.Ordinal); // child id → latest status
     private long _usageIn, _usageOut, _usageCacheRead, _usageCacheWrite;
+    private TokenUsage? _latestUsage;
     private long? _declaredWindow;
     private ConversationSnapshot? _last;
 
@@ -312,7 +313,7 @@ public sealed class ConversationFolder
         if (_meter is not null && agent is not null
             && (_contextReading is null || digest != _contextDigest || totals != _contextTotals || now - _contextComputedAt > 2000))
         {
-            _contextReading = _meter.Measure(agent, totals, _declaredWindow);
+            _contextReading = _meter.Measure(agent, totals, _declaredWindow, _latestUsage);
             _contextDigest = digest;
             _contextTotals = totals;
             _contextComputedAt = now;
@@ -397,6 +398,7 @@ public sealed class ConversationFolder
                 var content = payload.Message.Content.Where(b => b is not ToolCallBlock).ToList();
                 if (payload.Usage is { } usage)
                 {
+                    _latestUsage = usage;
                     _usageIn += usage.InputTokens;
                     _usageOut += usage.OutputTokens;
                     _usageCacheRead += usage.CacheReadTokens ?? 0;

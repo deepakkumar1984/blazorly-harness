@@ -10,7 +10,8 @@ public sealed record LlmStream(IAsyncEnumerable<StreamChunk> Chunks);
 
 /// <summary>
 /// A provider adapter: one adapter instance per provider route. One adapter call is one
-/// provider attempt — retries live in middleware or the loop's error policy, never here.
+/// provider attempt, apart from bounded wire-parameter negotiation after validation rejects a
+/// request. General retries and backoff live in middleware or the loop's error policy.
 /// </summary>
 public abstract class LlmAdapter
 {

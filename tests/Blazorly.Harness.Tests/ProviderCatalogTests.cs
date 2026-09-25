@@ -339,7 +339,7 @@ public class ProviderCatalogTests
     }
 
     [Fact]
-    public void MigrateLegacySettings_CompatibleSlotStaleModel_FallsBackToCatalogDefault()
+    public void MigrateLegacySettings_CompatibleSlotPlaceholder_ClearsSelection()
     {
         var settings = new HarnessSettings
         {
@@ -352,7 +352,7 @@ public class ProviderCatalogTests
         HarnessBootstrapper.MigrateLegacySettings(settings);
 
         Assert.Equal("mimo", settings.Provider);
-        Assert.Equal(ProviderCatalog.DefaultModel("mimo"), settings.Model);
+        Assert.Empty(settings.Model);
     }
 
     [Fact]
@@ -393,7 +393,7 @@ public class ProviderCatalogTests
     }
 
     [Fact]
-    public void CustomRouteModels_ConfiguredIdsOrDefaultPlaceholder()
+    public void CustomRouteModels_OnlyConfiguredIds()
     {
         var listed = HarnessBootstrapper.CustomRouteModels(new CustomProviderConfig
         {
@@ -409,9 +409,7 @@ public class ProviderCatalogTests
             Name = "mygw",
             BaseUrl = "https://gw.internal/v1",
         });
-        var only = Assert.Single(empty);
-        Assert.Equal("default", only.Id);
-        Assert.Equal("mygw", only.Provider);
+        Assert.Empty(empty);
     }
 
     [Fact]

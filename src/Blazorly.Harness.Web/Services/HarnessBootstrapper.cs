@@ -19,20 +19,21 @@ namespace Blazorly.Harness.Web.Services;
 /// <summary>User-editable runtime settings persisted under the harness home.</summary>
 public sealed class HarnessSettings
 {
-    public string Provider { get; set; } = "deepseek";
-    public string Model { get; set; } = "deepseek-v4-flash";
+    public string Provider { get; set; } = "";
+    public string Model { get; set; } = "";
     public string? ApiKey { get; set; }
     /// <summary>API key stash per provider id so switching providers keeps each key typed once.</summary>
     public Dictionary<string, string> ProviderKeys { get; set; } = new(StringComparer.Ordinal);
     /// <summary>Models loaded live from each provider's /models endpoint (ids plus any sizes the
-    /// endpoint publishes); replaces catalog seeds once present. Legacy id-only lists still load.</summary>
+    /// endpoint publishes), or explicitly entered by the user. An empty list means no models.
+    /// Legacy id-only lists still load.</summary>
     public Dictionary<string, List<DiscoveredModelInfo>> DiscoveredModels { get; set; } = new(StringComparer.Ordinal);
-    public string BaseUrl { get; set; } = "https://api.deepseek.com";
+    public string BaseUrl { get; set; } = "";
     /// <summary>Provider id <see cref="BaseUrl"/> was entered for; null (legacy settings) means the active provider.</summary>
     public string? BaseUrlProvider { get; set; }
     /// <summary>Endpoint stash per provider id, so switching routes keeps each provider's URL typed once.</summary>
     public Dictionary<string, string> ProviderBaseUrls { get; set; } = new(StringComparer.Ordinal);
-    /// <summary>Wire-protocol override per built-in provider id: "openai" (default) or "anthropic".
+    /// <summary>Wire-protocol override per built-in provider id: "openai" (automatic), "responses" or "anthropic".
     /// Custom gateways carry their own <see cref="CustomProviderConfig.ApiType"/> instead.</summary>
     public Dictionary<string, string> ProviderApiTypes { get; set; } = new(StringComparer.Ordinal);
     public string WorkspaceRoot { get; set; } = Directory.GetCurrentDirectory();
@@ -184,30 +185,65 @@ public sealed class HarnessSettings
     /// <param name="previousProvider">The provider the typed key and base URL belong to.</param>
     public void SelectProvider(string previousProvider, string provider, string? model = null)
     {
-        if (string.IsNullOrWhiteSpace(provider) || provider == previousProvider)
+        if (provider == previousProvider)
         {
-            Provider = string.IsNullOrWhiteSpace(provider) ? Provider : provider;
+            Provider = provider;
             if (!string.IsNullOrWhiteSpace(model)) Model = model!;
             return;
         }
         if (!string.IsNullOrWhiteSpace(ApiKey) && !string.IsNullOrWhiteSpace(previousProvider))
             ProviderKeys[previousProvider] = ApiKey;
-        ApiKey = ProviderKeys.TryGetValue(provider, out var stashed) ? stashed : null;
+        if (!string.IsNullOrWhiteSpace(previousProvider) && !string.IsNullOrWhiteSpace(Model)
+            && !DiscoveredModels.ContainsKey(previousProvider)
+            && !CustomProviders.Any(c => c.Name == previousProvider))
+            DiscoveredModels[previousProvider] = [new(Model)];
 
         // Same stashing for endpoints: leave the old route's URL behind, restore the new route's.
         if (!string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(previousProvider)
             && (BaseUrlProvider is null || BaseUrlProvider == previousProvider))
             ProviderBaseUrls[previousProvider] = BaseUrl;
+        if (string.IsNullOrWhiteSpace(provider))
+        {
+            ClearSelection();
+            return;
+        }
+        ApiKey = ProviderKeys.TryGetValue(provider, out var stashed) ? stashed : null;
         // The entering provider's own endpoint: its stashed URL, else its catalog default. The
         // previous provider's URL never follows the selection — carrying it over would pin the
         // new route at a host that may hold the connection without answering (an unbounded
         // hang under the streaming client) and send the new provider's key to the old host.
-        BaseUrl = ProviderBaseUrls.TryGetValue(provider, out var stashedUrl) && stashedUrl.Length > 0
+        var custom = CustomProviders.FirstOrDefault(c => c.Name == provider);
+        BaseUrl = custom is not null ? custom.BaseUrl
+            : ProviderBaseUrls.TryGetValue(provider, out var stashedUrl) && !string.IsNullOrWhiteSpace(stashedUrl)
             ? stashedUrl
-            : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? BaseUrl;
+            : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? "";
         BaseUrlProvider = provider;
         Provider = provider;
-        Model = !string.IsNullOrWhiteSpace(model) ? model! : ProviderCatalog.DefaultModel(provider);
+        Model = !string.IsNullOrWhiteSpace(model) ? model!
+            : custom is not null ? custom.Models.FirstOrDefault(m => !string.IsNullOrWhiteSpace(m)) ?? ""
+            : DiscoveredModels.TryGetValue(provider, out var models)
+                ? models.FirstOrDefault(m => !string.IsNullOrWhiteSpace(m.Id))?.Id ?? "" : "";
+    }
+
+    public void ClearSelection()
+    {
+        Provider = "";
+        Model = "";
+        ApiKey = null;
+        BaseUrl = "";
+        BaseUrlProvider = null;
+    }
+
+    /// <summary>Removes the whole configured route, including an active selection.</summary>
+    public void RemoveProvider(string provider)
+    {
+        CustomProviders.RemoveAll(c => c.Name == provider);
+        ProviderKeys.Remove(provider);
+        ProviderBaseUrls.Remove(provider);
+        DiscoveredModels.Remove(provider);
+        ProviderApiTypes.Remove(provider);
+        RetryProviders.Remove(provider);
+        if (Provider == provider) ClearSelection();
     }
 
     /// <summary>Endpoint for a provider route (active or background): the typed field when
@@ -215,22 +251,28 @@ public sealed class HarnessSettings
     /// else their own stash, falling back to the catalog default. Background routes never
     /// inherit the active route's URL (route registration resolves the same way).</summary>
     public string BaseUrlFor(string provider)
-        => (string.IsNullOrWhiteSpace(BaseUrlProvider) ? Provider : BaseUrlProvider) == provider
+        => CustomProviders.FirstOrDefault(c => c.Name == provider) is { } custom ? custom.BaseUrl
+            : (string.IsNullOrWhiteSpace(BaseUrlProvider) ? Provider : BaseUrlProvider) == provider
+                && !string.IsNullOrWhiteSpace(BaseUrl)
             ? BaseUrl
             : ProviderBaseUrls.TryGetValue(provider, out var stashed) && stashed.Length > 0
                 ? stashed
-                : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? BaseUrl;
+                : ProviderCatalog.Info(provider)?.DefaultBaseUrl ?? "";
 
     /// <summary>Resolved per request, never persisted; never sends one provider's key to another provider's route.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string? EffectiveApiKey => ApiKeyFor(Provider);
 
     /// <summary>Key resolution for any provider route (active or background). The typed
-    /// field only applies to the active provider; stashes, the catalog env hint and the
-    /// documented deepseek/openai legacy fallback are per-route, so one provider's key
-    /// is never sent to another provider's route.</summary>
+    /// field only applies to the active provider. Custom routes use their own key or
+    /// explicitly named environment variable; built-ins use only their own stash/env.</summary>
     public string? ApiKeyFor(string provider)
     {
+        if (string.IsNullOrWhiteSpace(provider)) return null;
+        if (CustomProviders.FirstOrDefault(c => c.Name == provider) is { } custom)
+            return !string.IsNullOrWhiteSpace(custom.ApiKey) ? custom.ApiKey
+                : !string.IsNullOrWhiteSpace(custom.ApiKeyEnv) ? Environment.GetEnvironmentVariable(custom.ApiKeyEnv)
+                : null;
         if (provider == Provider && !string.IsNullOrWhiteSpace(ApiKey)) return ApiKey;
         if (ProviderKeys.TryGetValue(provider, out var stashed) && !string.IsNullOrWhiteSpace(stashed)) return stashed;
         var catalogEnv = ProviderCatalog.Info(provider)?.ApiKeyEnv;
@@ -242,14 +284,6 @@ public sealed class HarnessSettings
         var providerSpecific = Environment.GetEnvironmentVariable(
             $"{provider.ToUpperInvariant().Replace('-', '_')}_API_KEY"); // DEEPSEEK/OPENAI/ANTHROPIC_API_KEY
         if (!string.IsNullOrWhiteSpace(providerSpecific)) return providerSpecific;
-        // Documented legacy fallback for the OpenAI-compatible routes; custom/anthropic routes
-        // must not inherit an unrelated provider's key.
-        if (provider is "deepseek" or "openai" or "openai-compatible")
-        {
-            var deepseek = Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
-            if (!string.IsNullOrWhiteSpace(deepseek)) return deepseek;
-            return Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        }
         return null;
     }
 }
@@ -323,9 +357,11 @@ public sealed class CustomProviderConfig
     public string BaseUrl { get; set; } = "";
     public string? ApiKey { get; set; }
     public string? ApiKeyEnv { get; set; }
-    /// <summary>Wire protocol: "openai" (OpenAI-compatible, default) or "anthropic" (Anthropic Messages API).</summary>
+    /// <summary>Wire protocol: "openai" (automatic, default), "responses" or "anthropic".</summary>
     public string ApiType { get; set; } = "openai";
     public List<string> Models { get; set; } = [];
+    /// <summary>Optional API/user metadata for the explicitly configured model ids.</summary>
+    public List<DiscoveredModelInfo> ModelMetadata { get; set; } = [];
 
     /// <summary>Comma-separated editor view of the model ids (the Settings page binds this).</summary>
     public string ModelsText
@@ -350,8 +386,12 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     public HarnessSettings Settings { get; private set; } = new();
 
     private readonly Dictionary<string, IDisposable> _routeEffects = new(StringComparer.Ordinal);
+    private ISessionPersistence? _ownedPersistence;
+    private bool _disposed;
     private readonly string _home;
     public string DataDirectory => _home;
+    public string SettingsFilePath => Path.Combine(_home, "settings.json");
+    public string? SettingsLoadError { get; private set; }
 
     /// <summary>One long-lived client for streaming adapter requests (no request-level timeout; the caller's token governs).</summary>
     internal static readonly HttpClient StreamingHttp = new(new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(10) })
@@ -363,9 +403,9 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     {
         // BLAZORLY_HOME isolates the whole harness home (settings, sessions, spills, …);
         // used by tests and by users who want a portable home.
-        _home = Environment.GetEnvironmentVariable("BLAZORLY_HOME") is { Length: > 0 } custom
+        _home = Path.GetFullPath(Environment.GetEnvironmentVariable("BLAZORLY_HOME") is { Length: > 0 } custom
             ? custom
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".blazorly");
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".blazorly"));
         Directory.CreateDirectory(_home);
     }
 
@@ -406,12 +446,6 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     /// </summary>
     public List<IHarnessPlugin> BuildPluginList()
     {
-        Core.Sessions.ISessionPersistence persistence = Settings.Persistence == "jsonl"
-            ? new JsonlSessionPersistence(Path.Combine(_home, "sessions"))
-            : PersistenceMigrator.EnsureSqliteAsync(
-                    Path.Combine(_home, "sessions.db"), Path.Combine(_home, "sessions"),
-                    message => Console.Out.WriteLine(message))
-                .GetAwaiter().GetResult().Store;
         var tracker = new FsObservationTracker();
         Sandbox = new SandboxPolicy
         {
@@ -432,7 +466,16 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             MountPlugin.Sync("systemPrompt", [], ctx => prompt = SystemPromptService.Mount(ctx)),
             MountPlugin.Sync("tools", [SystemPromptService.ServiceKey],
                 ctx => Tools = ToolRuntime.Mount(ctx, prompt!)),
-            MountPlugin.Sync("sessions", [], ctx => Sessions = SessionStore.Mount(ctx, persistence)),
+            MountPlugin.Sync("sessions", [], ctx =>
+            {
+                _ownedPersistence = Settings.Persistence == "jsonl"
+                    ? new JsonlSessionPersistence(Path.Combine(_home, "sessions"))
+                    : PersistenceMigrator.EnsureSqliteAsync(
+                            Path.Combine(_home, "sessions.db"), Path.Combine(_home, "sessions"),
+                            message => Console.Out.WriteLine(message))
+                        .GetAwaiter().GetResult().Store;
+                Sessions = SessionStore.Mount(ctx, _ownedPersistence);
+            }),
             MountPlugin.Sync("projections", [SessionStore.ServiceKey],
                 ctx => Projections = SessionProjectionService.Mount(ctx, Sessions)),
             MountPlugin.Sync("search-index", [SessionStore.ServiceKey],
@@ -672,28 +715,30 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     };
 
     /// <summary>Effective wire protocol for a route: a custom gateway's own API type,
-    /// else a per-provider override, else the catalog default (Anthropic for Anthropic,
-    /// OpenAI-compatible everywhere else).</summary>
+    /// else a per-provider override, else the catalog default. Legacy "openai" settings on
+    /// providers already migrated to Responses keep using Responses.</summary>
     public static string ResolveApiType(HarnessSettings settings, string provider)
     {
-        if (settings.CustomProviders.FirstOrDefault(c => c.Name == provider) is { } custom)
-            return ProviderCatalog.NormalizeApiType(custom.ApiType);
-        if (settings.ProviderApiTypes.TryGetValue(provider, out var overrideType))
-            return ProviderCatalog.NormalizeApiType(overrideType);
-        return ProviderCatalog.Info(provider)?.DefaultApiType ?? "openai";
+        var apiType = settings.CustomProviders.FirstOrDefault(c => c.Name == provider) is { } custom
+            ? ProviderCatalog.NormalizeApiType(custom.ApiType)
+            : settings.ProviderApiTypes.TryGetValue(provider, out var overrideType)
+                ? ProviderCatalog.NormalizeApiType(overrideType)
+                : ProviderCatalog.Info(provider)?.DefaultApiType ?? "openai";
+        return apiType == "openai" && ProviderCatalog.UsesResponsesApi(provider) ? "responses" : apiType;
     }
 
     /// <summary>Effective wire protocol for a route under the live settings.</summary>
     public string ApiTypeFor(string provider) => ResolveApiType(Settings, provider);
 
     private LlmAdapter BuildRoute(string provider, string baseUrl, string? apiKey, IReadOnlyList<LlmModelInfo> models)
-        => ResolveApiType(Settings, provider) == "anthropic"
-            ? new AnthropicAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver())
-            : ProviderCatalog.UsesResponsesApi(provider)
-                ? new ResponsesApiAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
-                    attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider))
-                : new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
-                    attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider));
+        => ResolveApiType(Settings, provider) switch
+        {
+            "anthropic" => new AnthropicAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver()),
+            "responses" => new ResponsesApiAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
+                attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider)),
+            _ => new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
+                attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider)),
+        };
 
     /// <summary>Selects the web_search backend from settings; a keyed backend without a key
     /// falls back to keyless DuckDuckGo (noted on stderr) so web_search keeps working.</summary>
@@ -734,39 +779,38 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         return new Blazorly.Harness.Tools.HttpWebProvider();
     }
 
-    /// <summary>Models for a custom gateway route: its configured ids, or a single "default"
-    /// placeholder while none are listed (discovery fills them in). Shared with route
-    /// registration so the session picker and the adapter never disagree.</summary>
+    /// <summary>Only explicitly configured model ids are selectable. Catalog metadata can
+    /// describe those ids, but cannot create available models.</summary>
     public static IReadOnlyList<LlmModelInfo> CustomRouteModels(CustomProviderConfig custom)
     {
-        var models = custom.Models
-            .Where(m => !string.IsNullOrWhiteSpace(m))
-            .Select(m => new LlmModelInfo(custom.Name, m, m))
-            .ToList();
-        if (models.Count == 0) models = [new LlmModelInfo(custom.Name, "default", $"{custom.BaseUrl} (default model)")];
-        return models;
+        return DescribeModels(custom.Name, custom.Models.Select(id =>
+            custom.ModelMetadata.FirstOrDefault(m => m.Id == id) ?? new DiscoveredModelInfo(id)));
     }
 
-    /// <summary>The selectable model list for a route: a custom gateway's configured ids, else
-    /// the live API list once discovered (known ids keep their catalog metadata — names,
-    /// windows, effort levels; unknown ids take any sizes the endpoint published),
-    /// otherwise the catalog seeds.</summary>
+    /// <summary>The selectable model list comes from saved discovery or manually entered ids.
+    /// An empty saved list is authoritative. Legacy explicit model selections remain usable
+    /// until a list is saved; a clean installation has no models.</summary>
     public IReadOnlyList<LlmModelInfo> RuntimeModels(string provider)
     {
+        if (string.IsNullOrWhiteSpace(provider)) return [];
         if (Settings.CustomProviders.FirstOrDefault(c => c.Name == provider) is { } custom)
             return CustomRouteModels(custom);
-        var catalog = ProviderCatalog.For(provider, Settings.BaseUrl);
-        if (Settings.DiscoveredModels.TryGetValue(provider, out var found) && found.Count > 0)
-        {
-            var byId = catalog.GroupBy(m => m.Id, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-            return [.. found.Select(entry => byId.TryGetValue(entry.Id, out var known)
-                ? known
-                : new LlmModelInfo(provider, entry.Id, entry.Id,
-                    ContextWindowTokens: entry.ContextWindowTokens,
-                    MaxOutputTokens: entry.MaxOutputTokens))];
-        }
-        return catalog;
+        if (Settings.DiscoveredModels.TryGetValue(provider, out var found))
+            return DescribeModels(provider, found);
+        return provider == Settings.Provider && !string.IsNullOrWhiteSpace(Settings.Model)
+            ? DescribeModels(provider, [new(Settings.Model)]) : [];
+    }
+
+    private static IReadOnlyList<LlmModelInfo> DescribeModels(string provider, IEnumerable<DiscoveredModelInfo> entries)
+    {
+        var catalog = ProviderCatalog.For(provider, "").GroupBy(m => m.Id, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        return entries.Where(m => !string.IsNullOrWhiteSpace(m.Id)).DistinctBy(m => m.Id, StringComparer.Ordinal)
+            .Select(entry => (catalog.GetValueOrDefault(entry.Id) ?? new LlmModelInfo(provider, entry.Id, entry.Id)) with
+            {
+                ContextWindowTokens = entry.ContextWindowTokens ?? catalog.GetValueOrDefault(entry.Id)?.ContextWindowTokens,
+                MaxOutputTokens = entry.MaxOutputTokens ?? catalog.GetValueOrDefault(entry.Id)?.MaxOutputTokens,
+            }).ToList();
     }
 
     /// <summary>Output cap for a model: the settings default, clamped to the model's own
@@ -899,35 +943,12 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     {
         if (string.IsNullOrWhiteSpace(provider)) return ([], "provider is required");
         var custom = Settings.CustomProviders.FirstOrDefault(c => c.Name == provider);
-        string baseUrl;
-        string apiKey;
-        if (custom is not null)
-        {
-            baseUrl = typedBaseUrl ?? custom.BaseUrl;
-            apiKey = typedApiKey
-                ?? (custom.ApiKeyEnv is { Length: > 0 } env ? Environment.GetEnvironmentVariable(env) : null)
-                ?? custom.ApiKey
-                ?? "";
-        }
-        else
-        {
-            baseUrl = typedBaseUrl ?? Settings.BaseUrlFor(provider);
-            apiKey = typedApiKey ?? Settings.ApiKeyFor(provider) ?? "";
-        }
+        var baseUrl = typedBaseUrl ?? Settings.BaseUrlFor(provider);
+        var apiKey = typedApiKey ?? Settings.ApiKeyFor(provider) ?? "";
         // Anthropic-model endpoints take x-api-key auth (built-in Anthropic, an overridden
         // built-in, or a custom gateway on the Anthropic wire); the modal can preview an
         // unsaved API type via the override.
         var effectiveApiType = ProviderCatalog.NormalizeApiType(apiType ?? ResolveApiType(Settings, provider));
-        Action<HttpRequestMessage>? configure = null;
-        if (effectiveApiType == "anthropic")
-        {
-            var anthropicKey = apiKey;
-            configure = request =>
-            {
-                request.Headers.TryAddWithoutValidation("x-api-key", anthropicKey);
-                request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-            };
-        }
         var (models, fetchError) = await FetchModelListAsync(provider, baseUrl, apiKey, effectiveApiType, timeout, ct).ConfigureAwait(false);
         if (fetchError is not null) return ([], fetchError);
         if (models is null) return ([], null); // caller cancelled: silent, no list and no error
@@ -935,17 +956,16 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         var entries = models.Select(m => new DiscoveredModelInfo(m.Id, m.ContextWindowTokens, m.MaxOutputTokens)).ToList();
         if (custom is not null)
         {
-            foreach (var id in ids)
-            {
-                if (!custom.Models.Contains(id)) custom.Models.Add(id);
-            }
+            custom.Models = ids;
+            custom.ModelMetadata = entries;
         }
         else
         {
             Settings.DiscoveredModels[provider] = entries;
         }
-        SaveSettings();
         ApplyProviderSelection();
+        ApplyDefaultSelection();
+        SaveSettings();
         return (ids, null);
     }
 
@@ -1020,9 +1040,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         _routeEffects[adapter.Provider] = Llm.RegisterAdapter(adapter);
     }
 
-    /// <summary>Providers with a live route: the active selection, every local server
-    /// (keyless), every cloud provider a key resolves for, and all custom gateways —
-    /// so models from every configured provider stay switchable from the session topbar.</summary>
+    /// <summary>Only explicitly configured providers become routes. An environment key can
+    /// authenticate a configured route but does not configure one or prove model availability.</summary>
     public static IReadOnlyList<string> DesiredRouteProviders(HarnessSettings settings)
     {
         var ids = new List<string>();
@@ -1031,45 +1050,27 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(id) && !ids.Contains(id)) ids.Add(id);
         }
         Add(settings.Provider);
-        foreach (var info in ProviderCatalog.All)
-        {
-            if (info.Category == "local") Add(info.Id);
-            else if (info.Category == "cloud" && !string.IsNullOrWhiteSpace(settings.ApiKeyFor(info.Id))) Add(info.Id);
-        }
-        foreach (var custom in settings.CustomProviders) Add(custom.Name);
+        foreach (var id in settings.ProviderKeys.Keys) Add(id);
+        foreach (var id in settings.ProviderBaseUrls.Keys) Add(id);
+        foreach (var id in settings.ProviderApiTypes.Keys) Add(id);
+        foreach (var id in settings.DiscoveredModels.Keys) Add(id);
+        foreach (var custom in settings.CustomProviders)
+            if (!string.IsNullOrWhiteSpace(custom.BaseUrl)) Add(custom.Name);
         return ids;
     }
 
     public void ApplyProviderSelection()
     {
         var desired = new HashSet<string>(StringComparer.Ordinal);
-        if (!string.IsNullOrWhiteSpace(Settings.Provider))
-        {
-            RegisterRoute(BuildRoute(Settings.Provider, Settings.BaseUrlFor(Settings.Provider), Settings.ApiKeyFor(Settings.Provider),
-                RuntimeModels(Settings.Provider)));
-            desired.Add(Settings.Provider);
-        }
-        // Background routes for every other configured provider, each at its own endpoint:
-        // the URL stashed while it was active (a custom proxy stays with its provider), else
-        // the catalog default. Custom gateways keep their own key/base-URL handling below.
         foreach (var id in DesiredRouteProviders(Settings))
         {
-            if (desired.Contains(id) || ProviderCatalog.Info(id) is not { } info) continue;
-            var baseUrl = Settings.ProviderBaseUrls.TryGetValue(id, out var stashedUrl) && stashedUrl.Length > 0
-                ? stashedUrl
-                : info.DefaultBaseUrl;
+            var baseUrl = Settings.BaseUrlFor(id);
+            if (string.IsNullOrWhiteSpace(baseUrl)) continue;
             RegisterRoute(BuildRoute(id, baseUrl, Settings.ApiKeyFor(id), RuntimeModels(id)));
             desired.Add(id);
         }
-        foreach (var custom in Settings.CustomProviders)
-        {
-            if (string.IsNullOrWhiteSpace(custom.Name) || string.IsNullOrWhiteSpace(custom.BaseUrl)) continue;
-            var key = !string.IsNullOrWhiteSpace(custom.ApiKey) ? custom.ApiKey
-                : !string.IsNullOrWhiteSpace(custom.ApiKeyEnv) ? Environment.GetEnvironmentVariable(custom.ApiKeyEnv)
-                : null;
-            RegisterRoute(BuildRoute(custom.Name, custom.BaseUrl, key, CustomRouteModels(custom)));
-            desired.Add(custom.Name);
-        }
+        var models = RuntimeModels(Settings.Provider);
+        if (!models.Any(m => m.Id == Settings.Model)) Settings.Model = models.FirstOrDefault()?.Id ?? "";
         // Routes that are no longer configured are unregistered (e.g. a removed custom provider).
         foreach (var provider in _routeEffects.Keys.ToList())
         {
@@ -1114,28 +1115,47 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 
     public void SaveSettings()
     {
-        var path = Path.Combine(_home, "settings.json");
-        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(Settings, new System.Text.Json.JsonSerializerOptions
+        if (SettingsLoadError is not null) throw new InvalidOperationException(SettingsLoadError);
+        var json = JsonSerializer.Serialize(Settings, new JsonSerializerOptions
         {
             WriteIndented = true,
-            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-        }));
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        });
+        var temporaryPath = Path.Combine(_home, $"settings.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            File.WriteAllText(temporaryPath, json);
+            File.Move(temporaryPath, SettingsFilePath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
     }
 
     private void LoadSettings()
     {
-        var path = Path.Combine(_home, "settings.json");
-        if (!File.Exists(path)) return;
         try
         {
-            Settings = System.Text.Json.JsonSerializer.Deserialize<HarnessSettings>(File.ReadAllText(path),
-                new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }) ?? new HarnessSettings();
+            if (File.Exists(SettingsFilePath))
+                Settings = JsonSerializer.Deserialize<HarnessSettings>(File.ReadAllText(SettingsFilePath),
+                    new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })
+                    ?? throw new JsonException("settings must be an object");
+            if (Settings.Provider is null || Settings.Model is null || Settings.BaseUrl is null
+                || Settings.ProviderKeys is null || Settings.ProviderBaseUrls is null
+                || Settings.ProviderApiTypes is null || Settings.DiscoveredModels is null
+                || Settings.CustomProviders is null || Settings.DiscoveredModels.Values.Any(m => m is null)
+                || Settings.CustomProviders.Any(c => c is null || c.Models is null || c.ModelMetadata is null))
+                throw new JsonException("provider settings cannot be null");
             MigrateLegacySettings(Settings);
             ApplyPatches(Settings, _home);
         }
-        catch
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
         {
             Settings = new HarnessSettings();
+            SettingsLoadError = $"Settings could not be loaded from {SettingsFilePath} ({ex.GetType().Name}). "
+                + "The existing file was left unchanged. Repair or move it and restart before saving settings.";
+            Console.Error.WriteLine(SettingsLoadError);
         }
     }
 
@@ -1206,21 +1226,37 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         if (settings.Provider != retired) return;
         settings.Provider = match.Id;
         if (settings.BaseUrlProvider == retired) settings.BaseUrlProvider = match.Id;
-        // The slot's "default" seed (or any id the new route never listed) would 400: fall
-        // back to the catalog default unless the current model is known there.
-        var known = new HashSet<string>(ProviderCatalog.For(match.Id, "").Select(m => m.Id), StringComparer.Ordinal);
-        if (moved is not null)
-            foreach (var entry in moved)
-                known.Add(entry.Id);
-        if (!known.Contains(settings.Model))
-            settings.Model = ProviderCatalog.DefaultModel(match.Id);
+        // Preserve an explicitly saved model on the same endpoint. Only retire the old
+        // synthetic placeholder if it was never part of a saved model list.
+        if (settings.Model == "default" && !(moved?.Any(m => m.Id == "default") ?? false))
+            settings.Model = "";
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     public async ValueTask DisposeAsync()
     {
-        if (Context is not null) await Context.DisposeAsync().ConfigureAwait(false);
+        if (_disposed) return;
+        _disposed = true;
+        try
+        {
+            if (Agents is not null)
+                foreach (var agent in Agents.LiveAgents()) await agent.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            if (Context is not null) await Context.DisposeAsync().ConfigureAwait(false);
+            if (_ownedPersistence is { } persistence)
+            {
+                try { await persistence.FlushAllAsync().ConfigureAwait(false); }
+                finally
+                {
+                    if (persistence is IAsyncDisposable asyncDisposable) await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                    else if (persistence is IDisposable disposable) disposable.Dispose();
+                    _ownedPersistence = null;
+                }
+            }
+        }
     }
 }
 
@@ -1248,9 +1284,9 @@ public static class ProviderCatalog
     public static readonly IReadOnlyList<ProviderInfo> All =
     [
         // Cloud (hosted APIs)
-        new("openai", "OpenAI", "cloud", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+        new("openai", "OpenAI", "cloud", "https://api.openai.com/v1", "OPENAI_API_KEY", "responses"),
         new("anthropic", "Anthropic", "cloud", "https://api.anthropic.com", "ANTHROPIC_API_KEY", "anthropic"),
-        new("xai", "xAI (Grok)", "cloud", "https://api.x.ai/v1", "XAI_API_KEY"),
+        new("xai", "xAI (Grok)", "cloud", "https://api.x.ai/v1", "XAI_API_KEY", "responses"),
         new("google", "Google (Gemini)", "cloud", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
         new("mistral", "Mistral AI", "cloud", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
         new("perplexity", "Perplexity", "cloud", "https://api.perplexity.ai", "PERPLEXITY_API_KEY"),
@@ -1272,7 +1308,7 @@ public static class ProviderCatalog
         // reasoning incrementally (verified live); the other two buffer the whole completion
         // server-side, which is minutes of silence at large context. Same key on all three.
         new("zai", "Z.ai API (GLM)", "cloud", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY"),
-        new("zai-coding", "Z.ai Coding Plan (GLM)", "cloud", "https://api.z.ai/api/v1", "ZAI_CODING_API_KEY"),
+        new("zai-coding", "Z.ai Coding Plan (GLM)", "cloud", "https://api.z.ai/api/v1", "ZAI_CODING_API_KEY", "responses"),
         // The coding plan is sold per region: intl (api.z.ai) and China (open.bigmodel.cn) take
         // separate subscriptions and keys. The CN host is measurably faster at cold-start prefill
         // for large contexts — the same route Pi's zai-coding-cn provider targets.
@@ -1309,19 +1345,28 @@ public static class ProviderCatalog
     public static bool RequiresApiKey(string provider) => Info(provider)?.Category == "cloud";
 
     /// <summary>
-    /// xAI and OpenAI serve the Responses API as the current inference surface; Chat Completions
-    /// is legacy there. Other OpenAI-compatible hosts (Groq, Ollama, DeepSeek, custom gateways)
-    /// still speak /chat/completions.
+    /// Whether a provider defaults to Responses for every model. Automatic compatible routes
+    /// choose a protocol per model; explicit API types can select Responses on any gateway.
     /// </summary>
-    public static bool UsesResponsesApi(string provider) => provider is "xai" or "openai" or "zai-coding";
+    public static bool UsesResponsesApi(string provider) => Info(provider)?.DefaultApiType == "responses";
 
-    /// <summary>Normalizes a stored API type to "anthropic" or "openai" (default).</summary>
+    /// <summary>Normalizes a stored API type; unknown values retain automatic OpenAI compatibility.</summary>
     public static string NormalizeApiType(string? apiType)
-        => string.Equals(apiType, "anthropic", StringComparison.OrdinalIgnoreCase) ? "anthropic" : "openai";
+        => apiType?.Trim().ToLowerInvariant() switch
+        {
+            "anthropic" => "anthropic",
+            "responses" => "responses",
+            _ => "openai",
+        };
 
     /// <summary>Short display label for an API type value.</summary>
     public static string ApiTypeLabel(string? apiType)
-        => NormalizeApiType(apiType) == "anthropic" ? "Anthropic" : "OpenAI-compatible";
+        => NormalizeApiType(apiType) switch
+        {
+            "anthropic" => "Anthropic",
+            "responses" => "OpenAI Responses",
+            _ => "OpenAI-compatible",
+        };
 
     public static IReadOnlyList<string> Categories => ["cloud", "local"];
 

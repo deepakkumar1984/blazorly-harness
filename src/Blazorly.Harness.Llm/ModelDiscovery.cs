@@ -4,9 +4,8 @@ using Blazorly.Harness.Llm.Adapters;
 namespace Blazorly.Harness.Llm;
 
 /// <summary>
-/// Discovers the model list of an OpenAI-compatible route via GET {base}/models and merges
-/// the ids over a known catalog (catalog metadata wins for known ids; discovered-only ids
-/// appear without metadata).
+/// Discovers model availability via GET {base}/models. Static metadata can describe returned
+/// ids; it must never add ids that the endpoint did not return.
 /// </summary>
 public static class LlmModelDiscovery
 {
@@ -20,7 +19,7 @@ public static class LlmModelDiscovery
         var path = anthropic ? "/v1/models" : "/models";
         var endpointRoot = anthropic
             ? TransportErrors.TrimApiSuffixes(baseUrl, "/v1/models", "/models", "/v1")
-            : TransportErrors.TrimApiSuffixes(baseUrl, "/models");
+            : TransportErrors.TrimApiSuffixes(baseUrl, "/models", "/chat/completions", "/responses");
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{endpointRoot}{path}");
         if (configure is not null)
         {
@@ -51,12 +50,17 @@ public static class LlmModelDiscovery
         {
             foreach (var item in root.EnumerateArray()) AddItem(item, found);
         }
-        return found;
+        else
+        {
+            throw new JsonException("The model endpoint did not return a model list (expected a data array).");
+        }
+        return found.DistinctBy(m => m.Id, StringComparer.Ordinal).ToList();
 
         void AddItem(JsonElement item, List<LlmModelInfo> into)
         {
             if (item.ValueKind != JsonValueKind.Object) return;
-            if (!item.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String || id.GetString() is not { Length: > 0 } modelId) return;
+            if (!item.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String || id.GetString() is not { Length: > 0 } modelId
+                || string.IsNullOrWhiteSpace(modelId)) return;
             // Stock OpenAI /models is id-only, but some gateways publish sizes alongside
             // (OpenRouter-style); take them when present so unknown ids still resolve windows.
             var window = ReadLong(item, "context_window", "context_length", "max_context_length", "contextWindow", "contextLength");
@@ -78,15 +82,15 @@ public static class LlmModelDiscovery
         return null;
     }
 
-    /// <summary>Discovered ids merged over known metadata; known ids keep their catalog entry.</summary>
+    /// <summary>Describes discovered ids with known metadata, without adding undiscovered ids.</summary>
     public static IReadOnlyList<LlmModelInfo> Merge(string provider, IEnumerable<string> discoveredIds, IReadOnlyList<LlmModelInfo> known)
     {
-        var merged = new List<LlmModelInfo>(known);
-        var seen = new HashSet<string>(known.Select(m => m.Id), StringComparer.Ordinal);
+        var merged = new List<LlmModelInfo>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var id in discoveredIds)
         {
-            if (!seen.Add(id)) continue;
-            merged.Add(new LlmModelInfo(provider, id, id));
+            if (string.IsNullOrWhiteSpace(id) || !seen.Add(id)) continue;
+            merged.Add(known.FirstOrDefault(m => m.Id == id) ?? new LlmModelInfo(provider, id, id));
         }
         return merged;
     }

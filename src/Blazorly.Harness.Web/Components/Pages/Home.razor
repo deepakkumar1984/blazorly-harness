@@ -5,9 +5,26 @@
 
 <div class="workspace-welcome">
     <span class="brand-mark">⚡</span>
-    <h1>Open a workspace</h1>
-    <p>Add a folder from the sidebar to bring its chats, files, and run commands together.</p>
-    <p>Your existing chats are available under Unfiled in the workspace switcher.</p>
+    @if (Facade.Harness.SettingsLoadError is { } loadError)
+    {
+        <h1>Settings need attention</h1>
+        <p role="alert">@loadError</p>
+    }
+    else if (Facade.Harness.Llm.ListProviders().Count == 0)
+    {
+        <h1>Set up your provider</h1>
+        <p>No provider is configured. <a href="/settings">Add a provider in Settings</a>, then discover models or enter a model ID.</p>
+        <p>Add a workspace folder from the sidebar to start a chat.</p>
+    }
+    else
+    {
+        <h1>Open a workspace</h1>
+        <p>Add a folder from the sidebar to bring its chats, files, and run commands together.</p>
+    }
+    @if (Facade.LiveSessions().Any())
+    {
+        <p>Your existing chats are available in the workspace switcher.</p>
+    }
 </div>
 
 @code

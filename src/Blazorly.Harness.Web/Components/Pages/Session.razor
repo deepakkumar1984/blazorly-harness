@@ -112,7 +112,7 @@
         <div class="session-header-row status">
             <div class="session-status">
                 <button class="model-chip" title="Configure model and effort" aria-haspopup="dialog" @onclick="ToggleModelMenu" @ref="_modelTrigger">
-                    @(_agent?.Options.Provider)/@(_agent?.Options.Model)
+                    @(HasModelRoute ? $"{_agent?.Options.Provider}/{_agent?.Options.Model}" : "Select a provider and model")
                 </button>
                 <button class="model-chip" title="Configure reasoning effort" aria-haspopup="dialog" @onclick="ToggleModelMenu">
                     effort: @(_agent?.Options.ReasoningEffort ?? "model default")
@@ -160,9 +160,9 @@
                 @if (_snapshot?.Context is { } context)
                 {
                     <div class="chip-anchor">
-                        <button class="status-chip context-meter" title="Context usage — click for the full reading" @onclick="ToggleContextMenu">
+                        <button class="status-chip context-meter" title="Estimated context usage — click for the full reading" @onclick="ToggleContextMenu">
                             <span class="meter"><span class="meter-fill @MeterTone(context.OccupancyPercent)" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></span>
-                            ctx @context.OccupancyPercent%
+                            ctx ~@context.OccupancyPercent%
                         </button>
                         @if (_ctxMenu)
                         {
@@ -170,9 +170,10 @@
                                 <div class="popover-group">context window</div>
                                 <div class="ctx-meter-lg"><span class="meter-fill @MeterTone(context.OccupancyPercent)" style="width:@Math.Min(100, context.OccupancyPercent)%"></span></div>
                                 <div class="ctx-row ctx-head">
-                                    <span class="k">used</span>
+                                    <span class="k">estimated use</span>
                                     <span class="v">@Fmt(context.PressureTokens) tokens · @context.OccupancyPercent% of @(context.ContextWindowTokens is { } window ? Fmt(window) : "unknown window")</span>
                                 </div>
+                                <div class="popover-empty">Estimated from message, system prompt, and tool text. The window uses API/catalog metadata or your configured fallback.</div>
                                 <div class="ctx-section">
                                     <div class="ctx-row"><span class="k">system</span><span class="v">@Fmt(context.SystemTokens)</span></div>
                                     <div class="ctx-row"><span class="k">tools</span><span class="v">@Fmt(context.ToolsTokens)</span></div>
@@ -393,7 +394,7 @@
                                 @if (node.StepStatus == "thinking" && (node.Blocks is null || node.Blocks.Count == 0))
                                 {
                                     <div class="thinking-placeholder">
-                                        <span class="thinking-word">thinking</span>
+                                        <span class="thinking-word">waiting for response</span>
                                         @if (node.StartedAt is { } started)
                                         {
                                             <span class="thinking-elapsed">@ConversationNode.ElapsedLabel(started)</span>
@@ -606,6 +607,10 @@
     </div>
 
     <footer class="composer" hidden="@(_view is "code" or "empty" || _sessionLoading || _loadError is not null)" aria-label="Chat message" data-session-id="@(_sessionLoading ? null : _loadedSessionId)">
+        @if (!HasModelRoute)
+        {
+            <p class="settings-note">Select a provider and model to send messages. <a href="/settings">Configure providers in Settings</a>.</p>
+        }
         <div class="command-menu" style="display:none" @ref="_slashMenu"></div>
         <div class="command-menu mention-menu" style="display:none" @ref="_mentionMenu"></div>
         @if (_pendingFiles.Count > 0)
@@ -644,7 +649,7 @@
                 @if (_running)
                 {
                     <button class="primary" disabled="@(!CanSend)" @onclick="SendQueue">Queue<span class="send-kbd"> (⏎)</span></button>
-                    <button class="ghost" disabled="@(!CanSend)" @onclick="SendSteer">Steer</button>
+                    <button class="ghost" disabled="@(!CanSend || !HasModelRoute)" @onclick="SendSteer">Steer</button>
                     <button class="danger" @onclick="CancelTurn">Stop</button>
                 }
                 else
@@ -782,11 +787,11 @@
             </label>
             @if (selectedModel is not null && selectedModel.ReasoningEfforts is not { Length: > 0 })
             {
-                <div class="popover-empty">This model advertises no levels; showing the default set (low/medium/high/xhigh/max).</div>
+                <div class="popover-empty">Reasoning levels are unknown for this model. These are generic choices; the provider decides which it accepts.</div>
             }
             <div class="modal-actions">
                 <button class="ghost" @onclick="CloseMenus">Cancel</button>
-                <button class="primary" disabled="@(_draftProvider.Length == 0 || _draftModel.Length == 0)" @onclick="ApplyModelSettings">Apply</button>
+                <button class="primary" disabled="@(selectedModel is null)" @onclick="ApplyModelSettings">Apply</button>
             </div>
         </div>
     </div>
@@ -1333,6 +1338,7 @@
         }
         else
         {
+            if (!HasModelRoute) return;
             _draft = "";
             var ids = _pendingFiles.Select(f => f.Id).ToArray();
             _pendingFiles.Clear();
@@ -1343,7 +1349,7 @@
 
     private async Task SendSteer()
     {
-        if (_sessionLoading || _loadError is not null) return;
+        if (_sessionLoading || _loadError is not null || !HasModelRoute) return;
         var text = _draft.Trim();
         if (text.Length == 0 && _pendingFiles.Count == 0) return;
         _draft = "";
@@ -2021,7 +2027,13 @@
         _pendingChanged = true;
     }
 
-    private bool CanSend => !_sessionLoading && _loadError is null && (_draft.Length > 0 || _pendingFiles.Count > 0);
+    private bool HasModelRoute => !string.IsNullOrWhiteSpace(_agent?.Options.Provider)
+        && !string.IsNullOrWhiteSpace(_agent?.Options.Model)
+        && Facade.Harness.Llm.ListProviders().Contains(_agent.Options.Provider, StringComparer.Ordinal);
+
+    private bool CanSend => !_sessionLoading && _loadError is null
+        && (HasModelRoute || _draft.TrimStart().StartsWith('/'))
+        && (_draft.Trim().Length > 0 || _pendingFiles.Count > 0);
 
     private bool CanFork => !_running && _session?.LatestTurnEndSeq() is not null;
 

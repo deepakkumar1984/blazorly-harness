@@ -201,6 +201,11 @@ public class AcpServerTests : BootstrapperTestBase
 
         var created = await client.RequestAsync("session/new", new { cwd = workspace });
         Assert.Contains("session-", created.GetProperty("sessionId").GetString());
+        var models = created.GetProperty("configOptions")[0];
+        var group = Assert.Single(models.GetProperty("options").EnumerateArray());
+        Assert.Equal("scripted", group.GetProperty("group").GetString());
+        var option = Assert.Single(group.GetProperty("options").EnumerateArray());
+        Assert.Equal("[\"scripted\",\"test\"]", option.GetProperty("value").GetString());
     }
 
     [Fact]

@@ -216,7 +216,7 @@ public static class AcpServer
                         return JsonSerializer.SerializeToElement(new
                         {
                             sessionId = agent.Session.Id,
-                            configOptions = BuildConfigOptions(agent.Options.Provider ?? "", agent.Options.Model ?? "default"),
+                            configOptions = BuildConfigOptions(bootstrapper, agent.Options.Provider ?? "", agent.Options.Model ?? ""),
                         }, FrameOptions);
                     }
 
@@ -249,7 +249,7 @@ public static class AcpServer
                         }
                         return JsonSerializer.SerializeToElement(new
                         {
-                            configOptions = BuildConfigOptions(provider, model),
+                            configOptions = BuildConfigOptions(bootstrapper, provider, model),
                         }, FrameOptions);
                     }
 
@@ -589,7 +589,7 @@ public static class AcpServer
     }
 
     /// <summary>The one standard config option: a provider-grouped model select, dsh shape.</summary>
-    private static JsonElement BuildConfigOptions(string provider, string model)
+    private static JsonElement BuildConfigOptions(HarnessBootstrapper bootstrapper, string provider, string model)
     {
         var select = new
         {
@@ -598,12 +598,12 @@ public static class AcpServer
             category = "model",
             type = "select",
             currentValue = RouteValue(provider, model),
-            options = ProviderCatalog.Providers.Select(p => new
+            options = bootstrapper.Llm.ListProviders().Select(p => new
             {
                 @group = p,
                 name = p,
-                options = new[] { new { value = RouteValue(p, ProviderCatalog.DefaultModel(p)), name = ProviderCatalog.DefaultModel(p) } },
-            }).ToArray(),
+                options = bootstrapper.RuntimeModels(p).Select(m => new { value = RouteValue(p, m.Id), name = m.Name }).ToArray(),
+            }).Where(group => group.options.Length > 0).ToArray(),
         };
         return JsonSerializer.SerializeToElement(new[] { select }, FrameOptions);
     }

@@ -10,6 +10,58 @@ namespace Blazorly.Harness.Tests;
 
 public class AgentLoopTests
 {
+    [Fact]
+    public async Task DifferentProviderWithoutAModel_DoesNotInheritAnotherProvidersModel()
+    {
+        await using var harness = TestHarness.Create();
+        var agent = harness.CreateAgent(options: new AgentOptions(Provider: "other-provider"));
+        Assert.Equal("other-provider", agent.Options.Provider);
+        Assert.Empty(agent.Options.Model!);
+        agent.Followup(Message.CreateUserText("hello"));
+        await agent.WhenIdleAsync();
+        var reason = SessionEventRead.TurnEndReasonOf(agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd));
+        Assert.Contains("No model selected", Assert.IsType<TurnEndReason.Error>(reason).Message);
+    }
+
+    [Fact]
+    public async Task ExplicitAgentSelection_OverridesGlobalDefaults_OnTheActualRequest()
+    {
+        var calls = new List<GenerateOptions>();
+        await using var harness = TestHarness.Create(options =>
+        {
+            calls.Add(options);
+            return Scripted.Text("selected model answered");
+        });
+        harness.Loop.DefaultSelection = new LlmCallConfig { Provider = "different-provider", Model = "different-model" };
+        var agent = harness.CreateAgent(options: new AgentOptions("scripted", "explicit-model", 321, "low"));
+        agent.Followup(Message.CreateUserText("use my selection"));
+        await agent.WhenIdleAsync();
+        var request = Assert.Single(calls);
+        Assert.Equal("scripted", request.Provider);
+        Assert.Equal("explicit-model", request.Model);
+        Assert.Equal(321, request.MaxTokens);
+        Assert.Equal("low", request.ReasoningEffort);
+    }
+
+    [Theory]
+    [InlineData("", "test", "No provider configured")]
+    [InlineData("scripted", " ", "No model selected")]
+    public async Task MissingSelection_FailsBeforeCallingAnAdapter(string provider, string model, string message)
+    {
+        var calls = 0;
+        await using var harness = TestHarness.Create(_ =>
+        {
+            calls++;
+            return Scripted.Text("unexpected call");
+        });
+        var agent = harness.CreateAgent(options: new AgentOptions(provider, model));
+        agent.Followup(Message.CreateUserText("hello"));
+        await agent.WhenIdleAsync();
+        var reason = SessionEventRead.TurnEndReasonOf(agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd));
+        Assert.Contains(message, Assert.IsType<TurnEndReason.Error>(reason).Message);
+        Assert.Equal(0, calls);
+    }
+
     private static GenerateOptions LastOptions(IReadOnlyList<GenerateOptions> calls, int index)
         => calls[Math.Min(index, calls.Count - 1)];
 
@@ -337,6 +389,22 @@ public class ToolSchedulerTests
 /// <summary>Provider 400s name our own fields back at the user with the way out.</summary>
 public class InvalidRequestHintTests
 {
+    [Theory]
+    [InlineData(null, 2048)]
+    [InlineData("high", 2048)]
+    [InlineData(null, null)]
+    public void ResponsesRequired_PointsAtApiTypeWithoutTokenOrEffortAdvice(string? effort, int? maxTokens)
+    {
+        var text = AgentDriver.WithInvalidRequestHint(
+            $"provider rejected request (400: {OpenAiCompatibleRoutingTests.RequiresResponses})",
+            new AgentOptions("custom", "gpt-6-astra", maxTokens, effort));
+        Assert.Contains("Select OpenAI Responses", text);
+        Assert.Contains("Settings", text);
+        Assert.DoesNotContain("max_tokens", text);
+        Assert.DoesNotContain("lower max output", text);
+        Assert.DoesNotContain("/effort default", text);
+    }
+
     [Fact]
     public void EffortNamedByProvider_PointsAtEffortReset()
     {
@@ -347,14 +415,29 @@ public class InvalidRequestHintTests
         Assert.Contains("/effort default", text);
     }
 
-    [Fact]
-    public void MaxTokensNamedByProvider_PointsAtSettings()
+    [Theory]
+    [InlineData("max_tokens")]
+    [InlineData("max_completion_tokens")]
+    [InlineData("max_output_tokens")]
+    public void MaxTokensNamedByProvider_PointsAtSettings(string parameter)
     {
         var text = AgentDriver.WithInvalidRequestHint(
-            "provider rejected request (400: max_tokens 65536 exceeds the limit)",
-            new AgentOptions("p", "m", 65536));
-        Assert.Contains("max_tokens 65536", text);
+            $"provider rejected request (400: {parameter} 65536 exceeds the limit for reasoning models)",
+            new AgentOptions("p", "m", 65536, "high"));
+        Assert.Contains($"{parameter} 65536", text);
         Assert.Contains("Settings", text);
+        Assert.DoesNotContain("/effort default", text);
+    }
+
+    [Theory]
+    [InlineData("Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.")]
+    [InlineData("Unsupported parameter: 'max_completion_tokens' is not supported with this model. Use 'max_tokens' instead.")]
+    [InlineData("Unknown parameter: max_output_tokens")]
+    [InlineData("Unrecognized request argument supplied: max_tokens")]
+    public void UnsupportedTokenParameter_PreservesProviderMessage(string detail)
+    {
+        var message = $"provider rejected request (400: {detail})";
+        Assert.Equal(message, AgentDriver.WithInvalidRequestHint(message, new AgentOptions("p", "m", 2048, "high")));
     }
 
     [Fact]

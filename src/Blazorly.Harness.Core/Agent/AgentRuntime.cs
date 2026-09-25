@@ -96,7 +96,7 @@ public sealed class AgentLoopService
     }
 
     /// <summary>Default model selection when AgentOptions omit provider/model.</summary>
-    public LlmCallConfig DefaultSelection { get; set; } = new() { Provider = "deepseek", Model = "deepseek-v4-flash" };
+    public LlmCallConfig DefaultSelection { get; set; } = new() { Provider = "", Model = "" };
 
     public int MaxParallelToolCalls { get; set; } = 10;
 
@@ -116,7 +116,9 @@ public sealed class AgentLoopService
 
     private Agent CreateForSession(Sessions.Session session, AgentOptions? options, Action<Agent>? setup, string source)
     {
-        var effective = (options ?? new AgentOptions()).OverriddenBy(new AgentOptions(DefaultSelection.Provider, DefaultSelection.Model, null));
+        var inheritModel = options?.Provider is null || options.Provider == DefaultSelection.Provider;
+        var effective = new AgentOptions(DefaultSelection.Provider, inheritModel ? DefaultSelection.Model : "")
+            .OverriddenBy(options ?? new AgentOptions());
         var agent = new Agent(_ctx, _llm, _tools, _systemPrompt, session, effective)
         {
             RetryLimit = RetryLimit,

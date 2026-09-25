@@ -19,7 +19,7 @@ Site: [Blazorly Harness](https://harness.blazorly.com/) — features, install, a
 - **Workspace deletion** — confirmation shows the local folder and session count, then stops owned work and permanently deletes the folder, chats, child sessions, and attachments
 - **Open chats and files** — one tab strip with individual close buttons and Close all. Chat drafts, attachments, and file edits survive tab switches; closing a chat tab preserves its saved history. Close all offers save or discard for unsaved files
 - **Workspace editor** — text editing with Ctrl+S / Cmd+S, unsaved-change prompts, automatic file refresh, and protection against overwriting external edits. Supports UTF-8 files up to 512 KB; syntax highlighting and IntelliSense are still pending
-- **Run controls** — start and stop commands detected from package.json, plain Node entry points, .NET, Python, PHP, Go, Rust, and Make, including nested projects. Processes remain tracked across browser refreshes while the host runs; Windows job objects keep child processes under the host's control. The interactive Terminal still requires bash; native PowerShell/ConPTY support is pending
+- **Run controls** — start and stop commands detected from package.json, plain Node entry points, .NET, Python, PHP, Go, Rust, and Make, including nested projects. Processes remain tracked across browser refreshes while the host runs; Windows job objects keep child processes under the host's control. The bash tool, interactive terminal, and shell hooks currently expect `/bin/bash`; native Windows shell support is pending
 - **Multi-agent orchestration** — spawn sub-agents, build teams, fan out parallel swarms with review gates; children run inside the parent chat with live progress
 - **Full workspace toolset** — bash, file read/write/edit, grep/glob, web search & fetch, LSP diagnostics, tmux awareness, session search, run_code, and any tool your MCP servers expose
 - **Durable sessions** — every turn, chat, and tool call is saved; sessions survive app restarts, browser closes, and cold-resume of sub-agents days later
@@ -46,7 +46,7 @@ powershell -c "irm https://raw.githubusercontent.com/deepakkumar1984/blazorly-ha
 
 That puts `blazorly` on your PATH. Run it again to upgrade to the latest release — it verifies the checksum and atomically swaps the binary.
 
-**What you get:** a self-contained `blazorly` binary. Data lives in `~/.blazorly` (Windows: `%LOCALAPPDATA%\blazorly`). No Docker, no Python, no .NET SDK.
+**What you get:** a self-contained `blazorly` binary. Data lives in `~/.blazorly` (Windows: `%USERPROFILE%\.blazorly`), or the directory specified by `BLAZORLY_HOME`. No Docker, no Python, no .NET SDK.
 
 ---
 
@@ -56,17 +56,25 @@ That puts `blazorly` on your PATH. Run it again to upgrade to the latest release
 blazorly                            # starts the web UI at http://localhost:5080
 ```
 
-Open the browser. The first run creates a settings file at `~/.blazorly/settings.json`. Set your provider and key on the Settings page — it discovers models live from each provider's API — or drop this into `settings.json`:
+Open the browser. A fresh installation has no provider, model, workspace, or session configured. In **Settings → Providers**, add your provider and key, then use **Discover** or enter model IDs. Settings are written to `<home>/settings.json` when you save. The page displays the actual path.
+
+For example, to configure an OpenAI route explicitly, create `settings.json` with your model ID and key:
 
 ```json
 {
-  "provider": "deepseek",
-  "model": "deepseek-v4-flash",
-  "apiKey": "sk-…"
+  "provider": "openai",
+  "model": "your-model-id",
+  "apiKey": "your-api-key"
 }
 ```
 
-Works with DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, and any OpenAI-compatible endpoint (custom routes in Settings → Routes).
+Works with DeepSeek, OpenAI, Anthropic, xAI, Ollama, LM Studio, and OpenAI-compatible endpoints (custom routes in Settings → Providers). Model pickers list only discovered or manually configured IDs. The built-in catalog supplies metadata for those IDs; it does not establish account access or server availability.
+
+Removing a provider removes its route and clears the default selection if necessary. Deleting the harness home resets its saved configuration, workspace registrations, and session data; workspace folders stored elsewhere remain on disk. Browser appearance preferences are stored separately in the browser.
+
+The [startup and behavior audit](audits/2026-09-25-startup-integrity.md) records the fixes and verification limits.
+
+For a gateway that serves the Responses API, choose **OpenAI Responses** as its API type in **Settings → Providers**. Automatic OpenAI-compatible routes also use Responses for GPT-5 and GPT-6 models, including provider-prefixed ids such as `openai/gpt-6-astra`.
 
 Personalize the UI in **Settings → Appearance**. Theme, font, and accent changes save automatically; custom CSS uses **Apply CSS** and can be disabled without losing your code. **Reset appearance** restores defaults. If a custom style hides the controls, open `/settings?tab=appearance&reset-appearance=1` on your running instance to reset them.
 
@@ -81,12 +89,12 @@ blazorly --version                       # build stamp
 
 | Setting | Default | What it does |
 |---|---|---|
-| `provider` / `model` | `deepseek` / `deepseek-v4-flash` | Your LLM route |
-| `apiKey` | — | API key (or `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` env var) |
+| `provider` / `model` | Unconfigured | Your explicitly selected LLM route |
+| `apiKey` | — | API key, or that provider's own environment variable |
 | `sandboxMode` | `full-access` | Tool sandbox: `full-access`, `workspace-write`, or `read-only` |
-| `contextWindowTokens` | `65536` | Compaction and context-meter window |
+| `contextWindowTokens` | `262144` | Fallback compaction/context window when API/catalog metadata is absent |
 
-API keys resolve per-request — a provider's key is never sent to another route. Environment variables take precedence if the settings field is empty.
+Saved keys take precedence over the provider's own environment variable (for example `OPENAI_API_KEY` for OpenAI and `DEEPSEEK_API_KEY` for DeepSeek). Custom gateways use their saved key or explicitly named `apiKeyEnv`. An environment key authenticates an explicitly configured route; it does not add a provider automatically.
 
 Everything else (feature toggles, retry policy, MCP servers, System One, custom providers) is on the Settings page and in `settings.json`. Enable features by name and disable plugins you don't need:
 
