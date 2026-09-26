@@ -38,6 +38,7 @@
                                 <span class="ws-option-name">@workspace.Name @(selected ? "· current" : "")</span>
                                 <span class="ws-option-root">@workspace.Root</span>
                             </button>
+                            <button type="button" class="icon" role="menuitem" title="Agent setup — instructions & tools" aria-label="@($"Agent setup for {workspace.Name}")" @onclick="() => AskAgentSetup(workspace)">⚙</button>
                             <button type="button" class="icon" role="menuitem" title="Rename workspace" aria-label="@($"Rename {workspace.Name}")" @onclick="() => AskRenameWorkspace(workspace)">✎</button>
                             <button type="button" class="icon danger" role="menuitem" title="Delete workspace and its files" aria-label="@($"Delete {workspace.Name}")" @onclick="() => AskRemoveWorkspace(workspace)">✕</button>
                         </div>
@@ -150,8 +151,8 @@
 
 @if (_showAddWorkspace)
 {
-    <div class="modal-overlay" @onclick="CloseAddWorkspace">
-        <div class="modal" role="dialog" aria-modal="true" aria-label="Add workspace" @onclick:stopPropagation="true" @onkeydown="OnModalKey">
+    <div class="modal-overlay" @onmousedown="ArmOverlayClose" @onclick="() => OverlayClick(CloseAddWorkspace)">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Add workspace" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true" @onkeydown="OnModalKey">
             <div class="modal-head">
                 <h3>Add workspace</h3>
                 <button class="icon modal-close" title="Close (Esc)" @onclick="CloseAddWorkspace">✕</button>
@@ -209,8 +210,8 @@
 
 @if (_confirmRemoveWorkspace is { } remove)
 {
-    <div class="modal-overlay" @onclick="CloseDeleteWorkspace">
-        <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Delete workspace" @onclick:stopPropagation="true">
+    <div class="modal-overlay" @onmousedown="ArmOverlayClose" @onclick="() => OverlayClick(CloseDeleteWorkspace)">
+        <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Delete workspace" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true">
             <div class="modal-head">
                 <h3>Delete workspace permanently?</h3>
                 <button class="icon modal-close" title="Cancel" disabled="@_workspaceDeleteBusy" @onclick="CloseDeleteWorkspace">✕</button>
@@ -236,8 +237,8 @@
 
 @if (_renameWorkspace is { } rename)
 {
-    <div class="modal-overlay" @onclick="CloseRenameWorkspace">
-        <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Rename workspace" @onclick:stopPropagation="true">
+    <div class="modal-overlay" @onmousedown="ArmOverlayClose" @onclick="() => OverlayClick(CloseRenameWorkspace)">
+        <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-label="Rename workspace" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true">
             <div class="modal-head">
                 <h3>Rename workspace</h3>
                 <button class="icon modal-close" title="Cancel" @onclick="CloseRenameWorkspace">✕</button>
@@ -255,10 +256,56 @@
     </div>
 }
 
+@if (_agentSetupWorkspace is { } setup)
+{
+    <div class="modal-overlay" @onmousedown="ArmOverlayClose" @onclick="() => OverlayClick(CloseAgentSetup)">
+        <div class="modal agent-setup-modal" role="dialog" aria-modal="true" aria-label="Agent setup" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true" @onkeydown="OnAgentSetupKey">
+            <div class="modal-head">
+                <h3>Agent setup — @setup.Name</h3>
+                <button class="icon modal-close" title="Close (Esc)" @onclick="CloseAgentSetup">✕</button>
+            </div>
+            <p class="confirm-text">
+                Applies to every chat in this workspace (and the subagents they spawn). Saved on the
+                workspace only — other workspaces keep the defaults. <code>@setup.Root</code>
+            </p>
+            <div class="settings-tabs agent-setup-tabs" role="tablist" aria-label="Agent setup sections">
+                <button type="button" id="agent-setup-tab-instructions" role="tab" aria-selected="@(_agentSetupTab == "instructions" ? "true" : "false")" aria-controls="agent-setup-panel" class="settings-tab @(_agentSetupTab == "instructions" ? "on" : "")" @onclick='() => _agentSetupTab = "instructions"'>Instructions</button>
+                <button type="button" id="agent-setup-tab-tools" role="tab" aria-selected="@(_agentSetupTab == "tools" ? "true" : "false")" aria-controls="agent-setup-panel" class="settings-tab @(_agentSetupTab == "tools" ? "on" : "")" @onclick='() => _agentSetupTab = "tools"'>Tools (@EnabledToolCount()/@_pickerTools.Count)</button>
+            </div>
+            <div id="agent-setup-panel" class="agent-setup-body" role="tabpanel" aria-labelledby="@($"agent-setup-tab-{_agentSetupTab}")">
+                @if (_agentSetupTab == "instructions")
+                {
+                    <label class="modal-field">
+                        <span>System instructions</span>
+                        <textarea rows="16" spellcheck="false" @bind="_agentSetupPrompt" @bind:event="oninput"></textarea>
+                    </label>
+                    <div class="agent-setup-row">
+                        <span class="agent-setup-hint">A fixed identity header — harness name, provider, model, and today’s date — always comes first; everything below it is yours to define. <code>{{provider}}</code>, <code>{{model}}</code>, <code>{{cwd}}</code>, <code>{{date}}</code> and <code>{{weekday}}</code> are filled in per request; anything else stays literal.</span>
+                        <button type="button" class="ghost" title="Restore the built-in instructions" @onclick="ResetAgentSetupPrompt">Reset to default</button>
+                    </div>
+                }
+                else
+                {
+                    <ToolGroupPicker Tools="_pickerTools" Enabled="_agentSetupEnabled" EnabledChanged="OnPickerChanged"
+                                     Hint="Groups switch their tools together — the tools in a group need each other, so pick the group unless you want one of them off. Everything on means “every tool”, including ones added later (MCP servers, plugins); anything less freezes exactly that list for this workspace." />
+                }
+            </div>
+            @if (_agentSetupError is { Length: > 0 })
+            {
+                <div class="form-error" role="alert">@_agentSetupError</div>
+            }
+            <div class="modal-actions">
+                <button class="ghost" @onclick="CloseAgentSetup">Cancel</button>
+                <button class="primary" @onclick="SaveAgentSetup">Save agent setup</button>
+            </div>
+        </div>
+    </div>
+}
+
 @if (_confirmDelete is { } doomed)
 {
-    <div class="modal-overlay" @onclick='() => _confirmDelete = null'>
-        <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Delete chat" @onclick:stopPropagation="true">
+    <div class="modal-overlay" @onmousedown="ArmOverlayClose" @onclick='() => OverlayClick(() => _confirmDelete = null)'>
+        <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Delete chat" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true">
             <div class="modal-head">
                 <h3>Delete chat?</h3>
                 <button class="icon modal-close" title="Cancel" @onclick='() => _confirmDelete = null'>✕</button>
@@ -304,6 +351,10 @@
     private bool _disposed;
     private Workspace? _renameWorkspace;
     private string _renameWorkspaceName = "";
+    private Workspace? _agentSetupWorkspace;
+    private string _agentSetupTab = "instructions";
+    private string _agentSetupPrompt = "";
+    private string? _agentSetupError;
     private Workspace? _confirmRemoveWorkspace;
     private WorkspaceDeletionPreview? _workspaceDeletePreview;
     private bool _workspaceDeleteBusy;
@@ -506,6 +557,75 @@
         Refresh();
     }
 
+    // ---- per-workspace agent setup (custom instructions + tool selection) ----
+
+    private IReadOnlyList<SessionFacade.ToolOption> _pickerTools = [];
+    /// <summary>The selection the picker shows: the workspace's own list, else the global default
+    /// from Settings → Capabilities, else null (every tool). null is what gets stored when the
+    /// user leaves it at the inherited default.</summary>
+    private IReadOnlyCollection<string>? _agentSetupEnabled;
+
+    private int EnabledToolCount() => _agentSetupEnabled?.Count ?? _pickerTools.Count;
+
+    private void AskAgentSetup(Workspace workspace)
+    {
+        _switcherOpen = false;
+        _agentSetupError = null;
+        _agentSetupTab = "instructions";
+        _agentSetupWorkspace = workspace;
+        _agentSetupPrompt = string.IsNullOrWhiteSpace(workspace.SystemPrompt)
+            ? Facade.DefaultSystemInstructions
+            : workspace.SystemPrompt;
+        _pickerTools = Facade.AvailableTools();
+        var inherited = workspace.EnabledTools ?? Facade.DefaultEnabledTools;
+        _agentSetupEnabled = inherited is null ? null : new HashSet<string>(inherited, StringComparer.Ordinal);
+    }
+
+    private void CloseAgentSetup() => _agentSetupWorkspace = null;
+
+    private void OnAgentSetupKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") CloseAgentSetup();
+    }
+
+    private void ResetAgentSetupPrompt() => _agentSetupPrompt = Facade.DefaultSystemInstructions;
+
+    private void OnPickerChanged(IReadOnlyCollection<string> enabled) => _agentSetupEnabled = enabled;
+
+    private void SaveAgentSetup()
+    {
+        if (_agentSetupWorkspace is not { } workspace) return;
+        _agentSetupError = null;
+        try
+        {
+            var prompt = OneLineNewlines(_agentSetupPrompt).Trim();
+            // Unmodified default text stores as "no override" so the harness default (a single
+            // source of truth) keeps evolving; only real edits freeze a custom instruction.
+            var isDefault = prompt.Length == 0 || string.Equals(prompt,
+                OneLineNewlines(Facade.DefaultSystemInstructions).Trim(), StringComparison.Ordinal);
+            // Store null when the selection is just what this workspace would inherit anyway
+            // (the global default, or "every tool"), so it keeps following that default instead
+            // of freezing a copy of it.
+            var tools = Facade.NormalizeToolSelection(_agentSetupEnabled);
+            var inherited = Facade.NormalizeToolSelection(Facade.DefaultEnabledTools);
+            var sameAsInherited = tools is null
+                ? inherited is null
+                : inherited is not null && tools.Count == inherited.Count && tools.All(inherited.Contains);
+            Facade.UpdateWorkspaceAgentConfig(workspace.Id, isDefault ? null : prompt, sameAsInherited ? null : tools);
+            _agentSetupWorkspace = null;
+            Refresh();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException)
+        {
+            _agentSetupError = ex.Message;
+        }
+    }
+
+    private static string OneLineNewlines(string text) => text.Replace("\r\n", "\n");
+
+    private static string OneLine(string text)
+        => string.Join(' ', OneLineNewlines(text).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
     private void NewChatInActive()
     {
         var workspace = CurrentWorkspace();
@@ -647,6 +767,20 @@
     private void OnModalKey(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
     {
         if (e.Key == "Escape") CloseAddWorkspace();
+    }
+
+    /// <summary>Backdrop-click disambiguation: the browser fires click on the common ancestor of
+    /// the mousedown/mouseup targets, so a text selection that starts inside the modal and ends
+    /// on the backdrop would otherwise close it. Only a press that began on the overlay itself
+    /// arms the close (modals stop mousedown propagation).</summary>
+    private bool _overlayPressed;
+
+    private void ArmOverlayClose() => _overlayPressed = true;
+
+    private void OverlayClick(Action close)
+    {
+        if (_overlayPressed) close();
+        _overlayPressed = false;
     }
 
     private void UseCurrentFolder()

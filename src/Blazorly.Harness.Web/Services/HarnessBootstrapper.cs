@@ -80,6 +80,13 @@ public sealed class HarnessSettings
     public bool EnableSchedule { get; set; } = true;
     public bool EnableMcp { get; set; } = true;
 
+    /// <summary>
+    /// Default tool allow-list for every workspace that has no selection of its own
+    /// (Settings → Capabilities). null means every registered tool, including ones added later;
+    /// a list means exactly those tools. A workspace's own ⚙ Agent setup selection wins.
+    /// </summary>
+    public List<string>? DefaultEnabledTools { get; set; }
+
     /// <summary>Third-party plugin directories (each *.dll with IHarnessPlugin impls loads);
     /// empty means &lt;home&gt;/plugins. Restart to pick up changes.</summary>
     public List<string> PluginDirs { get; set; } = [];
@@ -383,9 +390,12 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     public LlmRuntime Llm { get; private set; } = null!;
     public SandboxPolicy Sandbox { get; private set; } = null!;
     public WorkspaceRegistry Workspaces { get; private set; } = null!;
+    /// <summary>Applies per-workspace agent configuration (custom instructions + tool allow-list).</summary>
+    public WorkspaceAgentService? WorkspaceAgents { get; private set; }
     public HarnessSettings Settings { get; private set; } = new();
 
     private readonly Dictionary<string, IDisposable> _routeEffects = new(StringComparer.Ordinal);
+    private IDisposable? _workspaceAgentEvents;
     private ISessionPersistence? _ownedPersistence;
     private bool _disposed;
     private readonly string _home;
@@ -434,6 +444,11 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 
         ApplyProviderSelection();
         ApplyDefaultSelection();
+        // Per-workspace agent configuration (workspaces.json): the tool allow-list applies as
+        // agents publish, and the identity override reads custom instructions per prompt assembly.
+        WorkspaceAgents = new WorkspaceAgentService(this);
+        _workspaceAgentEvents = WorkspaceAgents.Attach();
+        Loop.IdentityOverride = ctx => WorkspaceAgents?.CustomInstructionsFor(ctx.Cwd ?? ctx.Agent?.Session.Header.Cwd);
         await ReattachPersistedSessionsAsync().ConfigureAwait(false);
     }
 
@@ -1245,6 +1260,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         }
         finally
         {
+            _workspaceAgentEvents?.Dispose();
+            _workspaceAgentEvents = null;
             if (Context is not null) await Context.DisposeAsync().ConfigureAwait(false);
             if (_ownedPersistence is { } persistence)
             {

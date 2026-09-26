@@ -1042,6 +1042,9 @@ button.link:hover { text-decoration: underline; }
 }
 
 .interaction-title { font-weight: 600; margin-bottom: 6px; }
+
+/* An ask whose wait already ended: muted and not actionable — the click went nowhere. */
+.interaction-card.expired { border-color: var(--border); background: transparent; color: var(--text-dim); font-size: 12.5px; padding: 10px 14px; }
 .interaction-body { color: var(--text-dim); margin-bottom: 10px; }
 .interaction-actions { display: flex; gap: 10px; }
 
@@ -1660,6 +1663,8 @@ button.danger:hover:not(:disabled) { background: var(--danger-soft); border-colo
 .settings-title h1 { font-size: 20px; margin: 0; }
 .settings-topbar .settings-actions { margin: 0; }
 .settings-note { color: var(--text-dim); font-size: 13px; margin: 12px 0 0; }
+.settings-block { margin: 14px 0; }
+.settings-block > .settings-block-title { display: block; font-size: 12.5px; color: var(--text-dim); margin-bottom: 6px; }
 .settings-note code {
     background: var(--bg-overlay);
     border: 1px solid var(--border);
@@ -2006,6 +2011,114 @@ button.chip:hover:not(:disabled) { border-color: var(--accent); color: var(--tex
 .confirm-modal { width: min(460px, 92vw); }
 .confirm-text { color: var(--text-dim); font-size: 13.5px; margin: 0 0 8px; }
 .modal-actions { display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end; }
+
+/* workspace agent setup modal (per-workspace instructions + tool selection).
+   Fixed-height flex column: only the tab body scrolls, so the action buttons
+   stay pinned no matter how tall the instructions or the tool list get. */
+.agent-setup-modal { width: min(880px, 96vw); display: flex; flex-direction: column; overflow: hidden; }
+.agent-setup-modal .modal-head,
+.agent-setup-modal .confirm-text,
+.agent-setup-modal .form-error,
+.agent-setup-modal .modal-actions { flex: none; }
+.agent-setup-tabs { margin: 4px 0 10px; flex: none; }
+.agent-setup-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.agent-setup-body .modal-field { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin: 4px 0 8px; }
+.agent-setup-body .modal-field span { flex: none; }
+.agent-setup-body textarea { flex: 1 1 auto; min-height: 180px; resize: none; }
+.agent-setup-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex: none; margin: 0 0 4px; }
+.agent-setup-hint { font-size: 11.5px; color: var(--text-faint); }
+.agent-setup-hint code { font-size: 11px; }
+.agent-setup-row .agent-setup-hint { flex: 1; }
+.agent-setup-row .ghost { flex: none; }
+/* Capability picker (workspace Agent setup + Settings → Capabilities): tools render as
+   plain-language families, each switching its tools as a unit, and only expand into individual
+   tools on request. Scoped under .tool-group-picker so the settings page's blanket
+   `.settings-form span/input` rules cannot restyle the rows. */
+.tool-group-picker { display: flex; flex-direction: column; min-height: 0; }
+.agent-setup-body > .tool-group-picker { flex: 1 1 auto; }
+.tool-group-picker .picker-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex: none; }
+.tool-group-picker .picker-count { margin-left: auto; font-size: 12px; color: var(--text-dim); }
+.tool-group-picker .picker-list {
+    flex: 1 1 auto;
+    min-height: 120px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px;
+    margin-bottom: 8px;
+}
+.tool-group-picker .picker-hint { flex: none; display: block; font-size: 11.5px; color: var(--text-dim); }
+.tool-group-picker .picker-hint code { font-size: 11px; }
+.tool-group-picker .tool-group { border-bottom: 1px solid var(--border); }
+.tool-group-picker .tool-group:last-child { border-bottom: none; }
+.tool-group-picker .tool-group-row { display: flex; align-items: flex-start; gap: 8px; padding: 7px 4px; }
+.tool-group-picker .tool-group-check {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin-top: 1px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    line-height: 18px;
+    cursor: pointer;
+}
+.tool-group-picker .tool-group-check:hover { border-color: var(--accent); }
+.tool-group-picker .tool-group-check.on { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+.tool-group-picker .tool-group-check.part { border-color: var(--accent); color: var(--accent); }
+.tool-group-picker .tool-group-head {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 2px 10px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.tool-group-picker .tool-group-name { grid-row: 1; grid-column: 1; display: block; margin: 0; font-weight: 600; font-size: 13px; color: var(--text); }
+.tool-group-picker .tool-group-count { grid-row: 1; grid-column: 2; display: block; margin: 0; font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
+.tool-group-picker .tool-group-caret { grid-row: 1; grid-column: 3; display: block; margin: 0; color: var(--text-faint); font-size: 11px; }
+.tool-group-picker .tool-group-hint { grid-row: 2; grid-column: 1 / -1; display: block; margin: 0; font-size: 11.5px; color: var(--text-dim); }
+.tool-group-picker .tool-group-body { display: flex; flex-direction: column; gap: 2px; padding: 0 0 8px 32px; }
+.tool-group-picker .picker-tool {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 4px 8px;
+    margin: 0;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.tool-group-picker .picker-tool:hover { background: var(--bg); }
+.tool-group-picker .picker-tool input,
+.tool-group-picker input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 0;
+}
+.tool-group-picker .picker-tool .tool-name { display: block; margin: 0; font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+.tool-group-picker .picker-tool .tool-desc {
+    display: block;
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 /* ============================= trajectory ============================= */
 .trajectory { padding: 12px 18px; }

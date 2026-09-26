@@ -1,3 +1,4 @@
+using System.Globalization;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Kernel;
 using Blazorly.Harness.Llm;
@@ -132,27 +133,52 @@ public sealed class AgentLoopService
 
     public int RetryLimit { get; set; } = 5;
 
-    /// <summary>Registers the harness identity section and the provider/model/cwd prompt variables.</summary>
+    /// <summary>
+    /// The static identity header: always rendered first, in every workspace, and never
+    /// user-editable — workspace-level configuration replaces only the instruction body
+    /// below it, and editors must not surface this line as configurable text. It also carries
+    /// today's date (<c>{{date}}</c> / <c>{{weekday}}</c>), which the model cannot know otherwise.
+    /// </summary>
+    public const string IdentityHeader =
+        "You are Blazorly Harness, an agentic coding assistant powered by {{provider}} ({{model}}).\n"
+        + "Today is {{weekday}}, {{date}} in this machine's local time zone.";
+
+    /// <summary>The built-in instruction body; fallback when no workspace override applies.
+    /// The text itself lives in <see cref="HarnessDefaultInstructions.Body"/>.</summary>
+    public const string DefaultIdentityBody = HarnessDefaultInstructions.Body;
+
+    /// <summary>
+    /// Optional replacement for the configurable instruction body below <see cref="IdentityHeader"/>
+    /// — the host's seam for workspace-level custom instructions. Null or empty falls back to
+    /// <see cref="DefaultIdentityBody"/>. The section interpolates leniently: registered variables
+    /// ({{provider}}, {{model}}, {{cwd}}, {{date}}, {{weekday}}, …) substitute in custom text too,
+    /// while an unknown {{placeholder}} stays literal instead of failing the request.
+    /// </summary>
+    public Func<SystemPrompt.SystemPromptContext, string?>? IdentityOverride { get; set; }
+
+    /// <summary>Registers the harness identity section and the prompt variables it interpolates
+    /// (provider, model, cwd, and today's date as seen by the server).</summary>
     public IDisposable RegisterDefaultPrompt()
     {
-        var identity = _systemPrompt.RegisterSection("harness:identity", -100, _ =>
-            """
-            You are Blazorly Harness, an agentic coding assistant powered by {{provider}} ({{model}}).
-
-            You complete tasks with tools: read files before editing them, run commands to verify
-            work, and keep going until the task is done. Report outcomes plainly; never claim work
-            you did not verify. Prefer one tool call at a time for mutations; parallel calls are
-            allowed for independent reads and searches.
-            """);
+        var identity = _systemPrompt.RegisterSection("harness:identity", -100,
+            ctx => IdentityHeader + "\n\n"
+                + (IdentityOverride?.Invoke(ctx) is { Length: > 0 } custom ? custom : DefaultIdentityBody),
+            lenient: true);
         var provider = _systemPrompt.RegisterVariable("provider", ctx => ctx.Agent?.Options.Provider ?? DefaultSelection.Provider);
         var model = _systemPrompt.RegisterVariable("model", ctx => ctx.Agent?.Options.Model ?? DefaultSelection.Model);
         var cwd = _systemPrompt.RegisterVariable("cwd", ctx => ctx.Cwd ?? "(unspecified)");
+        // Re-read per assembly, so a chat that runs past midnight sees the day roll over.
+        // Invariant culture: English day names and ISO dates regardless of the server locale.
+        var date = _systemPrompt.RegisterVariable("date", _ => DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        var weekday = _systemPrompt.RegisterVariable("weekday", _ => DateTime.Now.ToString("dddd", CultureInfo.InvariantCulture));
         return Disposable.Of(() =>
         {
             identity.Dispose();
             provider.Dispose();
             model.Dispose();
             cwd.Dispose();
+            date.Dispose();
+            weekday.Dispose();
         });
     }
 

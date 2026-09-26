@@ -1,0 +1,127 @@
+@*
+    Grouped capability picker: tools render as plain-language families (they need each other, so a
+    family switches as a unit) and only expand into individual tools on request. Used by the
+    per-workspace Agent setup modal and by Settings → Capabilities, which sets the default for
+    every workspace that has no selection of its own.
+*@
+<div class="tool-group-picker">
+    <div class="picker-toolbar">
+        <button type="button" class="chip" @onclick="() => SetAll(true)">Select all</button>
+        <button type="button" class="chip" @onclick="() => SetAll(false)">Select none</button>
+        <span class="picker-count">@_enabled.Count of @Tools.Count enabled</span>
+    </div>
+    <div class="picker-list">
+        @foreach (var group in Groups)
+        {
+            var family = group[0].Group;
+            var on = group.Count(t => _enabled.Contains(t.Name));
+            var open = _open.Contains(family.Id);
+            <div class="tool-group">
+                <div class="tool-group-row">
+                    <button type="button" class="tool-group-check @(on == 0 ? "off" : on == group.Count ? "on" : "part")"
+                            role="checkbox" aria-checked="@(on == 0 ? "false" : on == group.Count ? "true" : "mixed")"
+                            aria-label="@($"{family.Label}: {on} of {group.Count} on")"
+                            title="@(on == group.Count ? $"Turn all of {family.Label} off" : $"Turn all of {family.Label} on")"
+                            @onclick="() => SetGroup(family.Id, on != group.Count)">
+                        @(on == 0 ? "" : on == group.Count ? "✓" : "–")
+                    </button>
+                    <button type="button" class="tool-group-head" aria-expanded="@(open ? "true" : "false")"
+                            title="@(open ? "Hide the tools in this group" : "Show the tools in this group")"
+                            @onclick="() => ToggleOpen(family.Id)">
+                        <span class="tool-group-name">@family.Label</span>
+                        <span class="tool-group-count">@on of @group.Count</span>
+                        <span class="tool-group-caret" aria-hidden="true">@(open ? "▾" : "▸")</span>
+                        <span class="tool-group-hint">@family.Hint</span>
+                    </button>
+                </div>
+                @if (open)
+                {
+                    <div class="tool-group-body">
+                        @foreach (var tool in group)
+                        {
+                            <label class="picker-tool" title="@tool.Description">
+                                <input type="checkbox" checked="@_enabled.Contains(tool.Name)" @onchange="e => ToggleTool(tool.Name, e.Value is bool b && b)" />
+                                <span class="tool-name">@tool.Name</span>
+                                <span class="tool-desc">@tool.Description</span>
+                            </label>
+                        }
+                    </div>
+                }
+            </div>
+        }
+        @if (Tools.Count == 0)
+        {
+            <div class="browse-empty">no tools registered</div>
+        }
+    </div>
+    <span class="picker-hint">@Hint</span>
+</div>
+
+@code {
+    /// <summary>Every registered tool with its family; the rows are derived from this.</summary>
+    [Parameter] public IReadOnlyList<SessionFacade.ToolOption> Tools { get; set; } = [];
+
+    /// <summary>The selection to show: null means "every tool".</summary>
+    [Parameter] public IReadOnlyCollection<string>? Enabled { get; set; }
+
+    /// <summary>Raised with a copy of the new selection after every change (never null).</summary>
+    [Parameter] public EventCallback<IReadOnlyCollection<string>> EnabledChanged { get; set; }
+
+    [Parameter] public string Hint { get; set; } =
+        "Groups switch their tools together — the tools in a group need each other, so pick the group unless you want one of them off.";
+
+    private HashSet<string> _enabled = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _open = new(StringComparer.Ordinal);
+    private IReadOnlyCollection<string>? _seen;
+    private bool _seenSet;
+
+    protected override void OnParametersSet()
+    {
+        // Resync only when the caller hands us a different selection object (opening the modal,
+        // loading settings); re-rendering with the set we just emitted must not clobber clicks.
+        // The first render always syncs — null ("every tool") is a real value, not "unchanged".
+        if (_seenSet && ReferenceEquals(_seen, Enabled)) return;
+        _seenSet = true;
+        _seen = Enabled;
+        _enabled = Enabled is null
+            ? [.. Tools.Select(t => t.Name)]
+            : new HashSet<string>(Enabled, StringComparer.Ordinal);
+    }
+
+    private IEnumerable<List<SessionFacade.ToolOption>> Groups
+        => Tools
+            .GroupBy(t => t.Group.Id, StringComparer.Ordinal)
+            .OrderBy(g => g.First().Group.Order)
+            .ThenBy(g => g.First().Group.Label, StringComparer.Ordinal)
+            .Select(g => g.ToList());
+
+    private Task ToggleTool(string name, bool enabled)
+    {
+        if (enabled) _enabled.Add(name); else _enabled.Remove(name);
+        return Emit();
+    }
+
+    /// <summary>Switches a whole family: its tools only work together, so this is the unit a
+    /// non-technical user picks.</summary>
+    private Task SetGroup(string groupId, bool enabled)
+    {
+        foreach (var tool in Tools.Where(t => t.Group.Id == groupId))
+        {
+            if (enabled) _enabled.Add(tool.Name); else _enabled.Remove(tool.Name);
+        }
+        return Emit();
+    }
+
+    private Task SetAll(bool enabled)
+    {
+        _enabled = enabled ? [.. Tools.Select(t => t.Name)] : [];
+        return Emit();
+    }
+
+    private void ToggleOpen(string groupId)
+    {
+        if (!_open.Remove(groupId)) _open.Add(groupId);
+    }
+
+    private Task Emit() => EnabledChanged.InvokeAsync([.. _enabled]);
+}

@@ -63,7 +63,7 @@
     <tbody>
       <tr><td>Web tools</td><td><code>web_search</code> and <code>web_fetch</code>. Backend: DuckDuckGo (no key), Tavily, or Brave.</td></tr>
       <tr><td>Skills</td><td>Load skill instructions into a turn.</td></tr>
-      <tr><td>ask_user_question</td><td>The agent can pose multiple-choice questions. Delegated children answer themselves.</td></tr>
+      <tr><td>ask_user_question</td><td>The agent can pose multiple-choice questions and waits 15 minutes for your answer; if nobody answers in time the card disappears and the agent continues on its stated defaults. Delegated children answer themselves.</td></tr>
       <tr><td>Session-query</td><td>Search and trace the durable log.</td></tr>
       <tr><td>Plan mode / Auto plan</td><td>Plan before the first mutation; auto-plan can engage from System One.</td></tr>
       <tr><td>Persistent terminals</td><td>The session terminal drawer.</td></tr>
@@ -75,6 +75,7 @@
     </tbody>
   </table>
   <p>Web-search backend and System One endpoint changes apply after the app restarts. Probe the decision endpoint with <code>blazorly decisions probe</code>.</p>
+  <p>At the top of this tab sits the <strong>default tool set</strong>: the same grouped picker as ⚙ Agent setup, but for every workspace at once. Turn a family off here and agents in all workspaces lose it — live chats included, once you Save — unless a workspace picked its own set in ⚙ Agent setup, which always wins. “Select all” stores <em>no</em> restriction at all, so tools added later (MCP servers, plugins) join automatically; anything less freezes exactly that list. The table below is the coarser layer: those switches unregister a capability from the app entirely and apply after a restart.</p>
 
   <h2>Permissions &amp; sandbox</h2>
 </article>
@@ -94,6 +95,15 @@
     <li><code>read-only</code> — mutations denied.</li>
   </ul>
   <p>An already-open session does not jump when you Save here. Change that session from the lock chip on its header, or with <code>/permission workspace-write</code>. Optional: fail closed on macOS/Windows where Landlock does not exist, and an E2B remote sandbox if you want tools off this machine. E2B changes need a restart. More in <a href="/guides/permissions/">permissions and sandbox</a>.</p>
+
+  <h2>Per-workspace agent setup</h2>
+  <p>This Settings page is global. What the agent <em>is</em> in one project — its instructions and its tools — belongs to that workspace: open the workspace switcher in the sidebar and pick <strong>⚙ Agent setup</strong> on the workspace row. Two tabs:</p>
+  <ul>
+    <li><strong>Instructions</strong> — the built-in instructions are shown; replace them completely with what this project needs. The built-in default is a full engineering charter: mission and accountability, requirements analysis, codebase discovery, planning, architecture, code quality, error handling, testing, security, performance, data integrity, APIs, dependencies, root-cause analysis, change management, documentation, autonomy, delivery standards, and response format. The identity header above it — the harness name, provider, model, and today’s date — always stays and is not editable. Placeholders <code>{{provider}}</code>, <code>{{model}}</code>, <code>{{cwd}}</code>, <code>{{date}}</code> and <code>{{weekday}}</code> are filled in per request; anything else stays literal. “Reset to default” restores the built-in text, and saving text you did not change stores no override at all.</li>
+    <li><strong>Tools</strong> — which of the registered tools agents may use in this workspace, shown as capability families: files &amp; code, run commands, background jobs, plans/tasks/goals, reminders, helpers &amp; teammates, multi-step routines, web, past sessions, skills, ask-you-questions — plus one row per MCP add-on. A family switches its tools together, because they need each other (<code>job_list</code> without <code>job_output</code> is a half feature), and expands to individual tools when you want one of them off. Everything on means <em>every tool</em>, including ones added later (MCP servers, plugins); anything less freezes exactly that list, and disabled tools are hidden from the model and denied if it asks anyway.</li>
+  </ul>
+  <p>The configuration is saved on the workspace (in <code>workspaces.json</code>, never in global settings), applies to every chat in that folder — including the subagents they spawn and <code>blazorly run</code> from that directory — and live chats pick it up on their next request. Project files (<code>AGENTS.md</code> / <code>CLAUDE.md</code>) still layer on top as runtime context; this is the instruction underneath them.</p>
+  <p>The built-in default is deliberately heavy: about 5,500 tokens, sent with every request of every agent in every workspace that has not replaced it. Small context windows feel it. A workspace that wants a lean prompt should <em>replace</em> the body with a few lines of its own — that is the cheapest trim available, since the fixed header above it (name, provider, model, today’s date) is a handful of tokens and is never editable.</p>
 
   <h2>What this page is not</h2>
   <p>Settings does not start a chat. It does not pick the workspace — that is the sidebar “New chat” menu. It does not switch Chat vs Trajectory — those tabs live on the session header. See <a href="/guides/session-views/">session views and tabs</a>.</p>

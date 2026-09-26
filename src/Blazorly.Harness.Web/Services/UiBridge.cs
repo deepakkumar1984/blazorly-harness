@@ -84,7 +84,7 @@ public sealed class UiInteractions
         harness.Approval.SetAnswerer(async (request, ct) =>
         {
             var interaction = Park(request.Agent.Id, "approval", request.ToolName, request.Reason, null);
-            using var registration = ct.Register(() => interaction.Completion.TrySetResult("cancelled"));
+            using var registration = ct.Register(() => Abandon(interaction));
             var answer = await interaction.Completion.Task.ConfigureAwait(false);
             return answer switch
             {
@@ -97,7 +97,7 @@ public sealed class UiInteractions
         harness.UserQuestions.SetProvider(async (questions, ct) =>
         {
             var interaction = Park("(global)", "question", null, null, questions);
-            using var registration = ct.Register(() => interaction.Completion.TrySetResult("cancelled"));
+            using var registration = ct.Register(() => Abandon(interaction));
             var answers = await interaction.Completion.Task.ConfigureAwait(false);
             if (answers is null or "cancelled")
             {
@@ -127,8 +127,29 @@ public sealed class UiInteractions
     {
         if (!_pending.TryRemove(id, out var interaction)) return false;
         var resolved = interaction.Completion.TrySetResult(answer);
-        _ = _broker.PublishAsync(new UiEventBroker.Frame(interaction.SessionId,
-            new SessionEvent { Type = $"ui/{interaction.Kind}-resolved", Seq = -1, Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Data = System.Text.Json.JsonSerializer.SerializeToElement(new { id }) }));
+        PublishResolved(interaction);
         return resolved;
     }
+
+    /// <summary>
+    /// Drops a parked ask whose wait ended with no answer (tool timeout, or the turn was
+    /// cancelled). Leaving it pending keeps a dead card on screen that silently swallows whatever
+    /// the user clicks next, which reads as "my answer was ignored".
+    /// </summary>
+    private void Abandon(PendingInteraction interaction)
+    {
+        if (!_pending.TryRemove(interaction.Id, out _)) return; // answered first: nothing to drop
+        interaction.Completion.TrySetResult("cancelled");
+        PublishResolved(interaction);
+    }
+
+    private void PublishResolved(PendingInteraction interaction)
+        => _ = _broker.PublishAsync(new UiEventBroker.Frame(interaction.SessionId,
+            new SessionEvent
+            {
+                Type = $"ui/{interaction.Kind}-resolved",
+                Seq = -1,
+                Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Data = System.Text.Json.JsonSerializer.SerializeToElement(new { interaction.Id }),
+            }));
 }

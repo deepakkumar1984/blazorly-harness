@@ -69,7 +69,21 @@ public sealed class ToolRuntime
     private sealed class ToolLayer
     {
         public NamedEntries<ToolDefinition> Tools { get; } = new();
-        public List<CompiledRestriction> Restrictions { get; } = [];
+
+        // Copy-on-write: Restrict/undo swap the whole snapshot under the writer lock while
+        // View enumerates lock-free. Runtime allow-list changes (workspace tool config saved
+        // from the UI thread) race with driver threads computing schemas concurrently.
+        private readonly object _restrictionGate = new();
+        private volatile IReadOnlyList<CompiledRestriction> _restrictions = [];
+        public IReadOnlyList<CompiledRestriction> Restrictions => _restrictions;
+        public void AddRestriction(CompiledRestriction restriction)
+        {
+            lock (_restrictionGate) _restrictions = [.. _restrictions, restriction];
+        }
+        public void RemoveRestriction(CompiledRestriction restriction)
+        {
+            lock (_restrictionGate) _restrictions = [.. _restrictions.Where(r => !ReferenceEquals(r, restriction))];
+        }
     }
 
     private sealed record CompiledRestriction(IReadOnlySet<string>? Allow, IReadOnlySet<string>? Deny)
@@ -124,8 +138,12 @@ public sealed class ToolRuntime
     {
         var layer = _layers.ForCreate(scopeKey);
         var restriction = new CompiledRestriction(allow, deny);
-        layer.Restrictions.Add(restriction);
-        return Disposable.Of(() => layer.Restrictions.Remove(restriction));
+        layer.AddRestriction(restriction);
+        return Disposable.Of(() =>
+        {
+            layer.RemoveRestriction(restriction);
+            _layers.ReclaimIfEmpty(scopeKey, l => l.Tools.Items.Count == 0 && l.Restrictions.Count == 0);
+        });
     }
 
     public IDisposable AddGuard(ToolGuard guard)

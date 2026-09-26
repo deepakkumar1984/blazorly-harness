@@ -250,7 +250,7 @@ public static class UiHost
 
     app.MapGet("/api/workspace.list", (SessionFacade facade) => Results.Json(new
     {
-        workspaces = facade.Workspaces().Select(w => new { w.Id, w.Name, w.Root, w.Order }),
+        workspaces = facade.Workspaces().Select(w => new { w.Id, w.Name, w.Root, w.Order, w.SystemPrompt, w.EnabledTools }),
     }));
 
     app.MapPost("/api/workspace.add", async (HttpContext http, SessionFacade facade) =>

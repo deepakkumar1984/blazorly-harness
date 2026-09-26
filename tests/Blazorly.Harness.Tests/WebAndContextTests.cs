@@ -471,6 +471,9 @@ public class AskUserToolTests
 
         var args = JsonSerializer.SerializeToElement(AskPayload());
         Assert.Equal(ToolRuntime.Mode.Exclusive, harness.Tools.ExecutionMode("ask_user_question", args, null));
+        // The turn parks on a human, so the wait is fifteen minutes — a shorter one made the
+        // assistant continue on its own defaults while the question was still on screen.
+        Assert.True(harness.Tools.Get("ask_user_question", null)!.TimeoutMs >= 900_000);
 
         var result = await harness.Tools.Execute(WebAndContextKit.Input("ask_user_question", AskPayload(), agent));
         Assert.False(result.IsError);

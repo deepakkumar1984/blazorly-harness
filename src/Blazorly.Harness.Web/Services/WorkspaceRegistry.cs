@@ -5,6 +5,14 @@ namespace Blazorly.Harness.Web.Services;
 public sealed record Workspace(string Id, string Name, string Root, int Order)
 {
     public string Key => Id;
+
+    /// <summary>Custom agent instruction body for sessions in this workspace (rendered below
+    /// the static identity header); null/empty uses the harness default instructions.</summary>
+    public string? SystemPrompt { get; init; }
+
+    /// <summary>Tool allow-list for sessions in this workspace; null means every registered
+    /// tool (including ones registered later), a list means exactly those tools.</summary>
+    public List<string>? EnabledTools { get; init; }
 }
 
 /// <summary>
@@ -135,6 +143,32 @@ public sealed class WorkspaceRegistry
             _store.Workspaces.Remove(workspace);
             _store.Workspaces.Add(workspace with { Name = name.Trim() });
             Save();
+        }
+    }
+
+    /// <summary>
+    /// Saves the workspace's agent configuration: custom system instructions (null = harness
+    /// default) and the tool allow-list (null = every tool). Values are normalized so the
+    /// stored form is canonical: whitespace-only prompts become null, tool names are trimmed
+    /// and deduped.
+    /// </summary>
+    public Workspace UpdateAgentConfig(string id, string? systemPrompt, IReadOnlyList<string>? enabledTools)
+    {
+        lock (_gate)
+        {
+            var index = _store.Workspaces.FindIndex(w => w.Id == id);
+            if (index < 0) throw new InvalidOperationException("unknown workspace");
+            var prompt = string.IsNullOrWhiteSpace(systemPrompt) ? null : systemPrompt.Trim();
+            List<string>? tools = enabledTools is null
+                ? null
+                : [.. enabledTools
+                    .Where(t => !string.IsNullOrWhiteSpace(t))
+                    .Select(t => t.Trim())
+                    .Distinct(StringComparer.Ordinal)];
+            var updated = _store.Workspaces[index] with { SystemPrompt = prompt, EnabledTools = tools };
+            _store.Workspaces[index] = updated;
+            Save();
+            return updated;
         }
     }
 

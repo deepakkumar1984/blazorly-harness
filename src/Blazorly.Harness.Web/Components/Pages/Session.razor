@@ -517,6 +517,10 @@
                     </div>
                 </div>
             }
+            @if (_expiredInteractionNote is { Length: > 0 })
+            {
+                <div class="interaction-card expired">@_expiredInteractionNote</div>
+            }
         </div>
 
         @if (_agent is { Inbox.HasPending: true })
@@ -900,6 +904,9 @@
     private System.Timers.Timer? _coalesce;
     private PendingInteraction? _pendingApproval;
     private PendingInteraction? _pendingQuestion;
+    /// <summary>Shown when a click lands after the wait ended, so a dropped answer is visible
+    /// instead of looking delivered. Cleared by the next live interaction, a send, or a reload.</summary>
+    private string? _expiredInteractionNote;
     private bool _rawTrajectory;
     private int _rawPageIndex;
     private RawTrajectoryPage _rawEvents = new();
@@ -1130,6 +1137,7 @@
         _rawEvents = new RawTrajectoryPage();
         _pendingApproval = null;
         _pendingQuestion = null;
+        _expiredInteractionNote = null;
         _pendingFiles.Clear();
         if (savedDraft.Files is not null) _pendingFiles.AddRange(savedDraft.Files);
         _transcriptTake = TranscriptInitialTake;
@@ -1285,6 +1293,9 @@
             _pendingQuestion = question;
             _questionAnswers.Clear();
             _pendingChanged = true;
+            // A live interaction supersedes the note — but a disappearing one must not: that is the
+            // very change a late answer raced against.
+            if (approval is not null || question is not null) _expiredInteractionNote = null;
         }
     }
 
@@ -1330,6 +1341,7 @@
         if (_sessionLoading || _loadError is not null) return;
         var text = _draft.Trim();
         if (text.Length == 0 && _pendingFiles.Count == 0) return;
+        _expiredInteractionNote = null;
         if (text.StartsWith('/'))
         {
             _draft = "";
@@ -1352,6 +1364,7 @@
         if (_sessionLoading || _loadError is not null || !HasModelRoute) return;
         var text = _draft.Trim();
         if (text.Length == 0 && _pendingFiles.Count == 0) return;
+        _expiredInteractionNote = null;
         _draft = "";
         var ids = _pendingFiles.Select(f => f.Id).ToArray();
         _pendingFiles.Clear();
@@ -1973,9 +1986,12 @@
 
     private void Answer(string id, string answer)
     {
-        Interactions.TryAnswer(id, answer);
+        if (!Interactions.TryAnswer(id, answer)) NoteExpiredInteraction();
         _pendingChanged = true;
     }
+
+    private void NoteExpiredInteraction()
+        => _expiredInteractionNote = "That request expired before your answer landed — the assistant has already continued without it.";
 
     // ---- multi-question ask: answers draft locally and submit as one payload ---------------
     // ("id=text\u0001id=text…") so an N-question ask resolves atomically. Clicking an option
@@ -2022,7 +2038,7 @@
             .SelectMany(q => Selections(q).Select(value => $"{q.Id}={value}"))
             .ToList();
         if (parts.Count == 0) return;
-        Interactions.TryAnswer(pending.Id, string.Join('\u0001', parts));
+        if (!Interactions.TryAnswer(pending.Id, string.Join('\u0001', parts))) NoteExpiredInteraction();
         _questionAnswers.Clear();
         _pendingChanged = true;
     }

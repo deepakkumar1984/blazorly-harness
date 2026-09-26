@@ -33,7 +33,7 @@ public sealed class SystemPromptService
     public const string ServiceKey = "systemPrompt";
 
     private readonly HarnessContext _ctx;
-    private readonly List<(string Name, int Order, Func<SystemPromptContext, string> Text)> _sections = [];
+    private readonly List<(string Name, int Order, Func<SystemPromptContext, string> Text, bool Lenient)> _sections = [];
     private readonly List<(string Name, int Order, Func<SystemPromptContext, string> Text)> _contextSections = [];
     private readonly Dictionary<string, Func<SystemPromptContext, string>> _variables = new(StringComparer.Ordinal);
     private readonly List<Func<object?, IReadOnlyList<ToolSchema>>> _toolProviders = [];
@@ -47,9 +47,15 @@ public sealed class SystemPromptService
         return service;
     }
 
-    public IDisposable RegisterSection(string name, int order, Func<SystemPromptContext, string> text)
+    /// <summary>
+    /// Registers a system-prompt section. Lenient sections still interpolate registered
+    /// variables, but an unknown <c>{{name}}</c> stays literal instead of failing the request
+    /// with PROMPT_VARIABLE — the mode for sections carrying user-authored text (workspace-level
+    /// custom instructions).
+    /// </summary>
+    public IDisposable RegisterSection(string name, int order, Func<SystemPromptContext, string> text, bool lenient = false)
     {
-        _sections.Add((name, order, text));
+        _sections.Add((name, order, text, lenient));
         return Disposable.Of(() => _sections.RemoveAll(s => s.Name == name));
     }
 
@@ -76,7 +82,7 @@ public sealed class SystemPromptService
         var context = new SystemPromptContext(_ctx, agent, cwd);
         var variables = _variables.ToDictionary(kv => kv.Key, kv => kv.Value(context), StringComparer.Ordinal);
         var sections = _sections
-            .Select(s => new AssembledSection(s.Name, s.Order, Interpolate(s.Text(context), variables)))
+            .Select(s => new AssembledSection(s.Name, s.Order, Interpolate(s.Text(context), variables, s.Lenient)))
             .Where(s => s.Text.Length > 0)
             .OrderBy(s => s.Order)
             .ToList();
@@ -103,7 +109,12 @@ public sealed class SystemPromptService
     public static string RenderContextSections(PromptAssembly assembly)
         => string.Join("\n\n", assembly.ContextSections.Select(s => s.Text));
 
-    private static string Interpolate(string template, IReadOnlyDictionary<string, string> variables)
+    /// <summary>
+    /// Substitutes <c>{{name}}</c> from the variable map. Strict mode (plugin-authored
+    /// templates) fails fast on an unknown name; lenient mode (user-authored text) copies the
+    /// placeholder through verbatim so a stray <c>{{...}}</c> can never break a request.
+    /// </summary>
+    private static string Interpolate(string template, IReadOnlyDictionary<string, string> variables, bool lenient = false)
     {
         if (string.IsNullOrEmpty(template)) return string.Empty;
         var result = new StringBuilder();
@@ -125,8 +136,15 @@ public sealed class SystemPromptService
             result.Append(template[i..open]);
             var name = template[(open + 2)..close].Trim();
             if (!variables.TryGetValue(name, out var value))
-                throw new Kernel.HarnessException("PROMPT_VARIABLE", $"unknown prompt variable '{name}'");
-            result.Append(value);
+            {
+                if (!lenient)
+                    throw new Kernel.HarnessException("PROMPT_VARIABLE", $"unknown prompt variable '{name}'");
+                result.Append(template[open..(close + 2)]);
+            }
+            else
+            {
+                result.Append(value);
+            }
             i = close + 2;
         }
         return result.ToString();

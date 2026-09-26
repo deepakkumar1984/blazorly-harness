@@ -154,6 +154,12 @@
                 break;
 
             case "capabilities":
+                <div class="settings-block">
+                    <span class="settings-block-title">Default tools for every workspace</span>
+                    <ToolGroupPicker Tools="_pickerTools" Enabled="_defaultTools" EnabledChanged="OnDefaultToolsChanged"
+                                     Hint="What agents may use in workspaces that have no ⚙ Agent setup selection of their own — a workspace's own choice always wins over this. Everything on means “every tool”, including ones added later (MCP servers, plugins); anything less is exactly that list." />
+                    <p class="settings-note">Applies to live chats when you Save. The switches below unregister a capability from the app entirely and apply after a restart.</p>
+                </div>
                 <label>
                     <span>Capabilities</span>
                     <div class="settings-toggles">
@@ -581,6 +587,8 @@
         }
     }
     private string _lastProvider = "";
+    private IReadOnlyList<SessionFacade.ToolOption> _pickerTools = [];
+    private IReadOnlyCollection<string>? _defaultTools;
     private IReadOnlyList<Blazorly.Harness.Llm.LlmModelInfo> _models = [];
     private ProviderModalState? _providerModal;
     private bool _isNewProvider;
@@ -590,7 +598,17 @@
     {
         _settings = Facade.Harness.Settings;
         _lastProvider = _settings.Provider;
+        _pickerTools = Facade.AvailableTools();
+        _defaultTools = _settings.DefaultEnabledTools;
         RefreshModels();
+    }
+
+    /// <summary>The picker owns the working selection; the stored form is normalized on change so
+    /// "everything on" persists as null (every tool, including ones added later).</summary>
+    private void OnDefaultToolsChanged(IReadOnlyCollection<string> enabled)
+    {
+        _defaultTools = enabled;
+        _settings.DefaultEnabledTools = Facade.NormalizeToolSelection(enabled);
     }
 
     protected override void OnParametersSet()
@@ -1299,6 +1317,8 @@
         Facade.Harness.ApplyProviderSelection();
         Facade.Harness.ApplyDefaultSelection();
         Facade.Harness.SaveSettings();
+        // A changed default tool selection must reach chats that are already open.
+        Facade.Harness.WorkspaceAgents?.RefreshAll();
         Navigation.NavigateTo("/");
     }
 }

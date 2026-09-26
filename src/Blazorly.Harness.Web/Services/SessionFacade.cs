@@ -25,6 +25,46 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     public Workspace? WorkspaceOf(Core.Sessions.Session session)
         => harness.Workspaces.ForRoot(session.Header.Cwd ?? "");
 
+    // ---- workspace agent config (per-workspace instructions + tools; never global) ----
+
+    /// <summary>The default for the editable instruction body (the static identity header that
+    /// always precedes it is not configurable and never shown in the editor).</summary>
+    public string DefaultSystemInstructions => AgentLoopService.DefaultIdentityBody;
+
+    /// <summary>One row of the workspace tool picker: the tool plus the family it is shown under.</summary>
+    public sealed record ToolOption(string Name, string Description, Core.Tools.ToolGroup Group);
+
+    /// <summary>Every globally registered tool, grouped into capability families for the picker —
+    /// tools that only work together (job_list / job_output / job_kill) share one row.</summary>
+    public IReadOnlyList<ToolOption> AvailableTools()
+        => [.. harness.Tools.Schemas().Select(s => new ToolOption(s.Name, s.Description, Core.Tools.ToolGroups.Of(s.Name)))];
+
+    /// <summary>The global default tool selection (Settings → Capabilities); null = every tool.</summary>
+    public IReadOnlyCollection<string>? DefaultEnabledTools => harness.Settings.DefaultEnabledTools;
+
+    /// <summary>null when the selection covers every registered tool ("every tool, including ones
+    /// added later"); otherwise exactly these names.</summary>
+    public List<string>? NormalizeToolSelection(IReadOnlyCollection<string>? selected)
+        => selected is null || selected.Count >= AvailableTools().Count ? null : [.. selected];
+
+    /// <summary>Saves the global default tool selection and re-applies it to live agents, so open
+    /// chats pick it up on their next request.</summary>
+    public void UpdateDefaultToolSelection(IReadOnlyCollection<string>? selected)
+    {
+        harness.Settings.DefaultEnabledTools = NormalizeToolSelection(selected);
+        harness.SaveSettings();
+        harness.WorkspaceAgents?.RefreshAll();
+    }
+
+    /// <summary>Saves a workspace's agent configuration and re-applies it to live agents, so
+    /// running chats pick it up on their next request.</summary>
+    public Workspace UpdateWorkspaceAgentConfig(string workspaceId, string? systemPrompt, IReadOnlyList<string>? enabledTools)
+    {
+        var updated = harness.Workspaces.UpdateAgentConfig(workspaceId, systemPrompt, enabledTools);
+        harness.WorkspaceAgents?.RefreshAll();
+        return updated;
+    }
+
     /// <summary>Server user profile folder — the "home" quick link in the folder browser.</summary>
     public string HomeDirectory => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
@@ -45,7 +85,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
             ?? throw new InvalidOperationException($"unknown workspace '{workspaceId}'");
         harness.Workspaces.ThrowIfDeleting(workspace.Root);
         var session = harness.Sessions.Create(meta: new SessionMeta(Cwd: workspace.Root));
-        AttachAgent(session, workspace);
+        AttachAgent(session);
         return session;
     }
 
@@ -58,7 +98,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
             return existing;
         }
         var session = await harness.Sessions.OpenAsync(id);
-        AttachAgent(session, WorkspaceOf(session));
+        AttachAgent(session);
         await ReconcileDelegationsAsync(session.Id).ConfigureAwait(false);
         return session;
     }
@@ -85,11 +125,11 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
     public Agent EnsureAgent(Core.Sessions.Session session)
     {
         var agent = harness.Agents.Get(session.Id);
-        if (agent is null) AttachAgent(session, WorkspaceOf(session));
+        if (agent is null) AttachAgent(session);
         return harness.Agents.Get(session.Id)!;
     }
 
-    private void AttachAgent(Core.Sessions.Session session, Workspace? workspace)
+    private void AttachAgent(Core.Sessions.Session session)
     {
         // The agent's model selection: deployment default, with a per-session override stamped
         // at creation when the session carries a durable header mismatch.
@@ -115,7 +155,6 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         harness.Agents.Publish(agent);
         _ = harness.Context.Events.EmitAsync("agent/session-start", new SessionStartEvent(agent, "startup"), agent);
         session.Subscribe(e => _ = broker.PublishAsync(new UiEventBroker.Frame(session.Id, e)));
-        _ = workspace;
     }
 
     /// <summary>Uploads any file to the attachment store and returns its id, classified kind,

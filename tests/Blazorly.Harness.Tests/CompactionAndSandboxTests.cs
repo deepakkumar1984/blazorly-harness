@@ -27,6 +27,9 @@ public class CompactionTests
                 ? Scripted.Text("SUMMARY: the task is underway.")
                 : Scripted.Text("ok");
         });
+        // The window and trigger below are sized against the prompt header, so pin it: the built-in
+        // instructions body is far larger than this test window and moves with the product.
+        harness.UseMinimalIdentity();
         var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions
         {
             ContextWindowTokens = 8_192,

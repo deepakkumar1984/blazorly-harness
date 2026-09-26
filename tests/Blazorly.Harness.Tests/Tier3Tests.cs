@@ -216,7 +216,9 @@ public class CompactionPrunerTests
             llmCalls++;
             return Scripted.Text("should not be needed");
         });
-        // trigger ~2211 tokens: header (~1364) + bulk (~1250) + fill crosses it; pruning the bulk clears it.
+        // Pin the header, then: trigger ~2211 tokens = header (~1340) + bulk (~1250) + fill crosses
+        // it; pruning the bulk clears it.
+        harness.UseMinimalIdentity();
         var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions
         {
             ContextWindowTokens = 8_192,
@@ -418,6 +420,34 @@ public class UserQuestionsTests : BootstrapperTestBase
             Assert.Equal(("q2", "large"), (answers[1].Id, answers[1].Text));
             Assert.Equal(("q2", "compact"), (answers[2].Id, answers[2].Text));
             Assert.Empty(interactions.Pending);
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
+    /// <summary>A wait that ends with no answer (tool timeout, stop) must drop the parked card:
+    /// leaving it up keeps a dead question on screen whose click is silently discarded, which is
+    /// how "I answered but it used the defaults anyway" happens.</summary>
+    [Fact]
+    public async Task ExpiredAsk_DropsTheCard_AndRefusesTheLateAnswer()
+    {
+        var boot = new HarnessBootstrapper();
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var interactions = new UiInteractions(new UiEventBroker());
+            interactions.Mount(boot);
+            using var cts = new CancellationTokenSource();
+            var ask = boot.UserQuestions.AskAsync([new Core.AskQuestion("q1", "Scope?")], cts.Token);
+            var pending = Assert.Single(interactions.Pending, p => p.Kind == "question");
+
+            cts.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask);
+            Assert.Empty(interactions.Pending);
+            Assert.False(interactions.TryAnswer(pending.Id, "q1=all three surfaces"));
         }
         finally
         {

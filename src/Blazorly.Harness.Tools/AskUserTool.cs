@@ -80,7 +80,10 @@ public sealed class AskUserTool(HarnessContext ctx) : ToolDefinition<AskUserArgs
         },
         required: ["answers"]);
 
-    public override int? TimeoutMs => 600_000;
+    /// <summary>Fifteen minutes: the turn parks here while a human walks over to the keyboard.
+    /// A shorter wait made the assistant continue on its own defaults while the question card was
+    /// still on screen, so the answer that did arrive was dropped.</summary>
+    public override int? TimeoutMs => 900_000;
 
     protected override async Task<AskUserOutput> ExecuteTyped(AskUserArgs args, ToolRunContext exec)
     {
