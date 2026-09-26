@@ -53,7 +53,7 @@ public sealed class PlanModeService
 
 public sealed record ExitPlanModeArgs(string Plan);
 
-public sealed record ExitPlanModeOutput(bool Approved, bool PlanModeActive);
+public sealed record ExitPlanModeOutput(bool Approved, bool PlanModeActive, bool? SelfApproved = null);
 
 /// <summary>
 /// exit_plan_mode: presents the complete plan for approval while plan mode is active. Approval
@@ -79,6 +79,7 @@ public sealed class ExitPlanModeTool(PlanModeService planMode) : ToolDefinition<
         {
             ["approved"] = JsonSchema.Boolean(),
             ["planModeActive"] = JsonSchema.Boolean(),
+            ["selfApproved"] = JsonSchema.Boolean("True when a delegated child proceeded without a human review."),
         },
         required: ["approved", "planModeActive"]);
 
@@ -88,6 +89,14 @@ public sealed class ExitPlanModeTool(PlanModeService planMode) : ToolDefinition<
         if (!planMode.IsActive(exec.Session))
             throw new ToolException("NOT_IN_PLAN_MODE", "plan mode is not active; investigate and present a plan only after plan mode is turned on");
 
+        // Delegated children have no human in front of them (ask_user_question says as much), so a
+        // blocking plan review would hang the delegation invisibly. Children proceed on their own.
+        if (exec.Session.Header.ParentSession is not null)
+        {
+            planMode.SetActive(exec.Session, false);
+            return new ExitPlanModeOutput(Approved: true, PlanModeActive: false, SelfApproved: true);
+        }
+
         var questions = exec.Agent.Ctx.TryGet<UserQuestionsService>(UserQuestionsService.ServiceKey)
             ?? throw new ToolException("NO_USER_QUESTIONS_PROVIDER", "no user-questions service is mounted; the plan cannot be reviewed");
         var question = new AskQuestion(
@@ -95,10 +104,13 @@ public sealed class ExitPlanModeTool(PlanModeService planMode) : ToolDefinition<
             Question: "Approve this plan?",
             Header: "Plan review",
             Options: [new AskOption("Approve and proceed (Recommended)"), new AskOption("Keep planning")]);
+        // The plan itself rides along: a yes/no card with no plan on it asks the user to approve
+        // something they cannot see.
+        var request = new AskRequest([question], new AskOrigin(exec.Agent.Id), new AskDocument("Plan", args.Plan));
         IReadOnlyList<AskAnswer> answers;
         try
         {
-            answers = await questions.AskAsync([question], exec.Signal).ConfigureAwait(false);
+            answers = await questions.AskAsync(request, exec.Signal).ConfigureAwait(false);
         }
         catch (HarnessException ex)
         {
@@ -113,9 +125,11 @@ public sealed class ExitPlanModeTool(PlanModeService planMode) : ToolDefinition<
     }
 
     protected override IReadOnlyList<ContentBlock> RenderTyped(ExitPlanModeArgs args, ExitPlanModeOutput value)
-        => value.Approved
-            ? [new TextBlock("Plan approved. Proceed with the plan.")]
-            : [new TextBlock("The user wants to keep planning; revise the plan and present again.")];
+        => value.SelfApproved == true
+            ? [new TextBlock("Delegated child session: proceeding without human plan review; plan mode released.")]
+            : value.Approved
+                ? [new TextBlock("Plan approved. Proceed with the plan.")]
+                : [new TextBlock("The user wants to keep planning; revise the plan and present again.")];
 
     protected override ToolCallView? PresentCallTyped(ExitPlanModeArgs args) => new()
     {

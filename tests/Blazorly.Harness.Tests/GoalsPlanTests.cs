@@ -196,9 +196,9 @@ public class PlanModeTests
         await using var harness = TestHarness.Create();
         var questions = UserQuestionsService.Mount(harness.Ctx);
         AskQuestion? asked = null;
-        questions.SetProvider((list, ct) =>
+        questions.SetProvider((request, ct) =>
         {
-            asked = list.Single();
+            asked = request.Questions.Single();
             return Task.FromResult<IReadOnlyList<AskAnswer>>([new AskAnswer("plan", "Approve and proceed")]);
         });
         new PlanModePlugin().Apply(harness.Ctx);
@@ -226,6 +226,66 @@ public class PlanModeTests
             var write = await harness.Tools.Execute(Input(agent, "write", new { file_path = "after-approval.txt", content = "unlocked" }));
             Assert.False(write.IsError);
             Assert.True(File.Exists(Path.Combine(dir, "after-approval.txt")));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExitPlanMode_CarriesThePlan_AndAskingSession_ToTheReviewer()
+    {
+        await using var harness = TestHarness.Create();
+        var questions = UserQuestionsService.Mount(harness.Ctx);
+        AskRequest? seen = null;
+        questions.SetProvider((request, ct) =>
+        {
+            seen = request;
+            return Task.FromResult<IReadOnlyList<AskAnswer>>([new AskAnswer("plan", "Keep planning")]);
+        });
+        new PlanModePlugin().Apply(harness.Ctx);
+        var agent = harness.CreateAgent();
+        PlanModeService.Toggle(agent.Session, true);
+        var plan = "# Migrate the cache\n\n## Step one\n\nRead the old keys.\n";
+
+        var result = await harness.Tools.Execute(Input(agent, "exit_plan_mode", new { plan }));
+
+        Assert.False(result.IsError);
+        Assert.NotNull(seen);
+        // A yes/no card with no plan on it asks the user to approve something they cannot see,
+        // and an ask without a session pops up in every open chat.
+        Assert.Equal(agent.Id, seen!.Origin.SessionId);
+        Assert.NotNull(seen.Document);
+        Assert.Equal("Plan", seen.Document!.Title);
+        Assert.Equal(plan, seen.Document.Markdown);
+    }
+
+    [Fact]
+    public async Task ExitPlanMode_DelegatedChild_ProceedsWithoutAsking()
+    {
+        await using var harness = TestHarness.Create();
+        var questions = UserQuestionsService.Mount(harness.Ctx);
+        var asked = false;
+        questions.SetProvider((request, ct) =>
+        {
+            asked = true;
+            return Task.FromResult<IReadOnlyList<AskAnswer>>([new AskAnswer("plan", "Approve and proceed")]);
+        });
+        new PlanModePlugin().Apply(harness.Ctx);
+        var dir = TempDir();
+        try
+        {
+            // Children have no human in front of them; a blocking review would hang the delegation.
+            var agent = harness.CreateAgent(dir, meta: new SessionMeta(dir, ParentSession: "lead-session"));
+            PlanModeService.Toggle(agent.Session, true);
+
+            var result = await harness.Tools.Execute(Input(agent, "exit_plan_mode", new { plan = "# Child plan" }));
+
+            Assert.False(result.IsError);
+            Assert.False(asked);
+            Assert.Contains("Delegated child session", Assert.IsType<TextBlock>(result.Content.Single()).Text);
+            Assert.False(harness.Ctx.Get<PlanModeService>("planMode").IsActive(agent.Session));
         }
         finally
         {

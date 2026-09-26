@@ -27,6 +27,7 @@
   <h2>Chat</h2>
   <p>Default view. User messages, assistant text, and tool cards (read / edit / bash / …) with a done or running badge. The composer at the bottom is bound to this session’s workspace — the cwd chip on the left is that folder. Stop cancels the in-flight turn; the cards close, partial text stays. That contract is in <a href="/guides/durable-sessions/">durable sessions</a>.</p>
   <p>If the agent wrote todos, a task list can dock on the right. If it spawned workers, the Agents panel docks there too — children do not open extra sidebar rows. See <a href="/guides/multi-agent/">multi-agent</a>.</p>
+  <p>When the agent needs you, a card docks above the composer: an approval (allow / reject) or a question (options or free text, submitted together). Each card belongs to <em>its</em> session — a question asked in one chat never appears in another. A plan review carries the plan itself: the card shows its size and first lines, and <strong>Read the full plan</strong> opens a reading surface with a section outline on the left and the approve / keep-planning decision pinned at the bottom, so you decide with the document in front of you rather than beside a yes/no prompt.</p>
 
   <h2>Trajectory</h2>
   <p>Flip the tab when you care about <em>order and cost</em>, not prose. Each turn is a card: status (<code>completed</code>, <code>running</code>, <code>aborted</code>, <code>error</code>), wall time, then a row per event. That is the same append-only log the crash-repair path reads.</p>

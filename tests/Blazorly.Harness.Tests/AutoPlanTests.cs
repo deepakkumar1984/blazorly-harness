@@ -196,7 +196,7 @@ public class AutoPlanE2eTests
             };
         });
         var questions = UserQuestionsService.Mount(harness.Ctx);
-        questions.SetProvider((list, ct) =>
+        questions.SetProvider((request, ct) =>
             Task.FromResult<IReadOnlyList<AskAnswer>>([new AskAnswer("plan", "Approve and proceed")]));
         new PlanModePlugin().Apply(harness.Ctx);
         new AutoPlanPlugin().Apply(harness.Ctx);

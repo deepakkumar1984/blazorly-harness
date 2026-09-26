@@ -41,8 +41,8 @@ public sealed class TestHarness : IAsyncDisposable
         return harness;
     }
 
-    public Agent CreateAgent(string? cwd = null, AgentOptions? options = null)
-        => Loop.Create(new SessionMeta(cwd ?? Directory.GetCurrentDirectory()), options);
+    public Agent CreateAgent(string? cwd = null, AgentOptions? options = null, SessionMeta? meta = null)
+        => Loop.Create(meta ?? new SessionMeta(cwd ?? Directory.GetCurrentDirectory()), options);
 
     /// <summary>Pins the instruction body to a few tokens. Tests that calibrate token pressure
     /// against a deliberately tiny context window need a predictable prompt header; the built-in

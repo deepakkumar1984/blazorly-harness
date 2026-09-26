@@ -427,6 +427,40 @@ public class UserQuestionsTests : BootstrapperTestBase
         }
     }
 
+    /// <summary>An ask carries its asking session and any attached document all the way to the
+    /// parked card: session scoping keeps one chat's question out of every other open chat, and
+    /// the document is what makes an approve/decline card decidable at all.</summary>
+    [Fact]
+    public async Task Ask_CarriesSessionAndDocument_ToTheParkedCard()
+    {
+        var boot = new HarnessBootstrapper();
+        await boot.StartAsync(CancellationToken.None);
+        try
+        {
+            var interactions = new UiInteractions(new UiEventBroker());
+            interactions.Mount(boot);
+            using var cts = new CancellationTokenSource();
+            var ask = boot.UserQuestions.AskAsync(
+                new Core.AskRequest([new Core.AskQuestion("q1", "Scope?")],
+                    new Core.AskOrigin("session-A"),
+                    new Core.AskDocument("Plan", "# The plan\n\n## Step one\n")),
+                cts.Token);
+
+            var pending = Assert.Single(interactions.Pending, p => p.Kind == "question");
+            Assert.Equal("session-A", pending.SessionId);
+            Assert.NotNull(pending.Document);
+            Assert.Equal("Plan", pending.Document!.Title);
+            Assert.Equal("# The plan\n\n## Step one\n", pending.Document.Markdown);
+
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ask);
+        }
+        finally
+        {
+            await boot.DisposeAsync();
+        }
+    }
+
     /// <summary>A wait that ends with no answer (tool timeout, stop) must drop the parked card:
     /// leaving it up keeps a dead question on screen whose click is silently discarded, which is
     /// how "I answered but it used the defaults anyway" happens.</summary>

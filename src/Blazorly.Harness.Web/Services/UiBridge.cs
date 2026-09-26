@@ -63,7 +63,8 @@ public sealed record PendingInteraction(
     string? ToolName,
     string? Reason,
     IReadOnlyList<AskQuestion>? Questions,
-    TaskCompletionSource<string> Completion);
+    TaskCompletionSource<string> Completion,
+    AskDocument? Document = null);
 
 /// <summary>
 /// Bridges the approval and user-questions seams to the UI: asks park here with a
@@ -94,9 +95,9 @@ public sealed class UiInteractions
             };
         });
 
-        harness.UserQuestions.SetProvider(async (questions, ct) =>
+        harness.UserQuestions.SetProvider(async (request, ct) =>
         {
-            var interaction = Park("(global)", "question", null, null, questions);
+            var interaction = Park(request.Origin.SessionId, "question", null, null, request.Questions, request.Document);
             using var registration = ct.Register(() => Abandon(interaction));
             var answers = await interaction.Completion.Task.ConfigureAwait(false);
             if (answers is null or "cancelled")
@@ -111,12 +112,13 @@ public sealed class UiInteractions
         });
     }
 
-    private PendingInteraction Park(string sessionId, string kind, string? toolName, string? reason, IReadOnlyList<AskQuestion>? questions)
+    private PendingInteraction Park(string sessionId, string kind, string? toolName, string? reason, IReadOnlyList<AskQuestion>? questions, AskDocument? document = null)
     {
         var id = $"ask_{Interlocked.Increment(ref _counter)}";
         var interaction = new PendingInteraction(
             id, sessionId, kind, toolName, reason, questions,
-            new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously));
+            new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously),
+            document);
         _pending[id] = interaction;
         _ = _broker.PublishAsync(new UiEventBroker.Frame(sessionId,
             new SessionEvent { Type = $"ui/{kind}-requested", Seq = -1, Time = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Data = System.Text.Json.JsonSerializer.SerializeToElement(new { id }) }));

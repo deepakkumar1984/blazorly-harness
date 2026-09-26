@@ -561,5 +561,22 @@ window.blazorly = {
             const s = this._s;
             return { open: !!(s && s.open && s.matches.length > 0) };
         }
+    },
+    planReview: {
+        // Jump to a heading inside the review's scroll box. Matched by text, not index:
+        // markdown can express a heading two ways (atx/setext) and only the renderer
+        // knows which one became an <hN>.
+        scrollToHeading: function (text) {
+            const body = document.getElementById("plan-review-body");
+            if (!body || !text) return;
+            const want = String(text).trim().toLowerCase();
+            let target = null;
+            for (const h of body.querySelectorAll("h1, h2, h3, h4")) {
+                const got = (h.textContent || "").trim().toLowerCase();
+                if (got === want) { target = h; break; }
+                if (!target && got.startsWith(want)) target = h;
+            }
+            if (target) target.scrollIntoView({ block: "start", behavior: "smooth" });
+        }
     }
 };

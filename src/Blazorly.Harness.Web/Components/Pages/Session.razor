@@ -471,6 +471,17 @@
                             <span class="ask-progress">@AnsweredCount(questions) of @questions.Count answered</span>
                         }
                     </div>
+                    @if (_pendingQuestion.Document is { } askDoc)
+                    {
+                        <div class="ask-document">
+                            <div class="ask-document-head">
+                                <span class="ask-document-title">@askDoc.Title attached</span>
+                                <span class="ask-document-size">@askDoc.Markdown.Length chars</span>
+                                <button class="ghost" @onclick="OpenPlanReview">Read the full @askDoc.Title.ToLowerInvariant()</button>
+                            </div>
+                            <div class="ask-document-preview">@PreviewOf(askDoc.Markdown)</div>
+                        </div>
+                    }
                     <div class="ask-body">
                         @{ var number = 0; }
                         @foreach (var question in questions)
@@ -522,6 +533,43 @@
                 <div class="interaction-card expired">@_expiredInteractionNote</div>
             }
         </div>
+
+        @if (_pendingQuestion is { Document: { } reviewDoc } && PlanReviewQuestion is { } reviewQuestion)
+        {
+            <div class="modal-overlay plan-review-overlay">
+                <div class="modal plan-review" role="dialog" aria-modal="true" aria-label="@(reviewDoc.Title) review">
+                    <div class="modal-head plan-review-head">
+                        <div>
+                            <div class="plan-review-title">@reviewDoc.Title review</div>
+                            <div class="plan-review-meta">@reviewDoc.Markdown.Length chars · @_planOutline.Count sections</div>
+                        </div>
+                        <button class="ghost" @onclick="ClosePlanReview">Close</button>
+                    </div>
+                    <div class="plan-review-body">
+                        @if (_planOutline.Count > 1)
+                        {
+                            <nav class="plan-review-outline" aria-label="Plan sections">
+                                @foreach (var heading in _planOutline)
+                                {
+                                    <button class="outline-item outline-level-@heading.Level" @onclick="() => ScrollToHeading(heading.Text)">@heading.Text</button>
+                                }
+                            </nav>
+                        }
+                        <article id="plan-review-body" class="markdown">@((MarkupString)Markdown.ToHtml(reviewDoc.Markdown))</article>
+                    </div>
+                    <div class="modal-actions plan-review-foot">
+                        <span class="ask-hint">Decide here or in the question card</span>
+                        @{ var firstOption = true; }
+                        @foreach (var option in reviewQuestion.Options ?? [])
+                        {
+                            <button class="@(firstOption ? "primary" : "ghost")"
+                                    @onclick="() => DecidePlan(reviewQuestion, option.Label)">@option.Label</button>
+                            firstOption = false;
+                        }
+                    </div>
+                </div>
+            </div>
+        }
 
         @if (_agent is { Inbox.HasPending: true })
         {
@@ -1286,11 +1334,14 @@
     private void RefreshPending()
     {
         var approval = Interactions.Pending.FirstOrDefault(p => p.Kind == "approval" && p.SessionId == SessionId);
-        var question = Interactions.Pending.FirstOrDefault(p => p.Kind == "question");
+        // Questions carry their asking session too: an ask from one chat must never pop up in
+        // another, where clicking it would answer a conversation the user is not having.
+        var question = Interactions.Pending.FirstOrDefault(p => p.Kind == "question" && p.SessionId == SessionId);
         if (!ReferenceEquals(approval, _pendingApproval) || !ReferenceEquals(question, _pendingQuestion))
         {
             _pendingApproval = approval;
             _pendingQuestion = question;
+            if (question is null) _planReviewOpen = false;
             _questionAnswers.Clear();
             _pendingChanged = true;
             // A live interaction supersedes the note — but a disappearing one must not: that is the
@@ -2041,6 +2092,70 @@
         if (!Interactions.TryAnswer(pending.Id, string.Join('\u0001', parts))) NoteExpiredInteraction();
         _questionAnswers.Clear();
         _pendingChanged = true;
+    }
+
+    // ---- attached-document review: the card previews, the modal is the reading surface -------
+    private bool _planReviewOpen;
+    private IReadOnlyList<(int Level, string Text)> _planOutline = [];
+
+    /// <summary>The single question a document review decides; null for multi-question asks.</summary>
+    private Blazorly.Harness.Core.AskQuestion? PlanReviewQuestion
+        => _planReviewOpen && _pendingQuestion is { Document: not null, Questions: [var only] } ? only : null;
+
+    private void OpenPlanReview()
+    {
+        if (_pendingQuestion?.Document is not { } doc) return;
+        _planOutline = OutlineOf(doc.Markdown);
+        _planReviewOpen = true;
+    }
+
+    private void ClosePlanReview() => _planReviewOpen = false;
+
+    private async Task ScrollToHeading(string text)
+        => await TryJs("blazorly.planReview.scrollToHeading", text);
+
+    /// <summary>Decide from inside the review: record the chosen option and submit it.</summary>
+    private void DecidePlan(Blazorly.Harness.Core.AskQuestion question, string label)
+    {
+        _questionAnswers[question.Id] = label;
+        SubmitAnswers();
+        _planReviewOpen = false;
+    }
+
+    /// <summary>ATX headings outside code fences, in document order — the review's jump list.</summary>
+    private static IReadOnlyList<(int Level, string Text)> OutlineOf(string markdown)
+    {
+        var outline = new List<(int, string)>();
+        var inFence = false;
+        foreach (var raw in markdown.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r').TrimStart();
+            if (line.StartsWith("```", StringComparison.Ordinal) || line.StartsWith("~~~", StringComparison.Ordinal)) { inFence = !inFence; continue; }
+            if (inFence) continue;
+            var level = 0;
+            while (level < line.Length && line[level] == '#') level++;
+            if (level is < 1 or > 4 || level + 1 >= line.Length || line[level] != ' ') continue;
+            var text = line[(level + 1)..].Trim();
+            if (text.Length > 0) outline.Add((level, text));
+        }
+        return outline;
+    }
+
+    /// <summary>First lines of the attached document, so the card itself carries the gist.</summary>
+    private static string PreviewOf(string markdown, int maxChars = 320)
+    {
+        var inFence = false;
+        var lines = new List<string>();
+        foreach (var raw in markdown.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r').Trim();
+            if (line.StartsWith("```", StringComparison.Ordinal) || line.StartsWith("~~~", StringComparison.Ordinal)) { inFence = !inFence; continue; }
+            if (inFence || line.Length == 0) continue;
+            lines.Add(line.TrimStart('#').Trim());
+            if (lines.Count == 3) break;
+        }
+        var preview = string.Join("  …  ", lines);
+        return preview.Length <= maxChars ? preview : preview[..maxChars] + "…";
     }
 
     private bool HasModelRoute => !string.IsNullOrWhiteSpace(_agent?.Options.Provider)

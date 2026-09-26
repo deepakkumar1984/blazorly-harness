@@ -105,7 +105,8 @@ public sealed class AskUserTool(HarnessContext ctx) : ToolDefinition<AskUserArgs
                 q.Options is null ? null : [.. q.Options.Select(o => new AskOption(o.Label, o.Description))],
                 q.MultiSelect ?? false))
             .ToList();
-        var answers = await service.AskAsync(questions, exec.Signal).ConfigureAwait(false);
+        var origin = exec.Agent is { } askingAgent ? new AskOrigin(askingAgent.Id) : AskOrigin.Global;
+        var answers = await service.AskAsync(questions, origin, exec.Signal).ConfigureAwait(false);
         return new AskUserOutput([.. answers.Select(a => new AskUserAnswerView(a.Id, a.Text))]);
     }
 

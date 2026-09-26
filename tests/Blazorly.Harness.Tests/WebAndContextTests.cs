@@ -461,9 +461,9 @@ public class AskUserToolTests
         await using var harness = TestHarness.Create();
         var service = UserQuestionsService.Mount(harness.Ctx);
         IReadOnlyList<AskQuestion>? asked = null;
-        service.SetProvider((questions, _) =>
+        service.SetProvider((request, _) =>
         {
-            asked = questions;
+            asked = request.Questions;
             return Task.FromResult<IReadOnlyList<AskAnswer>>([new AskAnswer("q1", "yes")]);
         });
         new AskUserPlugin().Apply(harness.Ctx);

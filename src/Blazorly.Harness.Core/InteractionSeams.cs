@@ -94,12 +94,32 @@ public sealed record AskQuestion(string Id, string Question, string? Header = nu
 
 public sealed record AskAnswer(string Id, string Text);
 
+/// <summary>
+/// Where an ask originates. Front ends scope their cards to this session id — an ask parked
+/// without one surfaces in every open chat, which reads as the app talking to the wrong person.
+/// </summary>
+public sealed record AskOrigin(string SessionId)
+{
+    /// <summary>For asks with no owning session (direct seam calls, tests).</summary>
+    public static AskOrigin Global { get; } = new("(global)");
+}
+
+/// <summary>
+/// Long-form document attached to an ask so the human can review what they are deciding on —
+/// a plan under approval, for instance. The question card previews it; the UI offers the full
+/// text in its own reading surface.
+/// </summary>
+public sealed record AskDocument(string Title, string Markdown);
+
+/// <summary>One human round-trip: the questions, who is asking, and what they need read first.</summary>
+public sealed record AskRequest(IReadOnlyList<AskQuestion> Questions, AskOrigin Origin, AskDocument? Document = null);
+
 /// <summary>ctx.userQuestions — the human question/answer seam; the UI provides the provider.</summary>
 public sealed class UserQuestionsService
 {
     public const string ServiceKey = "userQuestions";
 
-    public delegate Task<IReadOnlyList<AskAnswer>> Provider(IReadOnlyList<AskQuestion> questions, CancellationToken ct);
+    public delegate Task<IReadOnlyList<AskAnswer>> Provider(AskRequest request, CancellationToken ct);
 
     private readonly HarnessContext _ctx;
     private Provider? _provider;
@@ -119,10 +139,17 @@ public sealed class UserQuestionsService
         return _ctx.Effect(() => _provider = null);
     }
 
+    /// <summary>Asks without session ownership; front ends that scope cards will not show it.</summary>
+    public Task<IReadOnlyList<AskAnswer>> AskAsync(IReadOnlyList<AskQuestion> questions, CancellationToken ct)
+        => AskAsync(new AskRequest(questions, AskOrigin.Global), ct);
+
+    public Task<IReadOnlyList<AskAnswer>> AskAsync(IReadOnlyList<AskQuestion> questions, AskOrigin origin, CancellationToken ct)
+        => AskAsync(new AskRequest(questions, origin), ct);
+
     /// <summary>Asks the human through the active provider; throws when no front end can answer.</summary>
-    public async Task<IReadOnlyList<AskAnswer>> AskAsync(IReadOnlyList<AskQuestion> questions, CancellationToken ct)
+    public async Task<IReadOnlyList<AskAnswer>> AskAsync(AskRequest request, CancellationToken ct)
     {
         var provider = _provider ?? throw new Kernel.HarnessException("NO_USER_QUESTIONS_PROVIDER", "no user-questions provider is mounted");
-        return await provider(questions, ct).ConfigureAwait(false);
+        return await provider(request, ct).ConfigureAwait(false);
     }
 }

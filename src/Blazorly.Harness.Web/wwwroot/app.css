@@ -1111,6 +1111,77 @@ button.link:hover { text-decoration: underline; }
 }
 .interaction-card .ask-hint { font-size: 12px; color: var(--text-dim); }
 
+/* ---- attached document on an ask: preview in the card, full text in a review modal ---- */
+.interaction-card .ask-document {
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--bg-raised);
+    padding: 8px 10px;
+    margin: 8px 0 4px;
+}
+.interaction-card .ask-document-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.interaction-card .ask-document-title { font-weight: 600; font-size: 12.5px; }
+.interaction-card .ask-document-size { font-size: 11.5px; color: var(--text-dim); }
+.interaction-card .ask-document-head button { margin-left: auto; }
+.interaction-card .ask-document-preview {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* Plan review: a reading surface, not a tooltip. Head and foot pinned, body scrolls;
+   the outline is a jump list for plans too long to skim in one viewport. No overlay-click
+   close on purpose — reading a long plan means selecting text, and a drag that lands on
+   the backdrop must not discard the review. */
+.plan-review {
+    width: min(1060px, 96vw);
+    height: min(86vh, 900px);
+    max-height: 92dvh;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
+}
+.plan-review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); margin: 0; }
+.plan-review-title { font-weight: 700; }
+.plan-review-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.plan-review-body { display: flex; gap: 14px; flex: 1; min-height: 0; padding: 14px 16px; }
+.plan-review-outline {
+    flex: 0 0 210px;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+    padding-right: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.plan-review-outline .outline-item {
+    text-align: left;
+    background: transparent;
+    border: 0;
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.35;
+    padding: 3px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.plan-review-outline .outline-item:hover { color: var(--text); background: var(--accent-soft); }
+.plan-review-outline .outline-level-1 { font-weight: 700; color: var(--text); }
+.plan-review-outline .outline-level-3 { padding-left: 16px; }
+.plan-review-outline .outline-level-4 { padding-left: 26px; }
+.plan-review-body > .markdown { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; }
+.plan-review-foot { margin-top: 0; border-top: 1px solid var(--border); padding: 12px 16px; }
+.plan-review-foot .ask-hint { margin-right: auto; }
+@media (max-width: 760px) {
+    .plan-review-outline { display: none; }
+    .plan-review { height: 92dvh; }
+}
+
 /* ---- session body: chat column + optional tasks column. nothing overlays. ---- */
 .session-body {
     flex: 1 1 0%;
