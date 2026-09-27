@@ -79,6 +79,11 @@ a { color: var(--accent); }
 }
 
 .brand-settings { margin-left: auto; }
+.brand-text { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+.brand-version { font-size: 11px; font-weight: 500; color: var(--text-faint); display: flex; align-items: center; gap: 6px; }
+.update-pill { font-size: 10.5px; font-weight: 650; color: var(--accent-contrast); background: var(--accent); border-radius: 99px; padding: 1px 8px; text-decoration: none; }
+.update-actions { display: flex; gap: 8px; margin-top: 8px; }
+.update-log { background: var(--bg-overlay); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; max-height: 220px; overflow: auto; }
 .brand-mark {
     font-size: 15px;
     display: inline-flex;
@@ -766,7 +771,10 @@ button.icon-btn.copied { color: var(--success); opacity: 1; }
     border-radius: 16px;
     background: var(--accent-soft);
     border: 1px solid var(--border);
+    color: var(--accent);
 }
+.hero-mark svg { display: block; }
+.hero-version { margin: 2px 0 6px; font-size: 12.5px; color: var(--text-faint); }
 .hero h1 { color: var(--text); margin: 14px 0 6px; font-size: 21px; }
 .hero p { margin: 0 0 6px; }
 .hero-hint { font-size: 12.5px; color: var(--text-faint); }

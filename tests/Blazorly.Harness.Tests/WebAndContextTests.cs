@@ -421,11 +421,15 @@ public class SkillToolsTests
             new SkillPlugin(new SkillsService(root)).Apply(harness.Ctx);
 
             Assert.NotNull(harness.Tools.Get("skill"));
+            Assert.NotNull(harness.Tools.Get("search_skills"));
             var section = harness.Prompt.Assemble(null, null).Sections.Single(s => s.Name == "skills");
             Assert.Equal(108, section.Order);
-            Assert.Contains("alpha", section.Text);
-            Assert.Contains("beta", section.Text);
-            Assert.Contains("call the skill tool", section.Text);
+            // On-demand contract: fixed-size pointer, never the catalog.
+            Assert.Contains("2 skills installed", section.Text);
+            Assert.Contains("search_skills", section.Text);
+            Assert.Contains("skill", section.Text);
+            Assert.DoesNotContain("Alpha skill", section.Text);
+            Assert.DoesNotContain("Beta skill", section.Text);
         }
         finally
         {

@@ -338,8 +338,9 @@
             else if (_snapshot.Nodes.Count == 0)
             {
                 <div class="hero">
-                    <div class="hero-mark">⚡</div>
+                    <div class="hero-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6.5" y="4.5" width="11" height="15" rx="3.5" /><path d="M3.5 12h17" /></svg></div>
                     <h1>Blazorly Harness</h1>
+                    <div class="hero-version">@AppVersion.Display</div>
                     <p>An agentic coding harness: session-log-first, tool-guarded, fully plugin-composed.</p>
                     <p class="hero-hint">Describe a task below. Type <code>/</code> for commands — <code>/permission</code>, <code>/model</code>, <code>/title</code>.</p>
                 </div>

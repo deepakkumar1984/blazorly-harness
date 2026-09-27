@@ -1,4 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
-  <rect width="16" height="16" rx="3" fill="#2563eb"/>
-  <text x="8" y="12" font-size="10" font-family="sans-serif" text-anchor="middle" fill="#ffffff">B</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <rect width="24" height="24" rx="5" fill="#0e6b73"/>
+  <g fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round">
+    <rect x="6.5" y="4.5" width="11" height="15" rx="3.5"/>
+    <path d="M4 12h16"/>
+  </g>
 </svg>

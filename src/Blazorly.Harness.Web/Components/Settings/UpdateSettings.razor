@@ -1,0 +1,59 @@
+@using Blazorly.Harness.Web.Services
+@inject UpdateService Update
+@implements IDisposable
+
+<div class="settings-block">
+    <span class="settings-block-title">Version</span>
+    <p class="settings-note">Running <code>@AppVersion.Display</code>@(AppVersion.IsInstalled ? "" : " (development build)").</p>
+</div>
+
+<div class="settings-block">
+    <span class="settings-block-title">Updates</span>
+    @if (Update.Current == UpdateService.State.Unknown)
+    {
+        <p class="settings-note">Never checked in this session. Checks read the latest GitHub release tag — nothing is downloaded until you update.</p>
+    }
+    @if (Update.Message is { Length: > 0 })
+    {
+        <p class="settings-note" role="status">@Update.Message</p>
+    }
+    @if (Update.CheckedAt is { } checkedAt)
+    {
+        <p class="settings-note">Last checked @checkedAt.LocalDateTime.ToString("g").</p>
+    }
+    <div class="update-actions">
+        <button class="ghost" @onclick="Check" disabled="@(Update.Current is UpdateService.State.Checking or UpdateService.State.Updating)">
+            @(Update.Current == UpdateService.State.Checking ? "Checking…" : "Check for updates")
+        </button>
+        @if (Update.Current == UpdateService.State.Available && Update.UpdateBlockedReason is null)
+        {
+            <button class="primary" @onclick="Start" disabled="@(Update.Current is UpdateService.State.Updating)">
+                Update to @Update.LatestVersion
+            </button>
+        }
+    </div>
+    @if (Update.Current == UpdateService.State.Available && Update.UpdateBlockedReason is { } blocked)
+    {
+        <p class="settings-note">@blocked</p>
+    }
+    @if (Update.Current == UpdateService.State.ReadyToRestart)
+    {
+        <p class="settings-note">Restart the app (stop and start <code>blazorly</code>) to run the new version.</p>
+    }
+    @if (Update.UpdateLog is { Length: > 0 })
+    {
+        <pre class="update-log">@Update.UpdateLog</pre>
+    }
+</div>
+
+@code {
+    protected override void OnInitialized() => Update.Changed += OnChanged;
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Update.Changed -= OnChanged;
+
+    private Task Check() => Update.CheckAsync();
+
+    private Task Start() => Update.StartUpdateAsync();
+}

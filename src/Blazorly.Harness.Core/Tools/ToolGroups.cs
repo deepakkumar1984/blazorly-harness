@@ -90,6 +90,7 @@ public static class ToolGroups
         ["workflow"] = Workflows,
         ["review"] = Workflows,
         ["skill"] = Skills,
+        ["search_skills"] = Skills,
         ["ask_user_question"] = Questions,
     };
 

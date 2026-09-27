@@ -117,7 +117,7 @@ Skills are reusable instruction packs the model loads when your task matches. Dr
 | `~/.agents/skills/` | the shared convention other agent tools read — one collection serves them all |
 | `<workspace>/.blazorly/skills/` | this project only |
 
-Each skill is a folder with a `SKILL.md`: `name` + `description` frontmatter, markdown body with the instructions. Descriptions ride in the system prompt every turn; when your brief matches one, the model calls the `skill` tool itself and follows the loaded instructions — you never invoke anything manually.
+Each skill is a folder with a `SKILL.md`: `name` + `description` frontmatter, markdown body with the instructions. The system prompt carries only the installed count — never the catalog — so prompt size stays flat as skills grow. When your brief matches one, the model calls `search_skills` with task keywords, then `skill` with the name to load the body, and follows the loaded instructions — you never invoke anything manually.
 
 ## 🤖 Multi-agent & delegation
 

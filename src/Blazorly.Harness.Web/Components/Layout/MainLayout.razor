@@ -3,6 +3,7 @@
 @inject IJSRuntime Js
 @inject WorkspaceUiState WorkspaceUi
 @inject WorkspaceDeletionService WorkspaceDeletion
+@inject UpdateService Update
 @implements IDisposable
 
 <div class="app-shell">
@@ -12,8 +13,16 @@
     </div>
     <aside class="sidebar @(_drawerOpen ? "open" : "")" aria-label="Workspace navigation" @onkeydown="OnSidebarKey">
         <div class="brand">
-            <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m13 3-8 10h6l-1 8 9-11h-6z" /></svg></span>
-            <span class="brand-name">Blazorly <span>Harness</span></span>
+            <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6.5" y="4.5" width="11" height="15" rx="3.5" /><path d="M3.5 12h17" /></svg></span>
+            <span class="brand-text">
+                <span class="brand-name">Blazorly <span>Harness</span></span>
+                <span class="brand-version">@AppVersion.Display
+                    @if (Update.Current == UpdateService.State.Available)
+                    {
+                        <a class="update-pill" href="/settings?tab=updates" title="@Update.Message">update</a>
+                    }
+                </span>
+            </span>
             <a class="icon brand-settings" href="/settings" title="Settings" aria-label="Settings">
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
             </a>
@@ -398,6 +407,18 @@
         _refresh.Enabled = true;
         Navigation.LocationChanged += OnLocationChanged;
         WorkspaceUi.Changed += OnWorkspaceUiChanged;
+        Update.Changed += OnUpdateChanged;
+    }
+
+    private void OnUpdateChanged() => _ = InvokeAsync(() => { if (!_disposed) StateHasChanged(); });
+
+    private bool _updateAutoChecked;
+
+    private async Task AutoCheckUpdates()
+    {
+        _updateAutoChecked = true;
+        await Update.CheckAsync();
+        await InvokeAsync(() => { if (!_disposed) StateHasChanged(); });
     }
 
     private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
@@ -449,6 +470,12 @@
         {
             _awaitFolderFocus = false;
             await FocusFolderInput();
+        }
+        // One quiet update check per session for the sidebar badge; failures stay silent here.
+        if (firstRender && !_updateAutoChecked)
+        {
+            try { await AutoCheckUpdates(); }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException) { }
         }
     }
 
@@ -842,6 +869,7 @@
         _disposed = true;
         Navigation.LocationChanged -= OnLocationChanged;
         WorkspaceUi.Changed -= OnWorkspaceUiChanged;
+        Update.Changed -= OnUpdateChanged;
         _refresh?.Dispose();
     }
 }

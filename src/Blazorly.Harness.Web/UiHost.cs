@@ -68,6 +68,7 @@ public static class UiHost
     });
     builder.Services.AddSingleton<MarkdownService>();
     builder.Services.AddSingleton<RunSupervisor>();
+    builder.Services.AddSingleton<UpdateService>();
     builder.Services.AddSingleton<WorkspaceDeletionService>();
     builder.Services.AddScoped<WorkspaceUiState>();
 

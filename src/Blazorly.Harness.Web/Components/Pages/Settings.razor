@@ -15,7 +15,7 @@
             <div><span class="settings-eyebrow">PREFERENCES</span><h1>Settings</h1></div>
         </div>
         <div class="settings-actions">
-            @if (_tab != "appearance")
+            @if (_tab is not ("appearance" or "updates"))
             {
                 <button class="primary" @onclick="Save" disabled="@(Facade.Harness.SettingsLoadError is not null)">Save settings</button>
             }
@@ -39,6 +39,10 @@
         {
             case "appearance":
                 <AppearanceSettings />
+                break;
+
+            case "updates":
+                <UpdateSettings />
                 break;
 
             case "providers":
@@ -521,6 +525,7 @@
         ("context", "Sessions & context"),
         ("capabilities", "Capabilities"),
         ("sandbox", "Permissions & sandbox"),
+        ("updates", "Updates"),
     ];
 
     private HarnessSettings _settings = new();

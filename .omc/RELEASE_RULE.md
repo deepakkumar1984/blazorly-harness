@@ -1,5 +1,5 @@
 # Release Rules
-<!-- last-analyzed: 2026-09-18T00:00:00Z -->
+<!-- last-analyzed: 2026-09-27T00:00:00Z -->
 
 ## Version Sources
 - Git tag only (`vX.Y.Z`). CI strips the `v` and passes `/p:Version=X.Y.Z` to the build.
@@ -18,8 +18,9 @@
 - Installers (`installer/install.sh`, `install.ps1`) pull the latest release; CI marks each tag release `--latest`.
 
 ## Release Notes Strategy
-- CI auto-generates notes from commits since the previous tag. For a curated body, edit after publish: `gh release edit <tag> --notes-file <file>`.
-- No changelog convention file; commit subjects are the notes source, so keep them user-facing.
+- Reviewed notes in `release-notes/<tag>.md` (e.g. `release-notes/v0.9.1.md`) win: CI uses `--notes-file` when present, else `--generate-notes` from commits since the previous tag.
+- No changelog convention file; commit subjects are the fallback notes source, so keep them user-facing.
+- App version needs no manual bump: tag `vX.Y.Z` → CI stamps assemblies (`/p:Version=X.Y.Z`) and writes the `VERSION` marker into every archive; `AppVersion` reads the marker first, so sidebar/hero/Updates UI follow the tag automatically. `blazorly update` swaps the whole extracted archive, VERSION included.
 
 ## CI Workflow Files
 - `.github/workflows/release.yml` (only workflow).

@@ -44,6 +44,40 @@ public sealed class SkillsService(params string[] roots)
         return [.. byName.Values.OrderBy(s => s.Name, StringComparer.Ordinal)];
     }
 
+    /// <summary>Ranked lexical search over name + description. Empty query returns
+    /// everything by name; otherwise every query token must appear in the name or
+    /// description (case-insensitive), name hits ranking first.</summary>
+    public IReadOnlyList<SkillSummary> Search(string query, int limit = 10)
+    {
+        var all = List();
+        query = (query ?? "").Trim();
+        if (query.Length == 0) return all.Take(Math.Max(1, limit)).ToList();
+        var tokens = query.Split([' ', '\t', ',', ';', '/', '-'], StringSplitOptions.RemoveEmptyEntries);
+        var ranked = new List<(SkillSummary Skill, int Score)>();
+        foreach (var skill in all)
+        {
+            var score = 0;
+            var matchedAll = true;
+            foreach (var rawToken in tokens)
+            {
+                var token = rawToken.Trim();
+                if (token.Length == 0) continue;
+                var inName = skill.Name.Contains(token, StringComparison.OrdinalIgnoreCase);
+                var inDesc = skill.Description.Contains(token, StringComparison.OrdinalIgnoreCase);
+                if (!inName && !inDesc) { matchedAll = false; break; }
+                score += inName ? 3 : 0;
+                score += inDesc ? 1 : 0;
+                if (string.Equals(skill.Name, token, StringComparison.OrdinalIgnoreCase)) score += 5;
+            }
+            if (matchedAll) ranked.Add((skill, score));
+        }
+        return [.. ranked
+            .OrderByDescending(r => r.Score)
+            .ThenBy(r => r.Skill.Name, StringComparer.Ordinal)
+            .Take(Math.Max(1, limit))
+            .Select(r => r.Skill)];
+    }
+
     public string? ReadBody(string name)
     {
         foreach (var root in Roots)
@@ -89,13 +123,13 @@ public sealed class SkillTool(SkillsService skills) : ToolDefinition<SkillArgs, 
     public override string Name => "skill";
 
     public override string Description =>
-        "Load a skill's full instructions by name. The system prompt lists the available skills; "
-        + "call this with the matching name before starting the task the skill covers.";
+        "Load a skill's full instructions by name. Call search_skills first to find the "
+        + "matching skill, then call this with its name before starting the task it covers.";
 
     public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(
         properties: new Dictionary<string, JsonSchema.Schema>
         {
-            ["name"] = JsonSchema.String("Name of the skill to load, as listed in the skills catalog."),
+            ["name"] = JsonSchema.String("Name of the skill to load, as returned by search_skills."),
         },
         required: ["name"]);
 
@@ -132,7 +166,79 @@ public sealed class SkillTool(SkillsService skills) : ToolDefinition<SkillArgs, 
     };
 }
 
-/// <summary>Mounts the skill tool plus a system-prompt section listing the catalog.</summary>
+public sealed record SearchSkillsArgs(string Query, int? Limit = null);
+
+public sealed record SearchSkillsOutput(IReadOnlyList<SkillSummary> Matches, int TotalInstalled);
+
+/// <summary>search_skills: keyword search over installed skill names + descriptions.
+/// Returns only name/description pairs; call skill with the name to load the body.</summary>
+public sealed class SearchSkillsTool(SkillsService skills) : ToolDefinition<SearchSkillsArgs, SearchSkillsOutput>
+{
+    public const int MaxLimit = 20;
+
+    public override string Name => "search_skills";
+
+    public override string Description =>
+        "Search installed skills by task keywords over skill names and descriptions. "
+        + "Returns name + description matches only; call skill with the name to load full instructions.";
+
+    public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(
+        properties: new Dictionary<string, JsonSchema.Schema>
+        {
+            ["query"] = JsonSchema.String("Keywords describing the task, e.g. 'release notes' or 'pdf'. Empty lists skills by name."),
+            ["limit"] = JsonSchema.Integer("Max matches to return. Defaults to 10, capped at 20."),
+        },
+        required: ["query"]);
+
+    public override JsonSchema.Schema Output { get; } = JsonSchema.Object(
+        properties: new Dictionary<string, JsonSchema.Schema>
+        {
+            ["matches"] = JsonSchema.Array(new JsonSchema.Schema
+            {
+                Type = "object",
+                Properties = new Dictionary<string, JsonSchema.Schema>
+                {
+                    ["name"] = JsonSchema.String(),
+                    ["description"] = JsonSchema.String(),
+                },
+                Required = ["name", "description"],
+                AdditionalProperties = false,
+            }),
+            ["totalInstalled"] = JsonSchema.Integer(),
+        },
+        required: ["matches", "totalInstalled"]);
+
+    protected override bool IsConcurrencySafeTyped(SearchSkillsArgs args) => true;
+
+    protected override Task<SearchSkillsOutput> ExecuteTyped(SearchSkillsArgs args, ToolRunContext exec)
+    {
+        var limit = Math.Clamp(args.Limit ?? 10, 1, MaxLimit);
+        var matches = skills.Search(args.Query ?? "", limit);
+        return Task.FromResult(new SearchSkillsOutput(matches, skills.List().Count));
+    }
+
+    protected override IReadOnlyList<ContentBlock> RenderTyped(SearchSkillsArgs args, SearchSkillsOutput output)
+    {
+        if (output.Matches.Count == 0)
+            return [new TextBlock($"No skills match '{args.Query}' ({output.TotalInstalled} installed).")];
+        var builder = new StringBuilder();
+        foreach (var match in output.Matches)
+            builder.Append("- ").Append(match.Name).Append(": ").AppendLine(match.Description);
+        return [new TextBlock(builder.ToString().TrimEnd())];
+    }
+
+    protected override ToolCallView? PresentCallTyped(SearchSkillsArgs args) => new()
+    {
+        Card = "generic",
+        Kind = "search",
+        Title = args.Query,
+        Description = "search skills",
+    };
+}
+
+/// <summary>Mounts the skill search + load tools plus a fixed-size system-prompt pointer.
+/// The catalog itself is never injected: the prompt carries only the installed count,
+/// and name/description pairs return via search_skills on demand.</summary>
 public sealed class SkillPlugin : HarnessPlugin
 {
     public override string Name => "skills";
@@ -149,19 +255,19 @@ public sealed class SkillPlugin : HarnessPlugin
         ctx.Provide("skills", Skills);
         var tools = ctx.Get<ToolRuntime>("tools");
         ctx.Effect(tools.Register(new SkillTool(Skills)).Dispose);
+        ctx.Effect(tools.Register(new SearchSkillsTool(Skills)).Dispose);
         var prompt = ctx.Get<Core.SystemPrompt.SystemPromptService>("systemPrompt");
-        var section = prompt.RegisterSection("skills", 108, _ => RenderCatalog(Skills.List()));
+        var section = prompt.RegisterSection("skills", 108, _ => RenderPointer(Skills.List().Count));
         ctx.Effect(section.Dispose);
         return Task.CompletedTask;
     }
 
-    internal static string RenderCatalog(IReadOnlyList<SkillSummary> skills)
+    public static string RenderPointer(int installed)
     {
-        if (skills.Count == 0) return "";
-        var builder = new StringBuilder("Available skills:");
-        foreach (var skill in skills)
-            builder.Append("\n- ").Append(skill.Name).Append(": ").Append(skill.Description);
-        builder.Append("\n").Append("When a skill matches your task, call the skill tool with its name to load full instructions.");
-        return builder.ToString();
+        if (installed == 0) return "";
+        return $"{installed} skills installed. Call search_skills with task keywords to find one, "
+            + "then skill with its name to load full instructions before starting the task it covers.";
     }
+
+    public static string RenderCatalog(IReadOnlyList<SkillSummary> skills) => RenderPointer(skills.Count);
 }
