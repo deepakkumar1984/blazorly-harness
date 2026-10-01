@@ -1055,13 +1055,21 @@
         _snapshot is null ? [] : [.. _snapshot.Nodes.TakeLast(_transcriptTake)];
 
     private int TranscriptHiddenCount =>
-        _snapshot is null ? 0 : Math.Max(0, _snapshot.Nodes.Count - TranscriptWindow.Count);
+        _snapshot is null ? 0 : Math.Max(0, _snapshot.TotalNodes - TranscriptWindow.Count);
 
     [JSInvokable]
     public Task<bool> GrowTranscriptTop()
     {
         if (TranscriptHiddenCount == 0) return Task.FromResult(false);
-        _transcriptTake = Math.Min(_snapshot!.Nodes.Count, _transcriptTake + TranscriptGrowTake);
+        var want = Math.Min(_snapshot!.TotalNodes, _transcriptTake + TranscriptGrowTake);
+        if (want > _snapshot.Nodes.Count && _session is not null)
+        {
+            // The ask reaches into nodes the folder trimmed to bound memory: re-fold once with a
+            // retention that covers it, so scrolling up still reaches the start of a huge session.
+            _folder = Assembler.CreateFolder(_session, want);
+            _snapshot = _folder.Update(_agent);
+        }
+        _transcriptTake = want;
         StateHasChanged();
         return Task.FromResult(true);
     }
@@ -1101,7 +1109,11 @@
                         // New approval/question popups and newly failed turns force;
                         // steady streaming keeps the near-bottom check so scrolled-up
                         // readers are not yanked.
-                        var failedTurn = _session is null ? null : ConversationAssembler.LatestFailedTurn(_session);
+                        // Folded incrementally by the folder: the per-tick full-log scan this
+                        // replaces was the largest cost that grew with session length.
+                        var failedTurn = _folder is not null
+                            ? _folder.LatestFailedTurn
+                            : _session is null ? null : ConversationAssembler.LatestFailedTurn(_session);
                         var hasNewFailure = failedTurn is { } failed && failed != _lastSurfacedFailedTurn;
                         if (failedTurn is { } surfaced) _lastSurfacedFailedTurn = surfaced;
                         _pendingScroll = true;
@@ -1199,7 +1211,8 @@
         _pendingFiles.Clear();
         if (savedDraft.Files is not null) _pendingFiles.AddRange(savedDraft.Files);
         _transcriptTake = TranscriptInitialTake;
-        _lastSurfacedFailedTurn = _session is null ? null : ConversationAssembler.LatestFailedTurn(_session);
+        // The folder just folded every event, so it already knows the newest failed turn.
+        _lastSurfacedFailedTurn = _folder.LatestFailedTurn;
         _dirty = false;
         // The drawer is per-session: stop polling the previous shell and reset the view
         // (the shell itself stays alive in the service and is re-attached on reopen).

@@ -54,6 +54,10 @@ public sealed record ConversationNode
 public sealed class ConversationSnapshot
 {
     public required ICollection<ConversationNode> Nodes { get; init; }
+    /// <summary>Retained nodes plus the ones trimmed to bound memory. The window is carved from
+    /// <see cref="Nodes"/>; this is what the "show earlier messages" count reports, so scrolling up
+    /// past the retained window can ask for a re-fold.</summary>
+    public int TotalNodes { get; init; }
     public required IReadOnlyList<TodoItem> Todos { get; init; }
     /// <summary>Live delegation progress folded from subagent/status events: latest per child.</summary>
     public IReadOnlyList<DelegationView> Delegations { get; init; } = [];
@@ -116,29 +120,35 @@ public sealed class ConversationAssembler(ToolRuntime tools, Blazorly.Harness.Co
         => CreateFolder(session).Update(agent);
 
     /// <summary>Stateful folder for live pages: each Update processes only new events,
-    /// so a 100K-event session costs the same per tick as a fresh one.</summary>
-    public ConversationFolder CreateFolder(Core.Sessions.Session session) => new(this, session, tools, meter);
+    /// so a 100K-event session costs the same per tick as a fresh one. <paramref name="retention"/>
+    /// caps how many transcript nodes the folder holds; the page passes a larger one when the reader
+    /// scrolls up past the cap, which re-folds once with the trimmed nodes back.</summary>
+    public ConversationFolder CreateFolder(Core.Sessions.Session session, int retention = ConversationFolder.DefaultRetention)
+        => new(this, session, tools, meter, retention);
 
     /// <summary>Newest turn that ended in error, if any: failures land out of view when the
-    /// reader scrolled up, so the page force-scrolls to newly failed turns like approvals.</summary>
+    /// reader scrolled up, so the page force-scrolls to newly failed turns like approvals.
+    /// Scans backward and stops at the first hit — the newest error by seq is also the max turn —
+    /// so this neither copies the log (<c>Session.Events</c> allocates a full copy) nor walks it.</summary>
     public static int? LatestFailedTurn(Core.Sessions.Session session)
     {
-        int? failed = null;
-        foreach (var e in session.Events)
-        {
-            if (e.Type != SessionEventTypes.TurnEnd) continue;
-            if (!e.Data.TryGetProperty("turn", out var turnValue)
-                || turnValue.ValueKind != System.Text.Json.JsonValueKind.Number) continue;
-            var kind = e.Data.TryGetProperty("reason", out var reason)
-                && reason.ValueKind == System.Text.Json.JsonValueKind.Object
-                && reason.TryGetProperty("kind", out var kindValue)
-                && kindValue.ValueKind == System.Text.Json.JsonValueKind.String
-                ? kindValue.GetString()
-                : null;
-            if (kind == "error") failed = failed is null ? turnValue.GetInt32() : Math.Max(failed.Value, turnValue.GetInt32());
-        }
-        return failed;
+        var failed = session.LatestEvent(IsErrorTurnEnd);
+        return failed is { } e
+            && e.Data.TryGetProperty("turn", out var turnValue)
+            && turnValue.ValueKind == System.Text.Json.JsonValueKind.Number
+            ? turnValue.GetInt32()
+            : null;
     }
+
+    private static bool IsErrorTurnEnd(SessionEvent e)
+        => e.Type == SessionEventTypes.TurnEnd
+            && e.Data.TryGetProperty("turn", out var turnValue)
+            && turnValue.ValueKind == System.Text.Json.JsonValueKind.Number
+            && e.Data.TryGetProperty("reason", out var reason)
+            && reason.ValueKind == System.Text.Json.JsonValueKind.Object
+            && reason.TryGetProperty("kind", out var kindValue)
+            && kindValue.ValueKind == System.Text.Json.JsonValueKind.String
+            && kindValue.GetString() == "error";
 
     private static int SortKey(ConversationNode node)
     {
@@ -161,9 +171,14 @@ public sealed class ConversationFolder
     private readonly Dictionary<(int Turn, int Step), BlockAssembler> _assemblers = [];
     private readonly Dictionary<(int Turn, int Step), (string Status, TokenUsage? Usage)> _steps = [];
     private readonly Dictionary<int, (long Time, int Seq)> _turnStart = [];
-    private readonly Dictionary<int, int> _turnLastSeen = [];
     private readonly HashSet<int> _endedTurns = [];
     private readonly List<(int Turn, int Step)> _liveKeys = [];
+    /// <summary>Index where the regenerated live tail begins. Everything before it is settled and in
+    /// seq order, so retiring the tail is a <c>RemoveRange</c> splice, not an O(nodes) predicate scan.</summary>
+    private int _liveStart;
+    /// <summary>In-flight tool cards by call id → node index, so a tool result replaces its card in
+    /// O(1) instead of scanning the whole transcript. Holds only unsettled calls.</summary>
+    private readonly Dictionary<string, int> _toolNodeIndex = new(StringComparer.Ordinal);
     private int _runningTools;
     /// <summary>Time of the newest event folded so far — the anchor for the thinking
     /// placeholder, so each silent phase measures from the last thing that happened, not
@@ -172,6 +187,21 @@ public sealed class ConversationFolder
 
     private int _processed;
     private int _lastSeq = -1;
+
+    /// <summary>Transcript nodes held in memory; older ones are dropped and re-folded on demand.</summary>
+    public const int DefaultRetention = 2000;
+    private readonly int _retention;
+    private int _droppedNodes;
+
+    // Latest-wins state folded as its events pass, so a tick costs O(new events) instead of
+    // re-scanning the log — and for plan mode, re-copying it — eight times a second.
+    private int? _latestFailedTurn;
+    private Blazorly.Harness.Tools.PlanModePayload? _planMode;
+    private string? _title;
+    private string? _sandboxMode;
+
+    /// <summary>Newest turn that ended in error, folded from turn/end events as they pass.</summary>
+    public int? LatestFailedTurn => _latestFailedTurn;
 
     // Context-chip cache: Measure() is O(surface) and ran on every UI tick before this.
     private (long In, long Out, long CacheRead, long CacheWrite) _contextTotals;
@@ -190,12 +220,13 @@ public sealed class ConversationFolder
     private ConversationSnapshot? _last;
 
     internal ConversationFolder(ConversationAssembler owner, Core.Sessions.Session session, ToolRuntime tools,
-        Blazorly.Harness.Core.TokenMeter.TokenMeterService? meter)
+        Blazorly.Harness.Core.TokenMeter.TokenMeterService? meter, int retention)
     {
         _owner = owner;
         _session = session;
         _tools = tools;
         _meter = meter;
+        _retention = retention > 0 ? retention : DefaultRetention;
     }
 
     public ConversationSnapshot Update(Agent? agent)
@@ -204,6 +235,12 @@ public sealed class ConversationFolder
         // which a 20K-event session pays on every 120ms tick.
         var fresh = false;
         var total = _session.Seq;
+
+        // Retire the previous live tail first: settled nodes then append in seq order and the list
+        // stays sorted by construction, which is what lets the per-tick re-sort go away.
+        if (_liveStart < _nodes.Count) _nodes.RemoveRange(_liveStart, _nodes.Count - _liveStart);
+        _liveKeys.Clear();
+
         if (_processed < total)
         {
             var batch = _session.ReadEvents(_processed, total - _processed);
@@ -236,15 +273,12 @@ public sealed class ConversationFolder
         }
         if (fresh) _todos = _session.LatestTodos() ?? [];
 
-        // Live tail nodes are regenerated from the retained assemblers each update:
-        // drop the previous generation, then re-add the still-streaming steps.
-        if (_liveKeys.Count > 0)
-        {
-            var live = _liveKeys.ToHashSet();
-            _nodes.RemoveAll(n => n.Kind == "assistant" && live.Contains((n.Turn, n.Step)) && n.Key.StartsWith("live-"));
-            _liveKeys.Clear();
-        }
+        TrimToRetention();
+
+        // The live tail is regenerated from the retained assemblers each update and appended after
+        // every settled node, so the transcript stays in seq order with the streaming tail last.
         var agentRunning = agent?.Status == Core.Agent.AgentStatus.Running;
+        _liveStart = _nodes.Count;
         foreach (var ((turn, step), assembler) in _assemblers.ToList())
         {
             if (_steps.ContainsKey((turn, step))) continue;
@@ -283,7 +317,7 @@ public sealed class ConversationFolder
         // tail — the page shows it ticking instead of looking frozen or hung. The timer anchors
         // to the last folded event so each silent phase (between steps, after a tool, after a
         // message) restarts at zero instead of accumulating the whole turn.
-        _nodes.RemoveAll(n => n.Key.StartsWith("live-think-", StringComparison.Ordinal));
+        // The previous thinking placeholder went with the live-tail splice above.
         if (agentRunning && _liveKeys.Count == 0 && _runningTools == 0 && _turnStart.Count > 0)
         {
             var activeTurn = _turnStart.Keys.Max();
@@ -320,31 +354,47 @@ public sealed class ConversationFolder
         }
         var context = _meter is not null && agent is not null ? _contextReading : null;
 
-        var plan = new Blazorly.Harness.Tools.PlanModeService().Latest(_session);
         _last = new ConversationSnapshot
         {
-            Nodes = [.. _nodes.OrderBy(ConversationAssemblerSort.Key)],
+            // Already ordered — settled nodes were appended in seq order and the live tail last —
+            // so this is a copy, not the O(n log n) re-sort that also paid a string Split per node.
+            Nodes = [.. _nodes],
+            TotalNodes = _droppedNodes + _nodes.Count,
             Todos = _todos,
             Delegations = [.. _delegations.Values],
             Status = agent?.Status ?? "idle",
             LastSeq = _lastSeq,
-            Title = _session.LatestTitle(),
-            SandboxMode = _session.LatestSandboxMode(),
-            PlanMode = plan is { Active: true } ? (plan.Auto == true ? "auto" : "on") : null,
+            Title = _title,
+            SandboxMode = _sandboxMode,
+            PlanMode = _planMode is { Active: true } ? (_planMode.Auto == true ? "auto" : "on") : null,
             Context = context,
         };
         return _last;
     }
 
+    /// <summary>Drops the oldest nodes past the retention cap so a huge session does not hold its
+    /// whole transcript in memory. Dropped nodes are counted, not lost: <c>TotalNodes</c> keeps the
+    /// "show earlier messages" count honest and the page re-folds with a larger cap on demand.</summary>
+    private void TrimToRetention()
+    {
+        if (_nodes.Count <= _retention) return;
+        var drop = _nodes.Count - _retention;
+        _nodes.RemoveRange(0, drop);
+        _droppedNodes += drop;
+        if (_toolNodeIndex.Count == 0) return;
+        // Shift surviving indices and forget the ones that pointed into the dropped head.
+        var shifted = new List<KeyValuePair<string, int>>(_toolNodeIndex.Count);
+        foreach (var entry in _toolNodeIndex)
+        {
+            if (entry.Value >= drop) shifted.Add(new KeyValuePair<string, int>(entry.Key, entry.Value - drop));
+        }
+        _toolNodeIndex.Clear();
+        foreach (var entry in shifted) _toolNodeIndex[entry.Key] = entry.Value;
+    }
+
     private void ProcessEvent(SessionEvent e, Agent? agent)
     {
         if (e.Time > _lastEventTime) _lastEventTime = e.Time;
-        if (e.Data.ValueKind == System.Text.Json.JsonValueKind.Object
-            && e.Data.TryGetProperty("turn", out var turnValue)
-            && turnValue.ValueKind == System.Text.Json.JsonValueKind.Number)
-        {
-            _turnLastSeen[turnValue.GetInt32()] = e.Seq;
-        }
 
         switch (e.Type)
         {
@@ -399,7 +449,9 @@ public sealed class ConversationFolder
                 var payload = SessionEventRead.AssistantMessageOf(e);
                 var key = (payload.Turn, payload.Step);
                 _steps[key] = (payload.Interrupted == true ? "interrupted" : "settled", payload.Usage);
-                if (!_assemblers.TryGetValue(key, out var assembler)) _assemblers[key] = assembler = new BlockAssembler();
+                // Settled, so the live loop skips this step from now on: drop the assembler instead
+                // of retaining its streamed blocks for the life of the page.
+                _assemblers.Remove(key);
                 // Tool calls render as their own tool cards; repeating them here is noise.
                 var content = payload.Message.Content.Where(b => b is not ToolCallBlock).ToList();
                 if (payload.Usage is { } usage)
@@ -439,6 +491,7 @@ public sealed class ConversationFolder
                 {
                     view = null;
                 }
+                var toolIndex = _nodes.Count;
                 _nodes.Add(new ConversationNode
                 {
                     Key = $"t-{e.Seq}",
@@ -452,6 +505,7 @@ public sealed class ConversationFolder
                     CallView = view,
                     StartedAt = e.Time,
                 });
+                if (call.CallId is { Length: > 0 }) _toolNodeIndex[call.CallId] = toolIndex;
                 _runningTools++;
                 break;
             }
@@ -459,12 +513,16 @@ public sealed class ConversationFolder
             {
                 var result = SessionEventRead.ToolResultOf(e);
                 var callId = result.Message.Content.OfType<ToolResultBlock>().First().ToolCallId;
-                var target = _nodes.FirstOrDefault(n => n.Kind == "tool" && n.CallId == callId && n.ToolStatus == "running");
-                if (target is not null)
+                // Index lookup, not a scan: FirstOrDefault+IndexOf walked the whole transcript for
+                // every tool result, so a 2000-message session paid O(nodes) per tool call.
+                if (callId is { Length: > 0 } && _toolNodeIndex.Remove(callId, out var index)
+                    && index < _nodes.Count
+                    && _nodes[index] is { Kind: "tool", ToolStatus: "running" } target
+                    && target.CallId == callId)
                 {
                     var text = string.Join("\n", result.Message.Content.OfType<ToolResultBlock>().First().Content
                         .OfType<TextBlock>().Select(b => b.Text));
-                    _nodes[_nodes.IndexOf(target)] = target with
+                    _nodes[index] = target with
                     {
                         ToolStatus = result.Error is not null ? "error" : "done",
                         ResultText = text,
@@ -483,6 +541,10 @@ public sealed class ConversationFolder
                 var turn = SessionEventRead.TurnOf(e);
                 _endedTurns.Add(turn);
                 var reason = SessionEventRead.TurnEndReasonOf(e);
+                // Folded here so the page reads the newest failure in O(1) per tick instead of
+                // re-scanning the log while the reader sits pinned to a running turn.
+                if (reason is TurnEndReason.Error)
+                    _latestFailedTurn = _latestFailedTurn is null ? turn : Math.Max(_latestFailedTurn.Value, turn);
                 long? duration = _turnStart.TryGetValue(turn, out var started) ? e.Time - started.Time : null;
                 if (reason is TurnEndReason.Completed)
                 {
@@ -541,6 +603,7 @@ public sealed class ConversationFolder
             case SessionEventTypes.SandboxMode:
             {
                 var mode = SessionEventRead.SandboxModeOf(e);
+                _sandboxMode = mode.Mode; // latest wins; Session.LatestSandboxMode() re-scanned per tick
                 _nodes.Add(new ConversationNode
                 {
                     Key = $"sm-{e.Seq}",
@@ -552,17 +615,23 @@ public sealed class ConversationFolder
                 });
                 break;
             }
+            case SessionEventTypes.SessionTitle:
+                // Latest wins. Folded here because a title is set once near the start of the log, so
+                // Session.LatestTitle() walked nearly the whole session on every tick.
+                _title = SessionEventRead.TitleOf(e);
+                break;
+            case SessionEventTypes.PlanMode:
+                // Latest wins, and an unreadable payload clears the chip exactly the way
+                // PlanModeService.Latest() degrades — it never falls back to an older event.
+                try
+                {
+                    _planMode = SessionJson.FromElement<Blazorly.Harness.Tools.PlanModePayload>(e.Data);
+                }
+                catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or NotSupportedException)
+                {
+                    _planMode = null;
+                }
+                break;
         }
-    }
-}
-
-internal static class ConversationAssemblerSort
-{
-    /// <summary>Live tail nodes render last; everything else orders by originating seq.</summary>
-    public static int Key(ConversationNode node)
-    {
-        var parts = node.Key.Split('-');
-        if (node.Kind == "assistant" && node.Key.StartsWith("live-")) return int.MaxValue - 1;
-        return parts.Length == 2 && int.TryParse(parts[1], out var seq) ? seq : int.MaxValue;
     }
 }

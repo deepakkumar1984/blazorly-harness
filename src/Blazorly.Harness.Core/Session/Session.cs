@@ -51,6 +51,22 @@ public sealed class Session
         }
     }
 
+    /// <summary>Newest event matching <paramref name="match"/>, or null when none does. Scans
+    /// backward under the session lock without copying the log: <see cref="Events"/> allocates a
+    /// full copy per access, which a 20K-event session cannot afford on a 120ms UI tick.</summary>
+    public SessionEvent? LatestEvent(Func<SessionEvent, bool> match)
+    {
+        ArgumentNullException.ThrowIfNull(match);
+        lock (_gate)
+        {
+            for (var i = _log.Count - 1; i >= 0; i--)
+            {
+                if (match(_log[i])) return _log[i];
+            }
+            return null;
+        }
+    }
+
     /// <summary>Observers must not block; async work belongs behind a queue.</summary>
     public IDisposable Subscribe(Action<SessionEvent> observer)
     {

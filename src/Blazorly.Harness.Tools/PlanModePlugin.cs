@@ -24,23 +24,21 @@ public sealed class PlanModeService
     /// <summary>True when the latest plan/mode event marks plan mode active.</summary>
     public bool IsActive(Session session) => Latest(session) is { Active: true };
 
-    /// <summary>The latest plan/mode payload, or null when the session never set the mode.</summary>
+    /// <summary>The latest plan/mode payload, or null when the session never set the mode.
+    /// Scans backward without copying the log: <c>Session.Events</c> allocates a full copy per
+    /// access, which callers on a UI tick cannot afford on a long session.</summary>
     public PlanModePayload? Latest(Session session)
     {
-        var events = session.Events;
-        for (var i = events.Count - 1; i >= 0; i--)
+        var latest = session.LatestEvent(e => e.Type == SessionEventTypes.PlanMode);
+        if (latest is null) return null;
+        try
         {
-            if (events[i].Type != SessionEventTypes.PlanMode) continue;
-            try
-            {
-                return SessionJson.FromElement<PlanModePayload>(events[i].Data);
-            }
-            catch (Exception ex) when (ex is JsonException or InvalidOperationException or NotSupportedException)
-            {
-                return null;
-            }
+            return SessionJson.FromElement<PlanModePayload>(latest.Data);
         }
-        return null;
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or NotSupportedException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Appends the durable plan/mode event that sets the mode.</summary>
