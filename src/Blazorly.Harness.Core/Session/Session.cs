@@ -264,7 +264,8 @@ public sealed class Session
         }
     }
 
-    /// <summary>Latest todo list (whole-snapshot, latest wins).</summary>
+    /// <summary>Latest todo list (whole-snapshot, latest wins). A <c>todo/clear</c> after the
+    /// newest snapshot resets the list: the panel hides until the next snapshot arrives.</summary>
     public IReadOnlyList<TodoItem>? LatestTodos()
     {
         lock (_gate)
@@ -273,6 +274,33 @@ public sealed class Session
             {
                 if (_log[i].Type == SessionEventTypes.TodoWrite)
                     return SessionEventRead.TodosOf(_log[i]);
+                if (_log[i].Type == SessionEventTypes.TodoClear)
+                    return [];
+            }
+            return null;
+        }
+    }
+
+    /// <summary>Latest delegation-status payload for one child, or null when never recorded.
+    /// Scans under the session lock (no log copy): status writers dedup against this.</summary>
+    public SessionPayloads.SubagentStatusPayload? LatestSubagentStatus(string childSessionId)
+    {
+        lock (_gate)
+        {
+            for (var i = _log.Count - 1; i >= 0; i--)
+            {
+                if (_log[i].Type != SessionEventTypes.SubagentStatus) continue;
+                SessionPayloads.SubagentStatusPayload payload;
+                try
+                {
+                    payload = SessionEventRead.SubagentStatusOf(_log[i]);
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    continue;
+                }
+                if (string.Equals(payload.ChildSessionId, childSessionId, StringComparison.Ordinal))
+                    return payload;
             }
             return null;
         }

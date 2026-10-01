@@ -352,8 +352,14 @@ public sealed class ConversationFolder
             {
                 // Log-only delegation progress (children are hidden from the sidebar): the panel
                 // in this chat shows the latest state per child. Later events may drop the
-                // description — keep the first non-null one.
+                // description — keep the first non-null one. A dismissed row folds away until
+                // the child reports again.
                 var payload = SessionEventRead.SubagentStatusOf(e);
+                if (payload.Status == Blazorly.Harness.Core.Subagents.SubagentService.StatusDismissed)
+                {
+                    _delegations.Remove(payload.ChildSessionId);
+                    break;
+                }
                 _delegations[payload.ChildSessionId] = new DelegationView(
                     payload.ChildSessionId,
                     _delegations.TryGetValue(payload.ChildSessionId, out var prior) && prior.Description is not null

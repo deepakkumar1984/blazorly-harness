@@ -39,6 +39,10 @@ public sealed class SubagentService
 {
     public const string ServiceKey = "subagents";
     public const int MaxDelegationDepth = 3;
+    /// <summary>Delegation-panel status hiding a row: the child ran, the user dismissed it.</summary>
+    public const string StatusDismissed = "dismissed";
+    /// <summary>Delivery outcome when the wait timed out: the message stays queued in the child.</summary>
+    public const string FinishKindQueued = "queued";
 
     private readonly HarnessContext _ctx;
     private readonly List<(string Parent, Agent.Agent Child)> _children = new();
@@ -217,8 +221,13 @@ public sealed class SubagentService
     /// (authorized for the exact resuming parent); one-shot children refuse. Deliveries to
     /// the same child serialize on a per-child gate, so parallel callers (team sends to
     /// different teammates, swarm steering) run concurrently without interleaving one child.
+    /// A wait cancelled by the tool timeout (but not by a parent abort) is data, not failure:
+    /// the message stays queued in the child, so this returns a <c>queued</c> outcome naming
+    /// the child's state instead of throwing — the caller polls <c>subagent_list</c> rather
+    /// than re-sending into the queue. A parent abort still throws.
     /// </summary>
-    public async Task<SubagentResult> ContinueAsync(Agent.Agent parent, string childSessionId, string prompt, CancellationToken ct)
+    public async Task<SubagentResult> ContinueAsync(
+        Agent.Agent parent, string childSessionId, string prompt, CancellationToken ct, CancellationToken abortSignal = default)
     {
         var gate = _deliveries.GetOrAdd(childSessionId, static _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct).ConfigureAwait(false);
@@ -227,13 +236,25 @@ public sealed class SubagentService
             var live = GetChild(childSessionId);
             if (live is not null)
             {
-                await DeliverAsync(live, Message.CreateUserText(prompt), ct).ConfigureAwait(false);
+                var message = Message.CreateUserText(prompt);
+                try
+                {
+                    await DeliverAsync(live, message, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!abortSignal.IsCancellationRequested)
+                {
+                    // The wait timed out but the delivery stands: the message is in the child's
+                    // inbox and will run. Re-mark running so the panel timestamp is honest and
+                    // the reconcile healer can settle the row once the child drains.
+                    RecordStatus(parent.Session, childSessionId, null, "running");
+                    return new SubagentResult(childSessionId, QueuedNote(live, message), FinishKindQueued);
+                }
                 await FlushChildAsync(childSessionId, ct).ConfigureAwait(false);
                 var (summary, finishKind) = LastAssistantOutput(live.Session);
                 RecordStatus(parent.Session, childSessionId, null, StatusOf(finishKind), summary);
                 return new SubagentResult(childSessionId, summary, finishKind);
             }
-            return await ColdResumeAsync(parent, childSessionId, prompt, ct).ConfigureAwait(false);
+            return await ColdResumeAsync(parent, childSessionId, prompt, ct, abortSignal).ConfigureAwait(false);
         }
         finally
         {
@@ -241,7 +262,19 @@ public sealed class SubagentService
         }
     }
 
-    private async Task<SubagentResult> ColdResumeAsync(Agent.Agent parent, string childSessionId, string prompt, CancellationToken ct)
+    private static string QueuedNote(Agent.Agent child, Message message)
+    {
+        var position = child.Inbox.NextTurn.ToList().FindIndex(m => m.Id == message.Id);
+        if (position < 0 && child.Status == AgentStatus.Running)
+            return "the child already claimed your message and is running it now; the wait just timed out. "
+                + "Do not resend — poll subagent_list for its reply.";
+        var queued = position >= 0 ? $"queued at position {position + 1} of {child.Inbox.NextTurn.Count}" : "queued";
+        var state = child.Status == AgentStatus.Running ? "still running its current turn" : "idle and will pick it up next";
+        return $"the child is {state}; your message is {queued} and will run in turn order. "
+            + "Do not resend — poll subagent_list for its reply.";
+    }
+
+    private async Task<SubagentResult> ColdResumeAsync(Agent.Agent parent, string childSessionId, string prompt, CancellationToken ct, CancellationToken abortSignal = default)
     {
         var sessions = _ctx.Get<SessionStore>("sessions");
         Session childSession;
@@ -271,7 +304,16 @@ public sealed class SubagentService
         _ = _ctx.Events.EmitAsync("subagent/resumed", new { parentSessionId = parent.Id, childSessionId }, parent);
         RecordStatus(parent.Session, childSessionId, descriptor.Persona, "running");
 
-        await DeliverAsync(child, Message.CreateUserText(prompt), ct).ConfigureAwait(false);
+        var message = Message.CreateUserText(prompt);
+        try
+        {
+            await DeliverAsync(child, message, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!abortSignal.IsCancellationRequested)
+        {
+            // Same queued honesty as the live path: the resumed child is running the delivery.
+            return new SubagentResult(childSessionId, QueuedNote(child, message), FinishKindQueued);
+        }
         await FlushChildAsync(childSessionId, ct).ConfigureAwait(false);
 
         var (summary, finishKind) = LastAssistantOutput(childSession);
@@ -344,9 +386,69 @@ public sealed class SubagentService
     /// <summary>
     /// Durable progress for the parent chat's delegations panel: log-only (never model-visible),
     /// latest per child wins in the UI fold, survives restarts and compaction.
+    /// Terminal rows dedup against the latest row for the child: the background monitor and
+    /// the reconcile healer race after an interrupt, and the duplicate carried no signal.
+    /// Running rows always append — their timestamp is the reconcile gate, and a re-delivery
+    /// must move it past the turn boundary the child is about to close.
     /// </summary>
-    private static void RecordStatus(Session parentSession, string childSessionId, string? description, string status, string? summary = null)
-        => parentSession.Append(SessionEventTypes.SubagentStatus, new SessionPayloads.SubagentStatusPayload(childSessionId, description, status, summary));
+    private void RecordStatus(Session parentSession, string childSessionId, string? description, string status, string? summary = null)
+    {
+        if (status != "running")
+        {
+            var latest = parentSession.LatestSubagentStatus(childSessionId);
+            if (latest is not null
+                && latest.Status == status
+                && latest.Summary == summary
+                && (description is null || latest.Description == description))
+                return;
+        }
+        parentSession.Append(SessionEventTypes.SubagentStatus, new SessionPayloads.SubagentStatusPayload(childSessionId, description, status, summary));
+    }
+
+    /// <summary>
+    /// Hides one delegation row from the parent chat's agents panel (the per-row dismiss
+    /// button). The child's session is untouched — this only folds the row away.
+    /// </summary>
+    public void DismissDelegation(string parentSessionId, string childSessionId)
+    {
+        var parent = _ctx.Get<SessionStore>("sessions").Get(parentSessionId)
+            ?? throw new Kernel.HarnessException("SESSION_NOT_FOUND", $"no session '{parentSessionId}'");
+        RecordStatus(parent, childSessionId, null, StatusDismissed);
+    }
+
+    /// <summary>
+    /// Hides every settled delegation row (finished, error, aborted) from the parent chat's
+    /// agents panel — the Clear finished button. Running rows stay: hiding live work would
+    /// strand its outcome where nobody watches. Returns the number of rows dismissed.
+    /// </summary>
+    public int DismissSettledDelegations(string parentSessionId)
+    {
+        var parent = _ctx.Get<SessionStore>("sessions").Get(parentSessionId)
+            ?? throw new Kernel.HarnessException("SESSION_NOT_FOUND", $"no session '{parentSessionId}'");
+        var latest = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var e in parent.Events)
+        {
+            if (e.Type != SessionEventTypes.SubagentStatus) continue;
+            SessionPayloads.SubagentStatusPayload payload;
+            try
+            {
+                payload = SessionEventRead.SubagentStatusOf(e);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+            latest[payload.ChildSessionId] = payload.Status;
+        }
+        var dismissed = 0;
+        foreach (var (childId, status) in latest)
+        {
+            if (status is "running" or StatusDismissed) continue;
+            RecordStatus(parent, childId, null, StatusDismissed);
+            dismissed++;
+        }
+        return dismissed;
+    }
 
     private static string SchemaInstruction(JsonSchema.Schema? schema)
         => schema is null
@@ -440,7 +542,9 @@ public sealed class SubagentService
         child.Followup(message);
         var claimSeq = await claimed.Task.WaitAsync(ct).ConfigureAwait(false);
         await ended.Task.WaitAsync(ct).ConfigureAwait(false);
-        await child.WhenIdleAsync().ConfigureAwait(false);
+        // Bounded like the gates above: further queued turns must not stretch this delivery's
+        // wait past the caller's timeout — the wait cancels, the queued work still runs.
+        await child.WhenIdleAsync().WaitAsync(ct).ConfigureAwait(false);
     }
 
     private static string? MessageIdOf(SessionEvent @event)
@@ -480,6 +584,9 @@ public sealed class SubagentService
             finishKind = reason switch
             {
                 TurnEndReason.Aborted => "aborted",
+                // An interrupt landing mid-request surfaces as a cancelled request, not a
+                // model failure: the panel should read "aborted", not "error".
+                TurnEndReason.Error error when error.Code == LlmErrorCodes.Aborted => "aborted",
                 TurnEndReason.Error => "error",
                 TurnEndReason.MaxTokens => "max-tokens",
                 _ => "completed",

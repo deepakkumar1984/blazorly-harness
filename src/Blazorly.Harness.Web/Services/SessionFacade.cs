@@ -680,4 +680,24 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
 
     private Core.Sessions.Session GetSession(string sessionId)
         => harness.Sessions.Get(sessionId) ?? throw new InvalidOperationException($"unknown session '{sessionId}'");
+
+    // ---- right-pane clearing (durable, log-only) ----
+
+    /// <summary>Clears the task list (todo/clear): the panel hides until the agent's next
+    /// snapshot. History stays in the log — only the latest-wins fold resets.</summary>
+    public void ClearTodos(string sessionId)
+    {
+        var session = GetSession(sessionId);
+        session.Append(SessionEventTypes.TodoClear, new { cleared = true });
+    }
+
+    /// <summary>Hides one delegation row from the agents panel; the child's session is untouched.</summary>
+    public void DismissDelegation(string sessionId, string childSessionId)
+        => (harness.Subagents ?? throw new InvalidOperationException("subagents are not mounted"))
+            .DismissDelegation(GetSession(sessionId).Id, childSessionId);
+
+    /// <summary>Hides every settled delegation row; running rows stay. Returns rows dismissed.</summary>
+    public int ClearSettledDelegations(string sessionId)
+        => (harness.Subagents ?? throw new InvalidOperationException("subagents are not mounted"))
+            .DismissSettledDelegations(GetSession(sessionId).Id);
 }

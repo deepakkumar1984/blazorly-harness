@@ -521,6 +521,15 @@ public static class AcpServer
                 };
                 break;
             }
+            case SessionEventTypes.TodoClear:
+            {
+                yield return new
+                {
+                    sessionUpdate = "plan",
+                    entries = Array.Empty<object>(),
+                };
+                break;
+            }
         }
     }
 

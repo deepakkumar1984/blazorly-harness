@@ -15,6 +15,9 @@ public static class SessionEventTypes
     public const string ToolCall = "tool/call";
     public const string ToolResult = "tool/result";
     public const string TodoWrite = "todo/write";
+    /// <summary>Log-only reset of the task list (the Clear button, an empty todo_write):
+    /// deliberately NOT a known type, so it appends outside a turn like any plugin event.</summary>
+    public const string TodoClear = "todo/clear";
     public const string RequestHeader = "request/header";
     public const string RequestContext = "request/context";
     public const string AgentInboxSpliced = "agent/inbox/spliced";

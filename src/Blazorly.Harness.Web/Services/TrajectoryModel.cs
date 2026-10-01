@@ -205,6 +205,7 @@ public static class TrajectoryBuilder
         SessionEventTypes.SessionTitle => new TrajectoryRow("chip", "✎", "titled", SafeTitle(e)),
         SessionEventTypes.SandboxMode => new TrajectoryRow("chip", "⛨", "sandbox", SafeDetail(e, "mode")),
         SessionEventTypes.TodoWrite => new TrajectoryRow("chip", "☰", "todos updated", $"{SessionEventRead.TodosOf(e).Count} entries"),
+        SessionEventTypes.TodoClear => new TrajectoryRow("chip", "☰", "todos cleared", null),
         SessionEventTypes.GoalChange => new TrajectoryRow("chip", "◎", "goal changed", null),
         SessionEventTypes.PlanMode => new TrajectoryRow("chip", "▣", "plan mode", SafeDetail(e, "enabled")),
         SessionEventTypes.ScheduleChange => new TrajectoryRow("chip", "⏰", "schedule changed", null),

@@ -204,16 +204,18 @@ public sealed class TeamService
 
     public sealed record TeamSendResult(TeamMessage Message, string Reply);
 
-    /// <summary>Delivers an instruction to a teammate: queued event, child continuation (cold-resuming a settled teammate from its persisted session), delivered event.</summary>
-    public async Task<TeamSendResult> SendAsync(Agent lead, string toSessionId, string body, CancellationToken ct = default)
+    /// <summary>Delivers an instruction to a teammate: queued event, child continuation (cold-resuming a settled teammate from its persisted session), delivered event.
+    /// A wait that times out still delivers: the reply names the queued state and the member stays active.</summary>
+    public async Task<TeamSendResult> SendAsync(Agent lead, string toSessionId, string body, CancellationToken ct = default, CancellationToken abortSignal = default)
     {
         var teamId = lead.Session.Id;
         var message = new TeamMessage(NewMessageId(), teamId, toSessionId, body);
         AppendQueued(lead.Session, teamId, message);
         MarkMember(lead.Session, toSessionId, TeamMemberStatus.Active);
-        var result = await _subagents.ContinueAsync(lead, toSessionId, body, ct).ConfigureAwait(false);
+        var result = await _subagents.ContinueAsync(lead, toSessionId, body, ct, abortSignal).ConfigureAwait(false);
         AppendDelivered(lead.Session, teamId, message);
-        MarkMember(lead.Session, toSessionId, TeamMemberStatus.Idle);
+        if (result.FinishKind != SubagentService.FinishKindQueued)
+            MarkMember(lead.Session, toSessionId, TeamMemberStatus.Idle);
         return new TeamSendResult(message, result.Summary);
     }
 
@@ -394,7 +396,7 @@ public sealed class SendMessageTool(TeamService service) : ToolDefinition<SendMe
     protected override async Task<SendMessageOutput> ExecuteTyped(SendMessageArgs args, ToolRunContext exec)
     {
         var lead = DelegationGuards.RequireAgent(exec);
-        var send = await service.SendAsync(lead, args.ToSessionId, args.Body, exec.Signal).ConfigureAwait(false);
+        var send = await service.SendAsync(lead, args.ToSessionId, args.Body, exec.Signal, exec.AbortSignal).ConfigureAwait(false);
         return new SendMessageOutput(send.Message.Id, send.Message.To, send.Reply);
     }
 

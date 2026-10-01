@@ -56,6 +56,11 @@ public sealed class ToolRunContext
 {
     public required JsonElement Args { get; init; }
     public required CancellationToken Signal { get; set; }
+    /// <summary>The caller's own abort (parent turn cancel): Signal is this plus the tool
+    /// timeout, so a Signal fire with a quiet AbortSignal is a timeout — and tools with a
+    /// durable side effect already delivered (a queued subagent message) can report the
+    /// timeout as data instead of throwing. None when the caller cannot distinguish.</summary>
+    public CancellationToken AbortSignal { get; init; }
     public Agent.Agent? Agent { get; init; }
     public string? CallId { get; init; }
     public required Func<Message, Task> DeferContextAsync { get; init; }

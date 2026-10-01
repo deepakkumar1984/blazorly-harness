@@ -342,6 +342,7 @@ public sealed class ToolRuntime
         {
             Args = input.Arguments,
             Signal = timeoutCts.Token,
+            AbortSignal = signal,
             Agent = input.Agent,
             CallId = input.CallId,
             DeferContextAsync = input.DeferContextAsync ?? (_ => Task.CompletedTask),

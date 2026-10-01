@@ -613,6 +613,7 @@
             <div class="todo-head">
                 <span class="todo-head-title">Tasks</span>
                 <span class="todo-count">@done/@todos.Count done</span>
+                <button class="link" title="Clear the task list — history stays in the log; the next agent update starts a fresh list" aria-label="Clear task list" @onclick="ClearTodos">clear</button>
                 <button class="icon" title="Hide task list" aria-label="Hide task list" @onclick="() => _todosCollapsed = true">✕</button>
             </div>
             <div class="todo-list">
@@ -635,6 +636,10 @@
             <div class="delegation-head">
                 <span class="todo-head-title">Agents</span>
                 <span class="todo-count">@(running > 0 ? $"{running} running" : "all settled")</span>
+                @if (agents.Any(d => d.Status != "running"))
+                {
+                    <button class="link" title="Hide every settled agent row — running agents stay; their sessions are untouched" aria-label="Clear settled agents" @onclick="ClearSettledDelegations">clear finished</button>
+                }
                 <button class="icon" title="Hide agents panel" aria-label="Hide agents panel" @onclick="() => _delegationsCollapsed = true">✕</button>
             </div>
             <div class="delegation-list">
@@ -647,6 +652,10 @@
                                 @(d.Description ?? d.ChildSessionId)
                             </a>
                             <span class="delegation-status">@d.Status</span>
+                            @if (d.Status != "running")
+                            {
+                                <button class="icon delegation-dismiss" title="Hide this agent row — its session is untouched" aria-label="Hide this agent row" @onclick="() => DismissDelegation(d.ChildSessionId)">✕</button>
+                            }
                         </div>
                         @if (d.Summary is { Length: > 0 })
                         {
@@ -1846,6 +1855,24 @@
             _dirty = true;
         }
         return Task.CompletedTask;
+    }
+
+    private void ClearTodos()
+    {
+        Facade.ClearTodos(SessionId);
+        _dirty = true;
+    }
+
+    private void DismissDelegation(string childSessionId)
+    {
+        Facade.DismissDelegation(SessionId, childSessionId);
+        _dirty = true;
+    }
+
+    private void ClearSettledDelegations()
+    {
+        Facade.ClearSettledDelegations(SessionId);
+        _dirty = true;
     }
 
     private void ToggleModelMenu()

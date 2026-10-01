@@ -1309,6 +1309,10 @@ button.link:hover { text-decoration: underline; }
     font-size: 12px;
 }
 .delegation-item-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+/* Per-row dismiss stays subdued until hover so settled rows scan cleanly. */
+.delegation-item .delegation-dismiss { opacity: 0.45; padding: 0 4px; flex: none; }
+.delegation-item:hover .delegation-dismiss,
+.delegation-item .delegation-dismiss:focus-visible { opacity: 1; }
 .delegation-glyph { flex: none; font-size: 13px; color: var(--text-dim); }
 .delegation-desc {
     color: var(--text);

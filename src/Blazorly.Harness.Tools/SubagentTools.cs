@@ -39,7 +39,10 @@ public sealed record SubagentListEntry(
     [property: System.Text.Json.Serialization.JsonPropertyName("session_id")] string SessionId,
     string Status,
     [property: System.Text.Json.Serialization.JsonPropertyName("last_summary")] string? LastSummary,
-    int Depth);
+    int Depth,
+    [property: System.Text.Json.Serialization.JsonPropertyName("running")] bool Running = false,
+    [property: System.Text.Json.Serialization.JsonPropertyName("pending")] int Pending = 0,
+    [property: System.Text.Json.Serialization.JsonPropertyName("last_active")] long? LastActive = null);
 
 public sealed record SubagentListOutput(IReadOnlyList<SubagentListEntry> Children);
 
@@ -149,7 +152,9 @@ public sealed class SubagentSendTool(SubagentService subagents) : ToolDefinition
     public override string Description =>
         "Send a follow-up instruction to one of your child agents (see subagent_list). Settled continuable children "
         + "are cold-resumed from their persisted session; one-shot children cannot be continued. Waits for the "
-        + "child's next turn and returns its summary.";
+        + "child's next turn and returns its summary. When the child is still working after the wait, this returns "
+        + "finish_kind 'queued' instead of failing — your message stays queued in the child, so poll subagent_list "
+        + "for its reply rather than re-sending.";
 
     public override int? TimeoutMs => 600000;
 
@@ -176,7 +181,7 @@ public sealed class SubagentSendTool(SubagentService subagents) : ToolDefinition
     {
         var parent = exec.Agent ?? throw new ToolException("NO_AGENT", "this tool requires an owning agent");
         if (string.IsNullOrWhiteSpace(args.Prompt)) throw new ToolException("INVALID_ARGS", "prompt must be non-empty");
-        var result = await subagents.ContinueAsync(parent, args.SessionId, args.Prompt.Trim(), exec.Signal).ConfigureAwait(false);
+        var result = await subagents.ContinueAsync(parent, args.SessionId, args.Prompt.Trim(), exec.Signal, exec.AbortSignal).ConfigureAwait(false);
         return new SubagentSendOutput(result.SessionId, result.Summary, result.FinishKind);
     }
 
@@ -189,9 +194,11 @@ public sealed class SubagentListTool(SubagentService subagents) : ToolDefinition
     public override string Name => "subagent_list";
 
     public override string Description =>
-        "List your child agents with activity status. 'live' children are in memory (running or idle); 'settled' "
-        + "children exist only as persisted sessions and are resumed by the next subagent_send. Use this to read a "
-        + "background child's latest summary.";
+        "List your child agents with activity status. 'live' children are in memory — running (mid-turn) or idle "
+        + "(result ready); 'settled' children exist only as persisted sessions and are resumed by the next "
+        + "subagent_send. Before summarizing work you delegated, call this and wait until every child shows "
+        + "running=false and pending=0: a live child with no fresh summary is still working, not done. Pending "
+        + "counts queued follow-ups (yours or the queue's) the child has not claimed yet.";
 
     public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object();
 
@@ -207,6 +214,9 @@ public sealed class SubagentListTool(SubagentService subagents) : ToolDefinition
                     ["status"] = JsonSchema.String(description: "'live' | 'settled'."),
                     ["last_summary"] = JsonSchema.String(),
                     ["depth"] = JsonSchema.Integer(),
+                    ["running"] = JsonSchema.Boolean(description: "True while a live child is mid-turn; idle live children have their result ready."),
+                    ["pending"] = JsonSchema.Integer(description: "Follow-ups queued in the child's inbox, not yet claimed."),
+                    ["last_active"] = JsonSchema.Integer(description: "Unix-millis of the child's newest session event, when known."),
                 },
                 Required = ["session_id", "status", "depth"],
                 AdditionalProperties = false,
@@ -226,12 +236,18 @@ public sealed class SubagentListTool(SubagentService subagents) : ToolDefinition
             var live = subagents.GetChild(header.Id);
             string status = "settled";
             string? lastSummary = null;
+            var running = false;
+            var pending = 0;
+            long? lastActive = null;
             if (live is not null)
             {
                 status = "live";
                 lastSummary = LastSummaryOf(live);
+                running = live.Status == AgentStatus.Running;
+                pending = live.Inbox.NextTurn.Count + live.Inbox.NextStep.Count;
+                lastActive = live.Session.LastTime;
             }
-            entries.Add(new SubagentListEntry(header.Id, status, lastSummary, header.DelegationDepth));
+            entries.Add(new SubagentListEntry(header.Id, status, lastSummary, header.DelegationDepth, running, pending, lastActive));
         }
         return new SubagentListOutput(entries);
     }
@@ -252,7 +268,15 @@ public sealed class SubagentListTool(SubagentService subagents) : ToolDefinition
     protected override IReadOnlyList<ContentBlock> RenderTyped(SubagentListArgs args, SubagentListOutput value)
         => [new TextBlock(value.Children.Count == 0
             ? "no child agents"
-            : string.Join("\n", value.Children.Select(c => $"{c.SessionId} [{c.Status}] depth {c.Depth}")))];
+            : string.Join("\n", value.Children.Select(RenderChild)))];
+
+    private static string RenderChild(SubagentListEntry child)
+    {
+        if (child.Status != "live") return $"{child.SessionId} [settled] depth {child.Depth}";
+        var state = child.Running ? "running" : "idle";
+        var pending = child.Pending > 0 ? $", {child.Pending} pending" : "";
+        return $"{child.SessionId} [live, {state}{pending}] depth {child.Depth}";
+    }
 }
 
 public sealed class SubagentListArgs;

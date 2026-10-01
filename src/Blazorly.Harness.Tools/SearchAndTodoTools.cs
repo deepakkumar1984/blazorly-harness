@@ -337,7 +337,8 @@ public sealed class TodoWriteTool : ToolDefinition<TodoWriteArgs, TodoWriteOutpu
 
     public override string Description =>
         "Update the task list with a whole-list snapshot. Every call replaces the previous list; "
-        + "mark exactly one task in_progress at a time and completed tasks stay visible.";
+        + "mark exactly one task in_progress at a time and completed tasks stay visible. "
+        + "Pass an empty list to clear the list once its work is fully done and behind you.";
 
     public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(
         properties: new Dictionary<string, JsonSchema.Schema>
@@ -357,7 +358,7 @@ public sealed class TodoWriteTool : ToolDefinition<TodoWriteArgs, TodoWriteOutpu
                 },
                 Required = ["content", "status"],
                 AdditionalProperties = false,
-            }, minItems: 1),
+            }),
         },
         required: ["todos"]);
 
@@ -403,7 +404,9 @@ public sealed class TodoWriteTool : ToolDefinition<TodoWriteArgs, TodoWriteOutpu
     }
 
     protected override IReadOnlyList<ContentBlock> RenderTyped(TodoWriteArgs args, TodoWriteOutput output)
-        => [new TextBlock($"Updated todo list: {output.Pending} pending, {output.InProgress} in progress, {output.CompletedCount} completed.")];
+        => [new TextBlock(output.Todos.Count == 0
+            ? "Cleared the todo list."
+            : $"Updated todo list: {output.Pending} pending, {output.InProgress} in progress, {output.CompletedCount} completed.")];
 
     protected override ToolCallView? PresentCallTyped(TodoWriteArgs args) => new()
     {
