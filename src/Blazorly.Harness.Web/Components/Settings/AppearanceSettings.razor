@@ -4,7 +4,7 @@
 <div class="appearance-heading">
     <div>
         <h2>Make yourself at home.</h2>
-        <p>Choose the colors and typography for your workspace.</p>
+        <p>Twelve palettes, ten accents, seven type pairs. The same workspace, worn your way.</p>
     </div>
     <span class="appearance-saved">
         <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="14" height="11" rx="2" /><path d="M7 17h6M10 14v3" /></svg>
@@ -20,19 +20,40 @@ else
 {
     <div class="appearance-layout">
         <div class="appearance-controls">
+            <section class="appearance-section" aria-labelledby="looks-title">
+                <div class="appearance-section-title">
+                    <div><h3 id="looks-title">Quick looks</h3><p class="appearance-help">One click sets palette, accent, type, corners and text size together.</p></div>
+                </div>
+                <div class="quick-looks">
+                    @foreach (var look in _state.QuickLooks)
+                    {
+                        <button type="button" class="quick-look @(_state.Preferences.Theme == look.Patch["theme"] && _state.Preferences.Accent == look.Patch["accent"] && _state.Preferences.Font == look.Patch["font"] ? "on" : "")"
+                                aria-pressed="@(_state.Preferences.Theme == look.Patch["theme"] && _state.Preferences.Accent == look.Patch["accent"] && _state.Preferences.Font == look.Patch["font"] ? "true" : "false")"
+                                @onclick="() => ApplyLook(look)">
+                            <span class="quick-look-preview" data-theme="@look.Patch["theme"]" aria-hidden="true"><span></span><span><i></i><i></i></span></span>
+                            <span class="quick-look-label"><span>@look.Name</span></span>
+                        </button>
+                    }
+                </div>
+            </section>
+
             <fieldset class="appearance-section">
                 <legend>Color theme</legend>
                 <div class="appearance-section-intro">
                     <p>A different atmosphere. The same workspace.</p>
-                    <label class="device-theme @(_state.Preferences.Theme == "system" ? "selected" : "")">
-                        <input type="radio" name="appearance-theme" value="system" checked="@(_state.Preferences.Theme == "system")" @onchange='() => Update(new { theme = "system" })' />
-                        Follow device
-                    </label>
                 </div>
-                <div class="theme-grid">
+                <label class="device-theme @(_state.Preferences.Theme == "system" ? "selected" : "")">
+                    <input type="radio" name="appearance-theme" value="system" checked="@(_state.Preferences.Theme == "system")" @onchange='() => Update(new { theme = "system" })' />
+                    <span>
+                        <strong>Match my device</strong>
+                        <small>Cream in the day, Midnight at night</small>
+                    </span>
+                    <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="10" rx="2" /><path d="M7 16.5h6" /></svg>
+                </label>
+                <div class="theme-grid" role="radiogroup" aria-label="Color theme">
                     @foreach (var theme in _state.Themes)
                     {
-                        <label class="theme-card @(_state.Preferences.Theme == theme.Id ? "selected" : "")">
+                        <label class="theme-card @(_state.Preferences.Theme == theme.Id ? "selected" : "")" title="@theme.Name — @theme.Description">
                             <input class="visually-hidden" type="radio" name="appearance-theme" value="@theme.Id" checked="@(_state.Preferences.Theme == theme.Id)" @onchange="() => Update(new { theme = theme.Id })" />
                             <span class="theme-preview" data-theme="@theme.Id" aria-hidden="true">
                                 <span class="theme-preview-sidebar"><i></i><i></i><i></i></span>
@@ -53,52 +74,92 @@ else
                 </div>
             </fieldset>
 
-            <section class="appearance-section" aria-labelledby="typography-title">
-                <h3 id="typography-title">Typography</h3>
-                <p class="appearance-help">A comfortable read, down to the last line of code.</p>
-                <div class="font-fields">
-                    <div class="appearance-field">
-                        <label for="interface-font">Interface font</label>
-                        <select id="interface-font" value="@_state.Preferences.InterfaceFont" @onchange="e => Update(new { interfaceFont = e.Value?.ToString() })">
-                            @foreach (var font in _state.InterfaceFonts)
-                            {
-                                <option value="@font.Id">@font.Name</option>
-                            }
-                        </select>
-                        <div class="font-specimen interface-specimen"><span>Aa</span><span>The space to build.<small>@InterfaceFont.Description</small></span></div>
-                    </div>
-                    <div class="appearance-field">
-                        <label for="code-font">Code &amp; terminal font</label>
-                        <select id="code-font" value="@_state.Preferences.CodeFont" @onchange="e => Update(new { codeFont = e.Value?.ToString() })">
-                            @foreach (var font in _state.CodeFonts)
-                            {
-                                <option value="@font.Id">@font.Name</option>
-                            }
-                        </select>
-                        <div class="font-specimen code-specimen"><span>{ }</span><span>const idea = 1;<small>0 1 2 3 4 letters IlO</small></span></div>
-                    </div>
-                </div>
-                <p class="appearance-footnote">Inter, Manrope, and JetBrains Mono are bundled for offline use. Other choices use fonts on your device.</p>
-            </section>
-
             <section class="appearance-section" aria-labelledby="accent-title">
                 <div class="appearance-section-title">
-                    <div><h3 id="accent-title">A personal touch</h3><p class="appearance-help">Pick an accent for buttons, links, and highlights.</p></div>
-                    <button type="button" class="appearance-text-button" disabled="@string.IsNullOrEmpty(_state.Preferences.Accent)" @onclick='() => Update(new { accent = "" })'>Use theme color</button>
+                    <div><h3 id="accent-title">Accent colour</h3><p class="appearance-help">Buttons, links, highlights and the send key follow this.</p></div>
                 </div>
                 <div class="accent-controls">
-                    <div class="accent-swatches" aria-label="Accent colors">
-                        @foreach (var (color, name) in Accents)
+                    <div class="accent-swatches">
+                        <button type="button" class="accent-default" aria-pressed="@(_state.Preferences.Accent == "theme" ? "true" : "false")" @onclick='() => Update(new { accent = "theme" })'>
+                            <svg viewBox="0 0 20 20" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 2.5l1.7 4.6 4.8.3-3.7 3 1.2 4.6L10 12.4 5.9 15l1.2-4.6-3.7-3 4.8-.3z" /></svg>
+                            Theme default
+                        </button>
+                        @foreach (var accent in _state.Accents)
                         {
-                            <button type="button" class="accent-swatch" style="@($"--swatch: {color}")" aria-label="@($"{name} accent")" aria-pressed="@(Accent == color ? "true" : "false")" title="@name" @onclick="() => Update(new { accent = color })">
-                                <span aria-hidden="true">@(Accent == color ? "✓" : "")</span>
+                            var isActive = _state.Preferences.Accent == accent.Id;
+                            var swatch = Theme.Dark ? accent.HexDark : accent.Hex;
+                            <button type="button" class="accent-swatch" style="@($"--swatch: {swatch}; --swatch-contrast: {accent.Contrast}")"
+                                    aria-label="@($"{accent.Name} accent")" title="@accent.Name"
+                                    aria-pressed="@(isActive ? "true" : "false")" @onclick="() => Update(new { accent = accent.Id })">
+                                <span aria-hidden="true">@(isActive ? "✓" : "")</span>
                             </button>
                         }
+                        <label class="custom-accent @(_state.Preferences.Accent == "custom" ? "selected" : "")">
+                            <input type="color" value="@_state.Preferences.CustomAccent" aria-label="Custom accent colour"
+                                   @onchange="OnCustomAccent" />
+                            <span>Custom<code>@_state.Preferences.CustomAccent.ToUpperInvariant()</code></span>
+                        </label>
                     </div>
-                    <label class="custom-accent">
-                        <input type="color" value="@Accent" aria-label="Custom accent color" @onchange="e => Update(new { accent = e.Value?.ToString() })" />
-                        <span>Custom <code>@Accent.ToUpperInvariant()</code></span>
-                    </label>
+                </div>
+            </section>
+
+            <section class="appearance-section" aria-labelledby="typography-title">
+                <div class="appearance-section-title">
+                    <div><h3 id="typography-title">Type</h3><p class="appearance-help">A pair for the interface and its headings, plus the face used for code.</p></div>
+                </div>
+                <div class="font-cards" role="radiogroup" aria-label="Interface font">
+                    @foreach (var font in _state.Fonts)
+                    {
+                        <button type="button" class="font-card @(_state.Preferences.Font == font.Id ? "on" : "")"
+                                style="@FontStyle(font.Id)" aria-pressed="@(_state.Preferences.Font == font.Id ? "true" : "false")"
+                                @onclick="() => Update(new { font = font.Id })">
+                            <strong>@font.Name</strong>
+                            <span>The quick brown fox jumps over the lazy dog.</span>
+                            <small>@font.Description</small>
+                        </button>
+                    }
+                </div>
+                <div class="appearance-field" style="margin-top:16px">
+                    <label for="code-font">Code &amp; terminal font</label>
+                    <select id="code-font" value="@_state.Preferences.CodeFont" @onchange="e => Update(new { codeFont = e.Value?.ToString() })">
+                        @foreach (var font in _state.CodeFonts)
+                        {
+                            <option value="@font.Id">@font.Name — @font.Description</option>
+                        }
+                    </select>
+                    <div class="font-specimen code-specimen"><span>{ }</span><span>const idea = 1;<small>0 1 2 3 4 letters IlO</small></span></div>
+                </div>
+            </section>
+
+            <section class="appearance-section" aria-labelledby="shape-title">
+                <div class="appearance-section-title">
+                    <div><h3 id="shape-title">Text size &amp; corners</h3><p class="appearance-help">Text size scales the whole interface; corners set how round every surface reads.</p></div>
+                </div>
+                <div class="size-cards" role="radiogroup" aria-label="Text size">
+                    @foreach (var size in _state.TextSizes)
+                    {
+                        <button type="button" class="size-card @(_state.Preferences.TextSize == size.Id ? "on" : "")"
+                                aria-pressed="@(_state.Preferences.TextSize == size.Id ? "true" : "false")"
+                                @onclick="() => Update(new { textSize = size.Id })">
+                            <b style="@($"font-size: {size.Sample}")">Aa</b>
+                            <small>@size.Name</small>
+                        </button>
+                    }
+                </div>
+                <div class="corner-cards" role="radiogroup" aria-label="Corner style" style="margin-top:14px">
+                    @foreach (var radius in _state.Radii)
+                    {
+                        <button type="button" class="corner-card @(_state.Preferences.Radius == radius.Id ? "on" : "")"
+                                aria-pressed="@(_state.Preferences.Radius == radius.Id ? "true" : "false")"
+                                @onclick="() => Update(new { radius = radius.Id })">
+                            <i style="@($"border-radius: {radius.Sample}px")"></i>
+                            <small>@radius.Name</small>
+                        </button>
+                    }
+                </div>
+                <div class="motion-row">
+                    <span><strong>Reduce motion</strong><small>Calm the pulses, transitions and animated dots.</small></span>
+                    <label class="appearance-toggle"><input type="checkbox" checked="@_state.Preferences.ReduceMotion" @onchange="e => Update(new { reduceMotion = e.Value is true })" /><span>Reduce</span></label>
                 </div>
             </section>
 
@@ -147,8 +208,11 @@ else
                 <p class="preview-caption">Your style follows you through chats, files, and the terminal.</p>
                 <div class="appearance-summary">
                     <div><span>Theme</span><strong>@(_state.Preferences.Theme == "system" ? $"Device · {Theme.Name}" : Theme.Name)</strong></div>
-                    <div><span>Interface</span><strong>@InterfaceFont.Name</strong></div>
+                    <div><span>Accent</span><strong>@_state.ResolvedAccent.Name</strong></div>
+                    <div><span>Type</span><strong>@Font.Name</strong></div>
                     <div><span>Code</span><strong>@CodeFont.Name</strong></div>
+                    <div><span>Text size</span><strong>@TextSize.Name</strong></div>
+                    <div><span>Corners</span><strong>@Radius.Name</strong></div>
                 </div>
             </div>
         </aside>
@@ -169,14 +233,10 @@ else
     private bool _disposed;
     private bool CssDirty => _cssDraft != _state?.Preferences.CustomCss;
     private AppearanceOption Theme => _state!.Themes.First(t => t.Id == _state.ResolvedTheme);
-    private AppearanceOption InterfaceFont => _state!.InterfaceFonts.First(f => f.Id == _state.Preferences.InterfaceFont);
+    private AppearanceOption Font => _state!.Fonts.First(f => f.Id == _state.Preferences.Font);
     private AppearanceOption CodeFont => _state!.CodeFonts.First(f => f.Id == _state.Preferences.CodeFont);
-    private string Accent => string.IsNullOrEmpty(_state!.Preferences.Accent) ? Theme.Accent : _state.Preferences.Accent;
-    private static readonly (string Color, string Name)[] Accents =
-    [
-        ("#91b0ff", "Blue"), ("#baa5f7", "Violet"), ("#f09cba", "Rose"),
-        ("#e5b887", "Amber"), ("#82d4a8", "Green"), ("#79cdd5", "Teal")
-    ];
+    private AppearanceSize TextSize => _state!.TextSizes.First(s => s.Id == _state.Preferences.TextSize);
+    private AppearanceCorner Radius => _state!.Radii.First(r => r.Id == _state.Preferences.Radius);
     private const string CssExample = """
         :root {
           --radius: 14px;
@@ -184,6 +244,23 @@ else
 
         .bubble { line-height: 1.8; }
         """;
+
+    // Each font pair previews itself in its own faces, exactly as it will be applied.
+    private static string FontStyle(string id) => id switch
+    {
+        "playful" => "font-family: Inter, var(--font-system);",
+        "clean" => "font-family: Inter, var(--font-system);",
+        "friendly" => "font-family: Nunito, var(--font-system);",
+        "techy" => "font-family: \"DM Sans\", var(--font-system);",
+        "editorial" => "font-family: Lora, Georgia, serif;",
+        "mono" => "font-family: \"JetBrains Mono\", var(--font-code-system);",
+        _ => "font-family: var(--font-system);"
+    };
+
+    private async Task ApplyLook(AppearanceLook look) => await Update(look.Patch);
+
+    private async Task OnCustomAccent(ChangeEventArgs args) =>
+        await Update(new { accent = "custom", customAccent = args.Value?.ToString() });
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -269,19 +346,28 @@ else
     public sealed class AppearanceSnapshot
     {
         public AppearancePreferences Preferences { get; set; } = new();
-        public string ResolvedTheme { get; set; } = "dark";
+        public string ResolvedTheme { get; set; } = "cream";
+        public AppearanceOption ResolvedAccent { get; set; } = new();
         public bool Persisted { get; set; }
         public List<AppearanceOption> Themes { get; set; } = [];
-        public List<AppearanceOption> InterfaceFonts { get; set; } = [];
+        public List<AppearanceOption> Accents { get; set; } = [];
+        public List<AppearanceOption> Fonts { get; set; } = [];
         public List<AppearanceOption> CodeFonts { get; set; } = [];
+        public List<AppearanceSize> TextSizes { get; set; } = [];
+        public List<AppearanceCorner> Radii { get; set; } = [];
+        public List<AppearanceLook> QuickLooks { get; set; } = [];
     }
 
     public sealed class AppearancePreferences
     {
-        public string Theme { get; set; } = "dark";
-        public string InterfaceFont { get; set; } = "inter";
+        public string Theme { get; set; } = "system";
+        public string Accent { get; set; } = "theme";
+        public string CustomAccent { get; set; } = "#6d4aff";
+        public string Font { get; set; } = "clean";
         public string CodeFont { get; set; } = "jetbrains";
-        public string Accent { get; set; } = "";
+        public string TextSize { get; set; } = "md";
+        public string Radius { get; set; } = "round";
+        public bool ReduceMotion { get; set; }
         public string CustomCss { get; set; } = "";
         public bool CustomCssEnabled { get; set; } = true;
     }
@@ -291,6 +377,33 @@ else
         public string Id { get; set; } = "";
         public string Name { get; set; } = "";
         public string Description { get; set; } = "";
-        public string Accent { get; set; } = "";
+        public bool Dark { get; set; }
+        public string Hex { get; set; } = "";
+        public string HexDark { get; set; } = "";
+        public string Contrast { get; set; } = "";
+        public bool ThemeDefault { get; set; }
+        public bool Custom { get; set; }
+    }
+
+    public sealed class AppearanceSize
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public double Px { get; set; }
+        public string Sample { get; set; } = "";
+    }
+
+    public sealed class AppearanceCorner
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public double Sample { get; set; }
+    }
+
+    public sealed class AppearanceLook
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public Dictionary<string, string> Patch { get; set; } = [];
     }
 }

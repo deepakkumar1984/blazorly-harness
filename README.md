@@ -14,7 +14,7 @@ Site: [Blazorly Harness](https://harness.blazorly.com/) — features, install, a
 ## ✨ Features
 
 - **Chat web UI** — streaming agent turns, live tool cards, tasks, context usage, and delegated agents. The resizable Terminal / Run panel sits below the chat composer
-- **Personal appearance** — six theme presets or your device theme, interface and code fonts, custom accents, and optional CSS with a live preview. Open **Appearance** in the sidebar; preferences are saved in this browser and bundled fonts work offline
+- **Personal appearance** — twelve theme palettes or your device theme, ten accent presets or any custom colour, seven type pairs, a separate code font, four text sizes, four corner styles, reduced motion, six one-click looks, and optional CSS with a live preview. Open **Appearance** in the sidebar; preferences are saved in this browser and every bundled font works offline
 - **Workspace navigation** — one sidebar with Chats / Files tabs, workspace switching, rename, and workspace-scoped search. Folders are registered explicitly; the harness installation is never added as a default workspace
 - **Workspace deletion** — confirmation shows the local folder and session count, then stops owned work and permanently deletes the folder, chats, child sessions, and attachments
 - **Open chats and files** — one tab strip with individual close buttons and Close all. Chat drafts, attachments, and file edits survive tab switches; closing a chat tab preserves its saved history. Close all offers save or discard for unsaved files
@@ -76,7 +76,9 @@ The [startup and behavior audit](audits/2026-09-25-startup-integrity.md) records
 
 For a gateway that serves the Responses API, choose **OpenAI Responses** as its API type in **Settings → Providers**. Automatic OpenAI-compatible routes also use Responses for GPT-5 and GPT-6 models, including provider-prefixed ids such as `openai/gpt-6-astra`.
 
-Personalize the UI in **Settings → Appearance**. Theme, font, and accent changes save automatically; custom CSS uses **Apply CSS** and can be disabled without losing your code. **Reset appearance** restores defaults. If a custom style hides the controls, open `/settings?tab=appearance&reset-appearance=1` on your running instance to reset them.
+Personalize the UI in **Settings → Appearance**. Palette, accent, type, text size, corner style and motion changes save automatically; custom CSS uses **Apply CSS** and can be disabled without losing your code. **Reset appearance** restores defaults. If a custom style hides the controls, open `/settings?tab=appearance&reset-appearance=1` on your running instance to reset them.
+
+The appearance system is built on a token layer (`wwwroot/appearance.css`) whose variable names are the ones custom CSS already uses — `--bg`, `--bg-raised`, `--bg-overlay`, `--text`, `--text-dim`, `--text-faint`, `--border`, `--border-strong`, `--accent`, `--accent-contrast`, `--danger`, `--success`, `--warn`, `--radius`, `--shadow-1`… — so a stylesheet written for an earlier version keeps working. Every corner derives from `--radius` (Sharp / Soft / Round / Bubbly) and every type size is in `rem`, so one text-size choice scales the whole interface. Preferences saved by an earlier version are migrated on load: old palettes and fonts map to their nearest current choice, and a saved accent colour is kept exactly as picked.
 
 ```
 blazorly run "summarize this repo"      # headless task (current directory becomes the workspace)
