@@ -49,7 +49,7 @@ public sealed record SwarmOutput(string Objective, string Status, IReadOnlyList<
 public sealed class SwarmTool(SubagentService subagents) : ToolDefinition<SwarmArgs, SwarmOutput>
 {
     public const int DefaultMaxParallel = 4;
-    public const int MaxParallelCap = 10;
+    public const int MaxParallelCap = 20;
     public const int DefaultMaxReviewRounds = 1;
     public const int MaxReviewRoundsCap = 3;
 
@@ -83,7 +83,7 @@ public sealed class SwarmTool(SubagentService subagents) : ToolDefinition<SwarmA
                 },
                 Required = ["title", "prompt"],
                 AdditionalProperties = false,
-            }, description: "Optional explicit task list; omit to let the planner shard the objective."),
+            }, maxItems: MaxParallelCap, description: $"Optional explicit task list, at most {MaxParallelCap}; omit to let the planner shard the objective."),
             ["max_parallel"] = JsonSchema.Integer($"Concurrent workers, 1–{MaxParallelCap}. Defaults to {DefaultMaxParallel}."),
             ["review"] = JsonSchema.Boolean("Run the reviewer gate after the join (default true)."),
             ["max_review_rounds"] = JsonSchema.Integer($"Re-dispatch rounds for failed tasks, 0–{MaxReviewRoundsCap}. Defaults to {DefaultMaxReviewRounds}."),
@@ -147,7 +147,7 @@ public sealed class SwarmTool(SubagentService subagents) : ToolDefinition<SwarmA
                 },
                 Required = ["title", "prompt"],
                 AdditionalProperties = false,
-            }, minItems: 1, maxItems: 12, description: "Independent, self-contained tasks covering the objective."),
+            }, minItems: 1, maxItems: MaxParallelCap, description: $"Independent, self-contained tasks covering the objective, at most {MaxParallelCap}."),
         },
         required: ["tasks"]);
 
@@ -234,7 +234,8 @@ public sealed class SwarmTool(SubagentService subagents) : ToolDefinition<SwarmA
     {
         var result = await subagents.SpawnAsync(lead, new SubagentRequest(
             Prompt: "Shard the objective below into independent, self-contained tasks a single agent can complete "
-                + "without talking to the others. Prefer 2–6 tasks; exceed that only when the objective genuinely "
+                + "without talking to the others. Use as many tasks as the objective cleanly splits into, from 2 up to "
+                + MaxParallelCap + ". Do not pad with filler tasks, and do not stop early when the work genuinely "
                 + "decomposes further. Task prompts must be self-contained (a worker sees only the objective and its "
                 + "own task), non-overlapping, and together they must cover the objective.\n\nObjective: " + objective,
             Description: "swarm planner",

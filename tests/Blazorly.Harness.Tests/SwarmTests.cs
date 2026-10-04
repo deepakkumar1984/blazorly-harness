@@ -29,6 +29,24 @@ public class SwarmTests
     private const string ReviewPassJson = """{"verdict":"pass","notes":"both tasks verified in the workspace","failed_tasks":[],"followups":[]}""";
 
     [Fact]
+    public void Swarm_FanOutCap_AllowsTwentyWorkers()
+    {
+        Assert.Equal(20, SwarmTool.MaxParallelCap);
+
+        var tool = new SwarmTool(null!);
+        Assert.Equal(20, tool.Parameters.Properties!["tasks"].MaxItems);
+        Assert.Contains("1–20", tool.Parameters.Properties["max_parallel"].Description);
+
+        var tasks = Enumerable.Range(1, 21).Select(i => new { title = $"t{i}", prompt = $"do {i}" });
+        using var over = JsonDocument.Parse(JsonSerializer.Serialize(new { objective = "ship it", tasks }));
+        Assert.Contains("at most 20", JsonSchema.Validate(over.RootElement, tool.Parameters));
+
+        var within = Enumerable.Range(1, 20).Select(i => new { title = $"t{i}", prompt = $"do {i}" });
+        using var ok = JsonDocument.Parse(JsonSerializer.Serialize(new { objective = "ship it", tasks = within, max_parallel = 20 }));
+        Assert.Null(JsonSchema.Validate(ok.RootElement, tool.Parameters));
+    }
+
+    [Fact]
     public async Task Swarm_PlannerShardsFansOutJoinsAndReviews()
     {
         var calls = new List<GenerateOptions>();
