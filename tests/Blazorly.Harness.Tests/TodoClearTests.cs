@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Blazorly.Harness.Core.Sessions;
+using Blazorly.Harness.Core.SystemPrompt;
 using Blazorly.Harness.Core.Tools;
 using Blazorly.Harness.Llm;
 using Blazorly.Harness.Web.Services;
@@ -57,6 +58,19 @@ public class TodoClearTests
 
         agent.Session.Append(SessionEventTypes.StepEnd, new SessionPayloads.StepEnd(1, 1));
         agent.Session.Append(SessionEventTypes.TurnEnd, new SessionPayloads.TurnEnd(1, new TurnEndReason.Completed()));
+    }
+
+    [Fact]
+    public void TodoGuidance_SurvivesWorkspaceIdentityOverride()
+    {
+        // The task-list discipline lives in its own prompt section (and the tool description),
+        // so a workspace identity override must not drop it.
+        var harness = TestHarness.Create();
+        harness.Loop.IdentityOverride = _ => "Custom workspace identity.";
+        var agent = harness.CreateAgent();
+        var text = SystemPromptService.RenderPrompt(harness.Prompt.Assemble(agent, agent.Session.Header.Cwd));
+        Assert.Contains("Custom workspace identity.", text);
+        Assert.Contains("Never finish with a pending or in_progress task left open", text);
     }
 
     [Fact]

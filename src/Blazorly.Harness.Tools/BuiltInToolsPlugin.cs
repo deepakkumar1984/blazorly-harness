@@ -41,14 +41,23 @@ public sealed class BuiltInToolsPlugin(
         var prompt = ctx.Get<Core.SystemPrompt.SystemPromptService>("systemPrompt");
         var bashSection = prompt.RegisterSection("tool:bash", 105, _ =>
             "When running commands: each bash call is a fresh shell; pass workdir instead of cd. "
+            + "Never start servers or long-running work with shell backgrounding (&, nohup, disown): "
+            + "use bash with run_in_background: true and follow it with job_output / job_kill. "
             + "Verify changes with commands before claiming completion.");
         var fsSection = prompt.RegisterSection("tool:fs", 106, _ =>
             "File editing: read a file before editing it (edit refuses otherwise). write replaces the whole file; "
             + "edit replaces an exact literal match. Mutations are confined to the workspace root.");
+        // Separate from the identity body on purpose: workspace-level custom instructions replace
+        // the body below the header, but this task-list discipline must survive that override.
+        var todoSection = prompt.RegisterSection("tool:todo", 107, _ =>
+            "Task list: for multi-step work, create the todo_write list first and keep it accurate as you go — "
+            + "exactly one task in_progress, mark each completed immediately when it finishes, add newly "
+            + "discovered tasks. Never finish with a pending or in_progress task left open.");
         ctx.Effect(() =>
         {
             bashSection.Dispose();
             fsSection.Dispose();
+            todoSection.Dispose();
         });
         return Task.CompletedTask;
     }

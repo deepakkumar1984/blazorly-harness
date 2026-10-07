@@ -257,8 +257,13 @@ public sealed class WorkspaceAgentConfigTests : BootstrapperTestBase
         await using var boot = await Boot();
         var body = AgentLoopService.DefaultIdentityBody;
         Assert.Contains("Senior Software Engineering Agent", body);
-        Assert.Contains("## 1. MISSION AND ACCOUNTABILITY", body);
-        Assert.Contains("## 21. FINAL OPERATING DIRECTIVE", body);
+        Assert.Contains("1. Core Principles", body);
+        Assert.Contains("14. Task Tracking & Autonomy", body);
+        Assert.Contains("Final Directive", body);
+        // The task list must be actively maintained, not left open: statuses track the real
+        // state of the work and nothing is still pending/in_progress at completion.
+        Assert.Contains("exactly one task in_progress", body);
+        Assert.Contains("Never finish with a pending or in_progress task left open", body);
         // The built-in body must stay literal: the editor prefills from it and an unchanged save
         // stores null, so nothing in it may depend on prompt variables.
         Assert.False(body.Contains("{{", StringComparison.Ordinal));

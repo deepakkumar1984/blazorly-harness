@@ -1161,20 +1161,21 @@ button.link:hover { text-decoration: underline; }
    close on purpose — reading a long plan means selecting text, and a drag that lands on
    the backdrop must not discard the review. */
 .plan-review {
-    width: min(1060px, 96vw);
-    height: min(86vh, 900px);
-    max-height: 92dvh;
+    width: min(1400px, 96vw);
+    height: min(92vh, 1200px);
+    max-height: 94dvh;
     display: flex;
     flex-direction: column;
     padding: 0;
     overflow: hidden;
 }
 .plan-review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); margin: 0; }
-.plan-review-title { font-weight: 700; }
+.plan-review-head > div { min-width: 0; }
+.plan-review-title { font-weight: 700; overflow-wrap: break-word; }
 .plan-review-meta { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
 .plan-review-body { display: flex; gap: 14px; flex: 1; min-height: 0; padding: 14px 16px; }
 .plan-review-outline {
-    flex: 0 0 210px;
+    flex: 0 0 250px;
     overflow-y: auto;
     border-right: 1px solid var(--border);
     padding-right: 10px;

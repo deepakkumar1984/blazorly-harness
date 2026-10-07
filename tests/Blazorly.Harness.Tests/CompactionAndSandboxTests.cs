@@ -305,6 +305,29 @@ public class BackgroundBashTests
     }
 
     [Fact]
+    public async Task ForegroundShellBackgroundedServer_ReturnsPromptlyWithRunInBackgroundGuidance()
+    {
+        // Regression: `sleep 30 &` in a foreground bash call used to hang the tool until timeout/abort
+        // because the backgrounded child inherits the redirected pipes. The drain is now bounded.
+        await using var harness = TestHarness.Create();
+        var agent = harness.CreateAgent();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await harness.Tools.Execute(new ToolExecutionInput
+        {
+            Name = "bash",
+            Arguments = JsonSerializer.SerializeToElement(new { command = "sleep 30 &", description = "shell-backgrounded sleep" }),
+            CallId = "call_fg_bg",
+            Signal = CancellationToken.None,
+            Agent = agent,
+        });
+        sw.Stop();
+        Assert.False(result.IsError);
+        var text = Assert.IsType<TextBlock>(result.Content.Single()).Text;
+        Assert.Contains("run_in_background", text);
+        Assert.True(sw.Elapsed < TimeSpan.FromMinutes(2), $"foreground call with shell & must not hang; took {sw.Elapsed}");
+    }
+
+    [Fact]
     public async Task JobKill_StopsLongRunningJob()
     {
         await using var harness = TestHarness.Create();

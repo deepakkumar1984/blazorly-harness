@@ -336,8 +336,11 @@ public sealed class TodoWriteTool : ToolDefinition<TodoWriteArgs, TodoWriteOutpu
     public override string Name => "todo_write";
 
     public override string Description =>
-        "Update the task list with a whole-list snapshot. Every call replaces the previous list; "
-        + "mark exactly one task in_progress at a time and completed tasks stay visible. "
+        "Update the task list with a whole-list snapshot. Every call replaces the previous list. "
+        + "For multi-step work, create the list first, then keep statuses accurate as you go: exactly one "
+        + "task in_progress at a time, mark each task completed immediately when it finishes, and add newly "
+        + "discovered tasks instead of working off-list. Completed tasks stay visible. Never finish with a "
+        + "pending or in_progress task left open — end with everything completed. "
         + "Pass an empty list to clear the list once its work is fully done and behind you.";
 
     public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(

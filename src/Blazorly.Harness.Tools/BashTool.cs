@@ -43,8 +43,11 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
         + "no state (cwd, variables, functions) persists between calls — pass workdir instead of using cd. "
         + "Non-zero exits are reported as [exit code: N]. Long output is truncated to its tail. "
         + "File mutations are confined to the session workspace by the sandbox; a blocked write reports "
-        + "[sandbox: ...] — a policy denial, not a bug. Set run_in_background: true for long-running commands: "
-        + "returns a job id immediately; collect with job_output, stop with job_kill.";
+        + "[sandbox: ...] — a policy denial, not a bug. Never background with shell operators "
+        + "(&, nohup, disown, setsid, \"... &\"): a shell-backgrounded child inherits the call's output pipes, "
+        + "so a foreground call would hang waiting for output that never closes. For long-running commands "
+        + "(servers, watchers, tails) set run_in_background: true instead: it returns a job id immediately; "
+        + "collect with job_output, stop with job_kill.";
 
     public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(
         properties: new Dictionary<string, JsonSchema.Schema>
@@ -53,7 +56,7 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             ["description"] = JsonSchema.String("Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI)."),
             ["timeoutMs"] = JsonSchema.Number("Timeout in milliseconds; the command is killed on expiry."),
             ["workdir"] = JsonSchema.String("Working directory for this command. Defaults to the session workspace."),
-            ["run_in_background"] = JsonSchema.Boolean("Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies."),
+            ["run_in_background"] = JsonSchema.Boolean("Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies. Required for servers/watchers — never use shell & for those."),
         },
         required: ["command", "description"]);
 
@@ -106,10 +109,9 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             {
                 throw new ToolException("NO_JOBS", "no jobs runtime is mounted for background execution");
             }
-            var startInfoBackground = BuildStartInfo(args, exec, foreground: false, forceUnconfined: true)
-                ?? throw new ToolException("SANDBOX_UNAVAILABLE",
-                    SandboxPolicy.ConfinementUnavailable("bash", SandboxPolicy.WorkspaceWrite));
-            var jobId = jobs.StartProcess("bash", args.Description, startInfoBackground, owner: exec.Agent);
+            // Reuse the sandbox-resolved startInfo above so background jobs run under the same
+            // confinement (and approval outcome) as a foreground call — never silently unconfined.
+            var jobId = jobs.StartProcess("bash", args.Description, startInfo, owner: exec.Agent);
             return new BashOutput("background", null, null, false, false, "", "", -1, jobId);
         }
 
@@ -145,15 +147,40 @@ public sealed class BashTool : ToolDefinition<BashTool.Args, BashTool.BashOutput
             signal = "SIGKILL";
         }
 
-        string stdout, stderr;
+        // A shell-backgrounded child (command &, nohup, disown) inherits the redirected pipes,
+        // so ReadToEndAsync would wait forever even though the shell itself already exited.
+        // Bound the drain: normal output closes with the process and returns immediately, while a
+        // leaked pipe trips the grace timeout, kills the orphaned tree, and tells the model to use
+        // run_in_background instead. Without this, "start a server with &" hangs the call.
+        string stdout = "", stderr = "";
+        var drainStalled = false;
         try
         {
+            await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(TimeSpan.FromSeconds(5), exec.Signal).ConfigureAwait(false);
             stdout = await stdoutTask.ConfigureAwait(false);
             stderr = await stderrTask.ConfigureAwait(false);
         }
+        catch (TimeoutException)
+        {
+            drainStalled = true;
+            KillTree(process);
+        }
+        catch (OperationCanceledException) when (!exec.Signal.IsCancellationRequested)
+        {
+            drainStalled = true;
+            KillTree(process);
+        }
         catch (OperationCanceledException)
         {
-            stdout = stderr = "";
+            aborted = true;
+            KillTree(process);
+        }
+        if (drainStalled)
+        {
+            stderr += (stderr.Length > 0 && !stderr.EndsWith('\n') ? "\n" : "")
+                + "[bash: output pipes stayed open after the shell exited — a shell-backgrounded child (&, nohup, disown) "
+                + "is holding them. The process tree was terminated. Re-run servers/watchers with run_in_background: true "
+                + "and read them with job_output; stop them with job_kill.]";
         }
 
         var (truncatedOut, truncatedAt) = Truncate(stdout);
