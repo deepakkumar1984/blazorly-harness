@@ -204,13 +204,16 @@ public sealed class AgentDriver
             if (!string.Equals(contextText, _agent.RetainedContextSnapshot, StringComparison.Ordinal))
             {
                 // The maintenance preamble matters as much as the dedup check: the time section
-                // re-renders every minute (TimeContextPlugin), and chatty models used to answer
-                // each refresh with "The runtime context has been refreshed…" — narrating system
-                // upkeep instead of continuing the task.
-                var preamble = "(System maintenance message — do not acknowledge or comment on it; continue your current task.)\n\n";
+                // re-renders every minute (TimeContextPlugin), and chatty models narrate the
+                // refresh ("The runtime context has been refreshed…", then "Context absorbed —
+                // continuing …"). "Continue your current task" was read as an order to say that
+                // out loud. Name the opener and require the next action with no status line.
+                var preamble = "(System maintenance message — do not acknowledge or comment on it. "
+                    + "Do not say \"Context absorbed\", \"continuing\", or recap the task. "
+                    + "Call the next tool or continue the work with no status line.)\n\n";
                 var body = contextText.Length > 0
                     ? preamble + "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n" + contextText
-                    : "Current runtime context: none. This clears any earlier runtime-context snapshot.";
+                    : preamble + "Current runtime context: none. This clears any earlier runtime-context snapshot.";
                 var snapshot = new Message(Ids.NewMessageId(), "user", [new TextBlock(body)], MessageSource.FromPlugin("system-prompt", "snapshot"));
                 _agent.RetainedContextSnapshot = contextText;
                 messages.Add(snapshot);

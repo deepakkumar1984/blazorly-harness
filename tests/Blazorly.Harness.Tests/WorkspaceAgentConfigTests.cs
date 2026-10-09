@@ -242,6 +242,8 @@ public sealed class WorkspaceAgentConfigTests : BootstrapperTestBase
         var text = RenderedIdentity(boot, plain);
         Assert.Contains(today, text);
         Assert.Contains("Custom body only.", text);
+        // The silence rule sits on the header, so a replaced charter cannot drop it.
+        Assert.Contains("Context absorbed", text);
 
         // Custom text can interpolate the same variables into its own sentences.
         boot.Workspaces.UpdateAgentConfig(ws.Id, "Freeze scope after {{date}} ({{weekday}}).", null);

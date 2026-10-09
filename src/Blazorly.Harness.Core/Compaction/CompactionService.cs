@@ -254,7 +254,7 @@ public sealed class CompactionService
         var summaryMessage = new Llm.Message(
             Ids.NewMessageId(),
             "user",
-            [new TextBlock($"[Context compacted] Summary of the earlier conversation:\n\n{summary}")],
+            [new TextBlock($"[Context compacted] Summary of the earlier conversation. System bookkeeping, not a user message — do not acknowledge it, and do not say \"Context absorbed\" or \"continuing\". Continue from the summary with no status line.\n\n{summary}")],
             MessageSource.FromPlugin("compaction", "summary"));
         session.Append(SessionEventTypes.UserMessage, summaryMessage, new Session.AppendOptions(
             SourceEventSeqs: [.. shadowSeqs],

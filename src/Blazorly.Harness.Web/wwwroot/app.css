@@ -1159,9 +1159,11 @@ button.link:hover { text-decoration: underline; }
 /* Plan review: a reading surface, not a tooltip. Head and foot pinned, body scrolls;
    the outline is a jump list for plans too long to skim in one viewport. No overlay-click
    close on purpose — reading a long plan means selecting text, and a drag that lands on
-   the backdrop must not discard the review. */
-.plan-review {
-    width: min(1400px, 96vw);
+   the backdrop must not discard the review.
+   Selector stays stronger than `.modal` (later in this file, 620px). A single class
+   loses the cascade and the two columns collapse into that dialog width. */
+.modal.plan-review {
+    width: min(2800px, 96vw);
     height: min(92vh, 1200px);
     max-height: 94dvh;
     display: flex;
@@ -1175,7 +1177,7 @@ button.link:hover { text-decoration: underline; }
 .plan-review-meta { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
 .plan-review-body { display: flex; gap: 14px; flex: 1; min-height: 0; padding: 14px 16px; }
 .plan-review-outline {
-    flex: 0 0 250px;
+    flex: 0 0 500px;
     overflow-y: auto;
     border-right: 1px solid var(--border);
     padding-right: 10px;
@@ -1203,7 +1205,7 @@ button.link:hover { text-decoration: underline; }
 .plan-review-foot .ask-hint { margin-right: auto; }
 @media (max-width: 760px) {
     .plan-review-outline { display: none; }
-    .plan-review { height: 92dvh; }
+    .modal.plan-review { height: 92dvh; }
 }
 
 /* ---- session body: chat column + optional tasks column. nothing overlays. ---- */

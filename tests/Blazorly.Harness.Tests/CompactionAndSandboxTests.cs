@@ -57,6 +57,7 @@ public class CompactionTests
         var derived = agent.Session.DeriveMessages();
         Assert.True(derived.Count < 7);
         Assert.Contains(derived, m => m.FlattenText().Contains("SUMMARY: the task is underway."));
+        Assert.Contains(derived, m => m.FlattenText().Contains("do not say \"Context absorbed\""));
         // Pressure fell below the trigger.
         Assert.False(compaction.ShouldCompact(agent));
         Assert.Equal(1, calls); // exactly one compaction call so far (the loop calls are pending)

@@ -68,9 +68,10 @@ public class AgentLoopTests
     [Fact]
     public async Task RuntimeContextSnapshot_IsSilent_AndDoesNotRepeatWithinTheMinute()
     {
-        // The time section re-renders every minute; chatty models used to answer each refresh
-        // with "The runtime context has been refreshed…". The snapshot must carry a do-not-
-        // acknowledge preamble, and must not repeat while its content is unchanged.
+        // The time section re-renders every minute; chatty models narrate each refresh
+        // ("The runtime context has been refreshed…", then "Context absorbed — continuing …").
+        // The snapshot must forbid that opener by name, and must not repeat while its content
+        // is unchanged.
         await using var harness = TestHarness.Create(_ => Scripted.Text("ok"));
         new Blazorly.Harness.Core.Context.TimeContextPlugin().Apply(harness.Ctx);
         var agent = harness.CreateAgent();
@@ -88,6 +89,8 @@ public class AgentLoopTests
         var texts = snapshots.Select(x => x.FlattenText()).ToList();
         var text = Assert.Single(texts); // identical content across turns — injected once, not per turn
         Assert.Contains("do not acknowledge", text);
+        Assert.Contains("Context absorbed", text);
+        Assert.DoesNotContain("continue your current task", text);
         Assert.Contains("Current time:", text);
     }
 

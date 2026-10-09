@@ -141,7 +141,8 @@ public sealed class AgentLoopService
     /// </summary>
     public const string IdentityHeader =
         "You are Blazorly Harness, an agentic coding assistant powered by {{provider}} ({{model}}).\n"
-        + "Today is {{weekday}}, {{date}} in this machine's local time zone.";
+        + "Today is {{weekday}}, {{date}} in this machine's local time zone.\n"
+        + "Do not announce context handling. Never open a reply with \"Context absorbed\", \"continuing\", or a note that a system message was received. Start with the next action.";
 
     /// <summary>The built-in instruction body; fallback when no workspace override applies.
     /// The text itself lives in <see cref="HarnessDefaultInstructions.Body"/>.</summary>
