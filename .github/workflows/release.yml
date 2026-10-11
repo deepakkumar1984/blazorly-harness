@@ -19,8 +19,12 @@ jobs:
           dotnet-version: 10.0.x
       - name: Build all platforms
         run: |
-          # strip the leading v — NuGet rejects /p:Version=v0.1.0 (v0.1.0 restore failure)
-          export BLAZORLY_VERSION="${GITHUB_REF_NAME#v}"
+          # strip the leading v — NuGet rejects /p:Version=v0.1.0 (v0.1.0 restore failure).
+          # Branch dispatches have no tag: leave the version unset so make-dist
+          # falls back to its dev version instead of passing "main" to NuGet.
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            export BLAZORLY_VERSION="${GITHUB_REF_NAME#v}"
+          fi
           ./installer/make-dist.sh
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
