@@ -1,0 +1,11 @@
+# Signing and notarization overlay.
+#
+# Applied by CI only when Apple credentials are configured. electron-builder
+# finds the signing identity in CSC_LINK (base64 Developer ID Application .p12)
+# and notarizes with APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID.
+#
+#   npx electron-builder --mac \
+#     --config electron-builder.yml --config electron-builder.signing.yml
+
+mac:
+  notarize: true

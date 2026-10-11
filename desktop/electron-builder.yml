@@ -1,0 +1,49 @@
+appId: com.blazorly.harness
+productName: Blazorly Harness
+copyright: Copyright © Blazorly
+
+directories:
+  output: dist
+
+files:
+  - src/**/*
+  - assets/**/*
+  - package.json
+
+# A `resources/engine/` directory (see scripts/package.sh --with-engine, or the
+# release workflow which stages the same osx-arm64 archive the CLI ships) makes
+# the app self-contained; without it the app resolves BLAZORLY_BIN, the
+# installer locations, or `blazorly` on PATH at runtime.
+extraResources:
+  - from: resources
+    to: .
+    filter:
+      - "**/*"
+      - "!.gitkeep"
+
+protocols:
+  - name: Blazorly Harness
+    schemes:
+      - blazorly
+
+mac:
+  category: public.app-category.developer-tools
+  icon: assets/icon.icns
+  target:
+    - dmg
+    - zip
+  darkModeSupport: true
+
+win:
+  icon: assets/icon.png
+  target:
+    - nsis
+
+linux:
+  icon: assets/icon.png
+  category: Development
+  target:
+    - AppImage
+    - deb
+
+publish: null

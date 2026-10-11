@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <title>Blazorly Harness</title>
+  <style>
+    :root {
+      --bg: #0f0d16;
+      --text: #e8e6f0;
+      --dim: #a49fb8;
+      --accent: #0e6b73;
+      --accent-bright: #14a3af;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .drag-strip { position: fixed; top: 0; left: 0; right: 0; height: 30px; -webkit-app-region: drag; }
+    .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 14px; }
+    .mark { position: relative; width: 64px; height: 64px; }
+    .mark svg { width: 100%; height: 100%; display: block; }
+    .mark::after {
+      content: ''; position: absolute; inset: 0;
+      background: linear-gradient(112deg, transparent 30%, rgba(255,255,255,0.55) 50%, transparent 70%);
+      background-size: 220% 100%; background-position: 140% 0; background-repeat: no-repeat;
+      -webkit-mask: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='1.2' y='1.2' width='21.6' height='21.6' rx='4.6'/%3E%3C/svg%3E") center / contain no-repeat;
+      animation: shimmer 2200ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+    @keyframes shimmer { 0% { background-position: 140% 0; } 100% { background-position: -105% 0; } }
+    @media (prefers-reduced-motion: reduce) { .mark::after { animation: none; opacity: 0; } }
+    h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.2px; }
+    .status { color: var(--dim); font-size: 13px; min-height: 18px; }
+    .hint { color: var(--dim); font-size: 12px; opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <div class="drag-strip"></div>
+  <div class="wrap">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect x="1.2" y="1.2" width="21.6" height="21.6" rx="4.6" fill="#0e6b73" />
+        <g fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round">
+          <rect x="6.5" y="4.5" width="11" height="15" rx="3.5" />
+          <path d="M4 12h16" />
+        </g>
+      </svg>
+    </div>
+    <h1>Blazorly Harness</h1>
+    <div class="status" id="status">Starting the engine…</div>
+    <div class="hint">The local engine runs on this machine; nothing leaves it without your provider settings.</div>
+  </div>
+  <script>
+    const statusEl = document.getElementById('status');
+    const labels = {
+      stopped: 'Engine stopped',
+      starting: 'Starting the engine…',
+      attached: 'Connecting to your running engine…',
+      running: 'Opening your workspace…',
+      failed: 'The engine failed to start — opening details…',
+    };
+    const api = window.blazorlyDesktop;
+    const render = (s) => { if (s && labels[s.status]) statusEl.textContent = labels[s.status]; };
+    if (api) {
+      api.getServerStatus().then(render).catch(() => {});
+      api.onServerStatus(render);
+    }
+  </script>
+</body>
+</html>

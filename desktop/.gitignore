@@ -1,0 +1,7 @@
+node_modules/
+dist/
+out/
+resources/blazorly
+resources/blazorly.exe
+resources/engine/
+.DS_Store

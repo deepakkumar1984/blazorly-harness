@@ -1,0 +1,23 @@
+{
+  "name": "blazorly-harness-desktop",
+  "productName": "Blazorly Harness",
+  "version": "0.14.0",
+  "description": "Desktop shell for the Blazorly Harness agentic coding harness — runs the local engine and serves its UI in a native window.",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs",
+  "author": "Blazorly",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "icons": "bash scripts/make-icons.sh",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  }
+}

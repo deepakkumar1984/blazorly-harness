@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <title>Blazorly Harness</title>
+  <style>
+    :root { --bg: #0f0d16; --panel: #171426; --text: #e8e6f0; --dim: #a49fb8; --border: #2c2745;
+      --accent: #0e6b73; --accent-bright: #14a3af; --danger: #e5484d; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .drag-strip { position: fixed; top: 0; left: 0; right: 0; height: 30px; -webkit-app-region: drag; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 64px 28px 28px; display: flex; flex-direction: column; gap: 14px; }
+    h1 { margin: 0; font-size: 18px; }
+    .stage { color: var(--danger); font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; }
+    .message { color: var(--text); font-size: 14px; line-height: 1.5; }
+    pre { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+      font-size: 12px; line-height: 1.45; max-height: 260px; overflow: auto; white-space: pre-wrap; color: var(--dim); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    button { font: inherit; font-size: 13px; padding: 8px 14px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+    button.primary { background: var(--accent); border-color: var(--accent); }
+    button.primary:hover { background: var(--accent-bright); }
+    button:hover { border-color: var(--accent); }
+    .path { font-size: 12px; color: var(--dim); }
+  </style>
+</head>
+<body>
+  <div class="drag-strip"></div>
+  <div class="wrap">
+    <div class="stage" id="stage">startup failure</div>
+    <h1>Blazorly Harness couldn’t start the engine</h1>
+    <div class="message" id="message">No details were captured.</div>
+    <pre id="log" hidden></pre>
+    <div class="row">
+      <button class="primary" id="retry">Retry</button>
+      <button id="logs">Show Log File</button>
+      <button id="copy">Copy Diagnostics</button>
+      <button id="quit">Quit</button>
+    </div>
+    <div class="path" id="path"></div>
+  </div>
+  <script>
+    const api = window.blazorlyDesktop;
+    const $ = (id) => document.getElementById(id);
+    let busy = false;
+
+    async function load() {
+      if (!api) return;
+      const info = await api.getInfo().catch(() => null);
+      const server = info?.server;
+      if (server?.failure) {
+        $('stage').textContent = server.failure.stage + ' failure';
+        $('message').textContent = server.failure.message;
+      }
+      if (server?.logTail?.length) {
+        $('log').hidden = false;
+        $('log').textContent = server.logTail.join('\n');
+      }
+      if (info?.logPath) $('path').textContent = 'Log: ' + info.logPath;
+    }
+
+    $('retry').addEventListener('click', async () => {
+      if (busy) return;
+      busy = true;
+      $('stage').textContent = 'restarting';
+      $('message').textContent = 'Starting the engine again…';
+      const status = await api.restartServer().catch((error) => ({ status: 'failed', failure: { message: String(error) } }));
+      busy = false;
+      if (status.status !== 'failed') return; // main navigates to the UI
+      $('stage').textContent = (status.failure?.stage ?? 'restart') + ' failure';
+      $('message').textContent = status.failure?.message ?? 'The engine still did not start.';
+      await load();
+    });
+    $('logs').addEventListener('click', () => api.openLogs());
+    $('copy').addEventListener('click', () => api.copyDiagnostics());
+    $('quit').addEventListener('click', () => api.quit());
+    load();
+  </script>
+</body>
+</html>

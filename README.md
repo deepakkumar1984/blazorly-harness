@@ -85,6 +85,26 @@ blazorly run "summarize this repo"      # headless task (current directory becom
 blazorly --version                       # build stamp
 ```
 
+### 🖥️ Desktop app
+
+The same engine in a native window — tray, menu bar, `blazorly://` links, and a
+branded startup screen. It attaches to an engine that is already running, or
+starts and stops its own. Tagged releases publish a macOS build with the engine
+bundled; install it with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/deepakkumar1984/blazorly-harness/main/installer/install-desktop.sh | bash
+```
+
+Or run it from source:
+
+```bash
+cd desktop && npm install && npm start
+```
+
+See [desktop/README.md](desktop/README.md) for flags, packaging, and
+[desktop/docs/architecture.md](desktop/docs/architecture.md) for the design.
+
 ---
 
 ## ⚙️ Essential configuration

@@ -39,9 +39,15 @@ jobs:
           fi
           gh release upload "$GITHUB_REF_NAME" --clobber \
             dist/blazorly-*.tar.gz dist/blazorly-*.zip dist/blazorly-*.sha256 dist/SHA256SUMS \
-            installer/install.sh installer/install.ps1
+            installer/install.sh installer/install.ps1 installer/install-desktop.sh
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Share the osx-arm64 engine with the desktop job
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-osx-arm64
+          path: dist/blazorly-osx-arm64.tar.gz
+          retention-days: 1
       - name: Upload artifacts (manual runs)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
@@ -51,3 +57,71 @@ jobs:
             dist/blazorly-*.tar.gz
             dist/blazorly-*.zip
             dist/SHA256SUMS
+
+  # The desktop app bundles the exact osx-arm64 engine archive the dist job
+  # produces, so the app and the CLI always ship the same bytes. Builds are
+  # ad-hoc signed until MAC_CERT_P12 (Developer ID Application .p12, base64) and
+  # the notarization secrets (APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD) exist;
+  # with those set the same job signs and notarizes automatically.
+  desktop:
+    needs: dist
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Fetch the osx-arm64 engine
+        uses: actions/download-artifact@v4
+        with:
+          name: engine-osx-arm64
+          path: engine
+      - name: Stage the engine inside the app resources
+        run: |
+          mkdir -p desktop/resources/engine
+          tar -xzf engine/blazorly-osx-arm64.tar.gz -C desktop/resources/engine
+          ls desktop/resources/engine | head
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: desktop
+      - name: Stamp the desktop version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: npm pkg set version="${GITHUB_REF_NAME#v}"
+        working-directory: desktop
+      - name: Build the app
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: 8VKHSJ3FUC
+        run: |
+          if [[ -n "${CSC_LINK:-}" && -n "${APPLE_ID:-}" ]]; then
+            echo "Building signed + notarized."
+            npx electron-builder --mac --config electron-builder.yml --config electron-builder.signing.yml
+          elif [[ -n "${CSC_LINK:-}" ]]; then
+            echo "::notice::Signing configured without notarization credentials — signing only."
+            npx electron-builder --mac --config electron-builder.yml
+          else
+            echo "::notice::MAC_CERT_P12 is not configured — building an ad-hoc signed app. Add the Developer ID secrets to enable signing + notarization."
+            CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --config electron-builder.yml
+          fi
+        working-directory: desktop
+      - name: Write desktop checksums
+        run: shasum -a 256 ./dist/*.dmg ./dist/*.zip > ./dist/SHA256SUMS-desktop
+        working-directory: desktop
+      - name: Publish desktop artifacts to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload "$GITHUB_REF_NAME" --clobber ./dist/*.dmg ./dist/*.zip ./dist/SHA256SUMS-desktop
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Upload artifacts (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blazorly-desktop
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+            desktop/dist/SHA256SUMS-desktop
