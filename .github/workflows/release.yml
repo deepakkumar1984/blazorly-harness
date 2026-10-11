@@ -98,13 +98,16 @@ jobs:
         run: |
           if [[ -n "${CSC_LINK:-}" && -n "${APPLE_ID:-}" ]]; then
             echo "Building signed + notarized."
-            npx electron-builder --mac --config electron-builder.yml --config electron-builder.signing.yml
+            npx electron-builder --mac --config electron-builder.yml --config electron-builder.signing.yml --publish never
           elif [[ -n "${CSC_LINK:-}" ]]; then
             echo "::notice::Signing configured without notarization credentials — signing only."
-            npx electron-builder --mac --config electron-builder.yml
+            npx electron-builder --mac --config electron-builder.yml --publish never
           else
             echo "::notice::MAC_CERT_P12 is not configured — building an ad-hoc signed app. Add the Developer ID secrets to enable signing + notarization."
-            CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --config electron-builder.yml
+            # Unset is required: electron-builder treats an empty CSC_LINK as a
+            # signing request and fails on the empty path.
+            unset CSC_LINK CSC_KEY_PASSWORD
+            CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --config electron-builder.yml --publish never
           fi
         working-directory: desktop
       - name: Write desktop checksums

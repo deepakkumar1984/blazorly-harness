@@ -45,6 +45,6 @@ fi
 npm run icons
 
 echo "Running electron-builder (--$target)…"
-CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder "--$target"
+CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder "--$target" --publish never
 
 echo "Artifacts in desktop/dist/."
