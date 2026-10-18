@@ -21,6 +21,104 @@ function blazorlyTrackPin(element) {
 
 window.blazorly = {
     focusById: function (id) { document.getElementById(id)?.focus(); },
+    // Diagrams: the model writes ```mermaid fenced blocks; Markdig's diagrams extension
+    // turns them into <pre class="mermaid"> (the code.language-mermaid shape is kept as a
+    // fallback). Draw each settled one as a picture, keeping
+    // the diagram text under a small toggle. Mermaid itself loads on first use from the
+    // vendored copy in wwwroot, so pages without diagrams never pay for it and it works
+    // offline. A diagram that cannot be drawn stays as text with a visible note — never
+    // silently dropped. Blocks inside a still-streaming bubble are skipped and picked up
+    // by a later pass once the step settles (Blazor replaces streaming HTML per delta).
+    renderMermaid: async function () {
+        const pending = () => [...document.querySelectorAll('.markdown pre.mermaid:not([data-mermaid]), .markdown code.language-mermaid:not([data-mermaid])')]
+            .filter(el => {
+                const bubble = el.closest(".bubble.assistant");
+                return !bubble || (bubble.dataset.stepStatus !== "streaming" && bubble.dataset.stepStatus !== "thinking");
+            });
+        if (pending().length === 0) return;
+        if (window.blazorly._mermaidBusy) { window.blazorly._mermaidAgain = true; return; }
+        window.blazorly._mermaidBusy = true;
+        try {
+            if (!window.mermaid) {
+                if (!window.blazorly._mermaidLoad) {
+                    window.blazorly._mermaidLoad = new Promise((resolve, reject) => {
+                        const script = document.createElement("script");
+                        script.src = document.baseURI + "mermaid.min.js";
+                        script.onload = resolve;
+                        script.onerror = () => reject(new Error("mermaid.min.js failed to load"));
+                        document.head.appendChild(script);
+                    });
+                }
+                await window.blazorly._mermaidLoad;
+            }
+            // Re-read theme tokens each pass so new diagrams follow appearance changes.
+            const css = getComputedStyle(document.documentElement);
+            const token = name => css.getPropertyValue(name).trim();
+            window.mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: "strict",
+                suppressErrorRendering: true,
+                theme: "base",
+                themeVariables: {
+                    background: "transparent",
+                    primaryColor: token("--bg-raised") || "#ffffff",
+                    primaryTextColor: token("--text") || "#111111",
+                    primaryBorderColor: token("--border-strong") || "#888888",
+                    secondaryColor: token("--bg-overlay") || "#eeeeee",
+                    tertiaryColor: token("--bg") || "#ffffff",
+                    lineColor: token("--text-dim") || "#666666",
+                    textColor: token("--text") || "#111111",
+                    fontFamily: "inherit",
+                },
+            });
+            for (const el of pending()) {
+                if (!el.isConnected || el.dataset.mermaid) continue;
+                el.dataset.mermaid = "drawing";
+                const pre = el.tagName === "PRE" ? el : el.closest("pre") ?? el;
+                const source = el.textContent ?? "";
+                const id = "mmd-" + Math.random().toString(36).slice(2, 10);
+                try {
+                    const { svg } = await window.mermaid.render(id, source);
+                    const wrap = document.createElement("div");
+                    wrap.className = "mermaid-wrap";
+                    const picture = document.createElement("div");
+                    picture.className = "mermaid-diagram";
+                    picture.setAttribute("role", "img");
+                    picture.setAttribute("aria-label", "Diagram: " + source.replace(/\s+/g, " ").slice(0, 200));
+                    picture.innerHTML = svg;
+                    const details = document.createElement("details");
+                    details.className = "mermaid-source";
+                    const summary = document.createElement("summary");
+                    summary.textContent = "Diagram text";
+                    const sourcePre = document.createElement("pre");
+                    sourcePre.textContent = source;
+                    details.append(summary, sourcePre);
+                    wrap.append(picture, details);
+                    pre.replaceWith(wrap);
+                } catch {
+                    // Mermaid can leave a stray error node in <body>; remove it, keep the
+                    // original text visible, and say plainly that drawing failed.
+                    document.getElementById(id)?.remove();
+                    document.getElementById("d" + id)?.remove();
+                    el.dataset.mermaid = "failed";
+                    const note = document.createElement("div");
+                    note.className = "mermaid-error";
+                    note.textContent = "This diagram could not be drawn. The diagram text is shown instead.";
+                    pre.before(note);
+                }
+            }
+        } catch {
+            // The library itself failed to load: every diagram stays as readable text.
+            // Mark nothing, so a later pass can retry; reset the loader so it can.
+            window.blazorly._mermaidLoad = null;
+        } finally {
+            window.blazorly._mermaidBusy = false;
+            if (window.blazorly._mermaidAgain) {
+                window.blazorly._mermaidAgain = false;
+                window.blazorly.renderMermaid();
+            }
+        }
+    },
     revealWorkspaceTab: function (list) {
         if (!list) return;
         const reveal = () => {

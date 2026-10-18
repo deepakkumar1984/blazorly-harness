@@ -826,6 +826,19 @@ button.icon-btn.copied { color: var(--success); opacity: 1; }
 .markdown table { border-collapse: collapse; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 9px; }
 .markdown blockquote { border-left: 3px solid var(--border-strong); margin: 0.5em 0; padding-left: 12px; color: var(--text-dim); }
+.markdown .mermaid-wrap { margin: 0.6em 0; }
+.markdown .mermaid-diagram {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    overflow-x: auto;
+    text-align: center;
+}
+.markdown .mermaid-diagram svg { max-width: 100%; height: auto; }
+.markdown .mermaid-source { margin-top: 4px; }
+.markdown .mermaid-source summary { cursor: pointer; color: var(--text-dim); font-size: 0.75rem; }
+.markdown .mermaid-error { color: var(--danger); font-size: 0.78125rem; margin: 0.4em 0; }
 
 .reasoning { margin: 4px 0; }
 .reasoning summary {
@@ -1770,6 +1783,106 @@ button.danger:hover:not(:disabled) { background: var(--danger-soft); border-colo
 .settings-note { color: var(--text-dim); font-size: 0.8125rem; margin: 12px 0 0; }
 .settings-block { margin: 14px 0; }
 .settings-block > .settings-block-title { display: block; font-size: 0.78125rem; color: var(--text-dim); margin-bottom: 6px; }
+/* Answers + Token saver tabs: card layout with switches, big radios, and info accordions.
+   Scoped under .settings-form with enough specificity to beat its blanket label/span/input
+   rules (same pattern as .tool-group-picker below). */
+.settings-form .saver-intro { color: var(--text-dim); font-size: 0.875rem; line-height: 1.55; margin: 12px 0 2px; }
+.settings-form .saver-cards { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.settings-form .saver-card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg); padding: 14px 16px;
+}
+.settings-form .saver-card.on { border-color: var(--border-strong); }
+.settings-form .saver-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
+.settings-form .saver-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin: 0; }
+.settings-form .saver-title { display: block; font-weight: 600; font-size: 0.9375rem; color: var(--text); margin: 0; }
+.settings-form .saver-sub { display: block; color: var(--text-dim); font-size: 0.8125rem; margin: 0; }
+.settings-form .saver-stat { font-size: 0.8125rem; color: var(--text-dim); margin: 10px 0 0; }
+.settings-form .saver-warn { font-size: 0.8125rem; color: var(--warn); margin: 10px 0 0; }
+.settings-form .saver-ok { font-size: 0.8125rem; color: var(--success); }
+.settings-form .saver-controls { margin-top: 12px; }
+.settings-form .saver-field { display: block; margin: 0 0 10px; }
+.settings-form .saver-field > span { display: block; font-size: 0.78125rem; color: var(--text-dim); margin-bottom: 5px; }
+
+/* SettingsSwitch component: hidden real checkbox + sliding pill + On/Off word. */
+.settings-form .switch {
+    display: inline-flex; align-items: center; gap: 8px;
+    position: relative; flex: none; margin: 0; cursor: pointer;
+}
+.settings-form .switch input {
+    position: absolute; left: 0; top: 0; width: 44px; height: 24px;
+    margin: 0; padding: 0; opacity: 0; cursor: pointer;
+}
+.settings-form .switch .switch-track {
+    display: block; width: 44px; height: 24px; flex: none; margin: 0;
+    border-radius: 999px; background: var(--bg-overlay);
+    border: 1px solid var(--border-strong); position: relative;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.settings-form .switch .switch-track::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--text-dim);
+    transition: transform 0.15s ease, background 0.15s ease;
+}
+.settings-form .switch input:checked + .switch-track { background: var(--accent); border-color: var(--accent); }
+.settings-form .switch input:checked + .switch-track::after {
+    transform: translateX(20px); background: #fff;
+}
+.settings-form .switch input:focus-visible + .switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-form .switch .switch-state { display: inline; font-size: 0.75rem; color: var(--text-dim); margin: 0; min-width: 2.2ch; }
+@media (prefers-reduced-motion: reduce) {
+    .settings-form .switch .switch-track, .settings-form .switch .switch-track::after { transition: none; }
+}
+
+/* Info accordion shared by both tabs (native details; name= makes each group exclusive). */
+.settings-form .saver-more { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.settings-form .saver-more-standalone { margin-top: 14px; }
+.settings-form .saver-more summary { cursor: pointer; font-size: 0.8125rem; color: var(--text-dim); }
+.settings-form .saver-more summary:hover { color: var(--text); }
+.settings-form .saver-more[open] summary { color: var(--text); margin-bottom: 6px; }
+.settings-form .saver-body { font-size: 0.8125rem; color: var(--text-dim); line-height: 1.55; }
+.settings-form .saver-body p { margin: 0.45em 0; }
+.settings-form .saver-body ul, .settings-form .saver-body ol { margin: 0.3em 0 0.5em; padding-left: 1.35em; }
+.settings-form .saver-body li { margin: 0.2em 0; }
+.settings-form .saver-body code, .settings-form .answer-example code {
+    background: var(--bg-overlay); border: 1px solid var(--border); border-radius: var(--radius-xxs);
+    padding: 0 4px; font-family: var(--mono); font-size: 0.75rem;
+}
+.settings-form .saver-body a { color: var(--accent); }
+
+/* Answers tab: selectable cards with a large custom radio and an example accordion. */
+.settings-form .answer-style-options { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.settings-form .answer-style-option {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg); padding: 12px 14px;
+}
+.settings-form .answer-style-option.on { border-color: var(--accent); background: var(--bg-overlay); }
+.settings-form label.answer-style-pick {
+    display: flex; gap: 12px; align-items: flex-start; margin: 0; cursor: pointer;
+}
+.settings-form .answer-style-pick input[type="radio"] {
+    appearance: none; -webkit-appearance: none;
+    width: 20px; height: 20px; flex: none; margin: 1px 0 0; padding: 0;
+    border: 2px solid var(--border-strong); border-radius: 50%;
+    background: var(--bg); display: grid; place-content: center; cursor: pointer;
+}
+.settings-form .answer-style-pick input[type="radio"]::before {
+    content: ""; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); transform: scale(0); transition: transform 0.12s ease;
+}
+.settings-form .answer-style-pick input[type="radio"]:checked { border-color: var(--accent); }
+.settings-form .answer-style-pick input[type="radio"]:checked::before { transform: scale(1); }
+.settings-form .answer-style-pick input[type="radio"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-form .answer-style-text { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+.settings-form .answer-style-title { display: block; font-weight: 600; font-size: 0.9375rem; color: var(--text); margin: 0; }
+.settings-form .answer-style-desc { display: block; color: var(--text-dim); font-size: 0.8125rem; margin: 0; }
+.settings-form .answer-example {
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 10px 12px;
+    font-size: 0.8125rem; color: var(--text); line-height: 1.55;
+}
+.settings-form .answer-example p { margin: 0.3em 0; }
 .settings-note code {
     background: var(--bg-overlay);
     border: 1px solid var(--border);

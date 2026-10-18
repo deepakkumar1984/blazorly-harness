@@ -47,7 +47,13 @@ public sealed class TestHarness : IAsyncDisposable
     /// <summary>Pins the instruction body to a few tokens. Tests that calibrate token pressure
     /// against a deliberately tiny context window need a predictable prompt header; the built-in
     /// instructions body is large and moves with the product, so they must not depend on it.</summary>
-    public void UseMinimalIdentity() => Loop.IdentityOverride = _ => "Compact test body.";
+    public void UseMinimalIdentity()
+    {
+        Loop.IdentityOverride = _ => "Compact test body.";
+        // The answer-style section is part of the prompt header too; omit it so the header
+        // stays at the few tokens these calibrations were written against.
+        Loop.AnswerStyleProvider = _ => "";
+    }
 
     public async ValueTask DisposeAsync() => await Ctx.DisposeAsync().ConfigureAwait(false);
 }

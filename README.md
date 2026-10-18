@@ -14,6 +14,8 @@ Site: [Blazorly Harness](https://harness.blazorly.com/) — features, install, a
 ## ✨ Features
 
 - **Chat web UI** — streaming agent turns, live tool cards, tasks, context usage, and delegated agents. The resizable Terminal / Run panel sits below the chat composer
+- **Plain-language answers** — answers lead with a short, plain result (**What happened**) that a non-technical reader can stop at, with exact files/tests/errors in a **Technical details** part below. Processes with three or more steps can include a Mermaid diagram, drawn as a picture in the chat (vendored, works offline). Pick plain-only or the full engineer report instead in **Settings → Answers** (`answerStyle` in `settings.json`); the choice applies to every workspace from the next message, no restart
+- **Token saver (opt-in)** — four independent switches in **Settings → Token saver**, all off by default: built-in RTK-style tool-output filtering (git/search/listings/logs reshaped before the model reads them, file contents never touched, failures keep full errors, savings counted on the settings page), Caveman-style terse output (pauses the answer style while on), Ponytail-style minimal-code bias, and routing through an external [Headroom](https://github.com/chopratejas/headroom) proxy you run (`x-headroom-base-url` carries each route's real provider; the settings page can check the proxy answers). Prompt texts follow [Caveman](https://github.com/JuliusBrussee/caveman) (Apache-2.0) and [Ponytail](https://github.com/DietrichGebert/ponytail) (MIT)
 - **Personal appearance** — twelve theme palettes or your device theme, ten accent presets or any custom colour, seven type pairs, a separate code font, four text sizes, four corner styles, reduced motion, six one-click looks, and optional CSS with a live preview. Open **Appearance** in the sidebar; preferences are saved in this browser and every bundled font works offline
 - **Workspace navigation** — one sidebar with Chats / Files tabs, workspace switching, rename, and workspace-scoped search. Folders are registered explicitly; the harness installation is never added as a default workspace
 - **Workspace deletion** — confirmation shows the local folder and session count, then stops owned work and permanently deletes the folder, chats, child sessions, and attachments
@@ -114,6 +116,11 @@ See [desktop/README.md](desktop/README.md) for flags, packaging, and
 | `provider` / `model` | Unconfigured | Your explicitly selected LLM route |
 | `apiKey` | — | API key, or that provider's own environment variable |
 | `sandboxMode` | `full-access` | Tool sandbox: `full-access`, `workspace-write`, or `read-only` |
+| `answerStyle` | `layered` | How answers are written: `layered` (plain result first, technical details below), `simple` (plain only), or `technical` (engineer report). Set it in **Settings → Answers** |
+| `tokenSaverToolOutput` | `false` | RTK-style built-in filtering of tool output (git status/log/diff, grouped search, listings, repetitive logs) before the model reads it. **Settings → Token saver** |
+| `tokenSaverTerseOutput` | `false` | Caveman-style terse answers; pauses `answerStyle` while on |
+| `tokenSaverMinimalCode` | `false` | Ponytail-style minimal-code bias (YAGNI, reuse, stdlib first) |
+| `tokenSaverHeadroom` / `tokenSaverHeadroomUrl` | `false` / `http://localhost:8787` | Route model requests through a Headroom proxy you install and run; the real provider URL travels in the `x-headroom-base-url` header |
 | `contextWindowTokens` | `262144` | Fallback compaction/context window when API/catalog metadata is absent |
 
 Saved keys take precedence over the provider's own environment variable (for example `OPENAI_API_KEY` for OpenAI and `DEEPSEEK_API_KEY` for DeepSeek). Custom gateways use their saved key or explicitly named `apiKeyEnv`. An environment key authenticates an explicitly configured route; it does not add a provider automatically.

@@ -45,6 +45,179 @@
                 <UpdateSettings />
                 break;
 
+            case "answers":
+                @if (_settings.TokenSaverTerseOutput)
+                {
+                    <p class="saver-warn" role="status">Terse output is on in Token saver, so this choice is paused. Turn it off there to use an answer style again.</p>
+                }
+                <p class="saver-intro">Choose how answers are written. It applies to every workspace, from the next message after you save.</p>
+                <div class="answer-style-options" role="radiogroup" aria-label="Answer style">
+                    @foreach (var opt in AnswerStyles)
+                    {
+                        <div class="answer-style-option @(_settings.AnswerStyle == opt.Value ? "on" : "")">
+                            <label class="answer-style-pick">
+                                <input type="radio" name="answer-style" value="@opt.Value"
+                                       checked="@(_settings.AnswerStyle == opt.Value)"
+                                       @onchange="() => _settings.AnswerStyle = opt.Value" />
+                                <span class="answer-style-text">
+                                    <span class="answer-style-title">@opt.Title</span>
+                                    <span class="answer-style-desc">@opt.Description</span>
+                                </span>
+                            </label>
+                            <details class="saver-more" name="answer-style-example">
+                                <summary>See an example</summary>
+                                <div class="answer-example">
+                                    @if (opt.Value == Blazorly.Harness.Core.Agent.AnswerStyle.Layered)
+                                    {
+                                        <p><strong>What happened</strong></p>
+                                        <p>Sign-in works again. You can sign in with your normal password.</p>
+                                        <p><strong>Technical details</strong></p>
+                                        <p>Fixed token expiry in <code>Login.cs</code>. All 42 tests passed.</p>
+                                    }
+                                    else if (opt.Value == Blazorly.Harness.Core.Agent.AnswerStyle.Simple)
+                                    {
+                                        <p>Sign-in works again. You can sign in with your normal password. Nothing else needs your attention.</p>
+                                    }
+                                    else
+                                    {
+                                        <p><strong>Summary</strong> — fixed token expiry handling in <code>Login.cs</code>.</p>
+                                        <p><strong>Verification</strong> — full suite: 42 passed, 0 failed. <strong>Risks</strong> — sessions issued before the fix expire once and must sign in again.</p>
+                                    }
+                                </div>
+                            </details>
+                        </div>
+                    }
+                </div>
+                <details class="saver-more saver-more-standalone" name="answer-style-info">
+                    <summary>Good to know</summary>
+                    <div class="saver-body">
+                        <p>Plain styles use short sentences and common words, and explain a technical word the first time it appears. When an answer explains a process with three or more steps, the assistant can add a small diagram — the app draws it as a picture in the chat.</p>
+                        <p>Saved as <code>answerStyle</code> in <code>@Facade.Harness.SettingsFilePath</code>. A workspace's own ⚙ Agent setup instructions still apply; this choice controls only how answers are written.</p>
+                    </div>
+                </details>
+                break;
+
+            case "tokensaver":
+                <p class="saver-intro">Four ways to spend fewer tokens. All start off. Changes apply when you save — open chats pick them up on their next request.</p>
+                <div class="saver-cards">
+
+                    <section class="saver-card @(_settings.TokenSaverToolOutput ? "on" : "")">
+                        <div class="saver-head">
+                            <div class="saver-titles">
+                                <span class="saver-title">Compress tool output</span>
+                                <span class="saver-sub">Built in · RTK style · shrinks what the assistant reads</span>
+                            </div>
+                            <SettingsSwitch Checked="_settings.TokenSaverToolOutput" CheckedChanged="v => _settings.TokenSaverToolOutput = v" Label="Compress tool output" />
+                        </div>
+                        @if (Facade.Harness.ToolOutputCompression is { CallsCompressed: > 0 } compression)
+                        {
+                            <p class="saver-stat">Since this app started: @compression.CallsCompressed tool results compressed · about @compression.EstimatedTokensSaved.ToString("N0") tokens saved</p>
+                        }
+                        <details class="saver-more" name="token-saver-info">
+                            <summary>How it works</summary>
+                            <div class="saver-body">
+                                <p>Reshapes the noisiest outputs before the assistant reads them:</p>
+                                <ul>
+                                    <li><code>git status</code>, <code>git log</code> and <code>git diff</code> from shell commands, in compact form</li>
+                                    <li>Search results grouped by file; long file listings grouped by folder</li>
+                                    <li>Repetitive log lines collapsed</li>
+                                </ul>
+                                <p>File contents are never filtered. Output that does not match a known shape passes through untouched, and failed commands keep their full error text. A short <code>[compressed by token saver: …]</code> line marks what was shrunk.</p>
+                                <p>Following <a href="https://github.com/rtk-ai/rtk" target="_blank" rel="noopener">RTK</a>, which measures 60–90% fewer tokens on this kind of output. The counter above estimates 4 characters per token.</p>
+                            </div>
+                        </details>
+                    </section>
+
+                    <section class="saver-card @(_settings.TokenSaverTerseOutput ? "on" : "")">
+                        <div class="saver-head">
+                            <div class="saver-titles">
+                                <span class="saver-title">Terse output</span>
+                                <span class="saver-sub">Caveman style · answers in short fragments</span>
+                            </div>
+                            <SettingsSwitch Checked="_settings.TokenSaverTerseOutput" CheckedChanged="v => _settings.TokenSaverTerseOutput = v" Label="Terse output" />
+                        </div>
+                        @if (_settings.TokenSaverTerseOutput)
+                        {
+                            <p class="saver-warn">Your Answers style is paused while this is on.</p>
+                        }
+                        <details class="saver-more" name="token-saver-info">
+                            <summary>How it works &amp; trade-offs</summary>
+                            <div class="saver-body">
+                                <p>The assistant drops filler and articles and answers in fragments (<a href="https://github.com/JuliusBrussee/caveman" target="_blank" rel="noopener">Caveman</a> style): fewest words that keep the meaning.</p>
+                                <p>Code, commands, file names, and error messages stay exact. Safety warnings stay in full sentences.</p>
+                                <p>Expect modest savings in agent work — about 10% of output tokens — because most output is code and tool calls, which stay exact.</p>
+                            </div>
+                        </details>
+                    </section>
+
+                    <section class="saver-card @(_settings.TokenSaverMinimalCode ? "on" : "")">
+                        <div class="saver-head">
+                            <div class="saver-titles">
+                                <span class="saver-title">Minimal code</span>
+                                <span class="saver-sub">Ponytail style · smallest working change</span>
+                            </div>
+                            <SettingsSwitch Checked="_settings.TokenSaverMinimalCode" CheckedChanged="v => _settings.TokenSaverMinimalCode = v" Label="Minimal code" />
+                        </div>
+                        <details class="saver-more" name="token-saver-info">
+                            <summary>How it works</summary>
+                            <div class="saver-body">
+                                <p>The lazy senior dev ladder (<a href="https://github.com/DietrichGebert/ponytail" target="_blank" rel="noopener">Ponytail</a>):</p>
+                                <ol>
+                                    <li>Skip what is not needed</li>
+                                    <li>Reuse what the codebase already has</li>
+                                    <li>Then the standard library, then the platform, then an installed dependency</li>
+                                    <li>New code last — and deletion over addition</li>
+                                </ol>
+                                <p>Validation, error handling, security, and tests for risky logic are never cut. Works alongside your Answers style.</p>
+                            </div>
+                        </details>
+                    </section>
+
+                    <section class="saver-card @(_settings.TokenSaverHeadroom ? "on" : "")">
+                        <div class="saver-head">
+                            <div class="saver-titles">
+                                <span class="saver-title">Compress context with Headroom</span>
+                                <span class="saver-sub">External tool · compresses the whole prompt</span>
+                            </div>
+                            <SettingsSwitch Checked="_settings.TokenSaverHeadroom" CheckedChanged="v => _settings.TokenSaverHeadroom = v" Label="Compress context with Headroom" />
+                        </div>
+                        @if (_settings.TokenSaverHeadroom)
+                        {
+                            <div class="saver-controls">
+                                <label class="saver-field">
+                                    <span>Headroom proxy URL</span>
+                                    <input type="text" @bind="_settings.TokenSaverHeadroomUrl" @bind:event="oninput" placeholder="http://localhost:8787" />
+                                </label>
+                                <div class="discover-row">
+                                    <button type="button" class="ghost" @onclick="CheckHeadroom" disabled="@_headroomChecking">
+                                        @(_headroomChecking ? "Checking…" : "Check proxy")
+                                    </button>
+                                    @if (_headroomCheck is not null)
+                                    {
+                                        <span class="@(_headroomOk ? "saver-ok" : "discover-error")" role="status">@_headroomCheck</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                        <details class="saver-more" name="token-saver-info">
+                            <summary>Setup &amp; limits</summary>
+                            <div class="saver-body">
+                                <p><a href="https://github.com/chopratejas/headroom" target="_blank" rel="noopener">Headroom</a> compresses the whole prompt (tool outputs, logs, files, history) before it reaches the model, and can give the full text back on demand. It is a separate tool — this app does not install or start it.</p>
+                                <ol>
+                                    <li>Install once: <code>uv tool install "headroom-ai[proxy]"</code></li>
+                                    <li>Run it: <code>headroom proxy --port 8787</code></li>
+                                    <li>Turn this switch on, then press <strong>Check proxy</strong></li>
+                                </ol>
+                                <p>The <code>[code]</code> extra adds syntax-aware code compression; the <code>[ml]</code> extra adds a prose model and about 1 GB of downloads.</p>
+                                <p>Requests carry your real provider address in the <code>x-headroom-base-url</code> header, so every provider route keeps working. Model discovery (the Discover buttons) still talks to providers directly. If the proxy is not running, model requests fail with a connection error.</p>
+                                <p>Two limits from Headroom's own safety rules: it refuses private or local provider addresses (local models, LAN gateways) unless you start the proxy with <code>HEADROOM_ALLOWED_BASE_URLS</code> naming them, and gateways whose address has a deeper path (like <code>…/api/paas/v4</code>) may not route through it. Public providers whose address ends at the host or <code>/v1</code> (OpenAI, DeepSeek, Anthropic, xAI) work as-is.</p>
+                            </div>
+                        </details>
+                    </section>
+
+                </div>
+                break;
+
             case "providers":
                 <p class="settings-note">Default route for new sessions, plus every configured route — built-ins and
                     custom gateways alike. Each appears in the per-session model picker.
@@ -521,6 +694,8 @@
     private static readonly (string Id, string Label)[] Tabs =
     [
         ("appearance", "Appearance"),
+        ("answers", "Answers"),
+        ("tokensaver", "Token saver"),
         ("providers", "Providers"),
         ("context", "Sessions & context"),
         ("capabilities", "Capabilities"),
@@ -528,7 +703,37 @@
         ("updates", "Updates"),
     ];
 
+    /// <summary>The three answer styles, in the order a non-technical reader should meet them.</summary>
+    private static readonly (string Value, string Title, string Description)[] AnswerStyles =
+    [
+        (Blazorly.Harness.Core.Agent.AnswerStyle.Layered, "Plain first, details below (recommended)",
+            "Plain result first — stop there if you like. Technical detail below."),
+        (Blazorly.Harness.Core.Agent.AnswerStyle.Simple, "Plain only",
+            "Plain words only. No technical part unless you ask."),
+        (Blazorly.Harness.Core.Agent.AnswerStyle.Technical, "Technical",
+            "Full engineer report: files, tests, risks. For readers of code."),
+    ];
+
     private HarnessSettings _settings = new();
+    private string? _headroomCheck;
+    private bool _headroomOk;
+    private bool _headroomChecking;
+
+    private async Task CheckHeadroom()
+    {
+        _headroomChecking = true;
+        _headroomCheck = null;
+        try
+        {
+            var (reachable, detail) = await HarnessBootstrapper.CheckHeadroomAsync(_settings.TokenSaverHeadroomUrl);
+            _headroomOk = reachable;
+            _headroomCheck = detail;
+        }
+        finally
+        {
+            _headroomChecking = false;
+        }
+    }
     private string _tab = "providers";
     [SupplyParameterFromQuery(Name = "tab")]
     public string? RequestedTab { get; set; }
@@ -1321,6 +1526,7 @@
         }
         Facade.Harness.ApplyProviderSelection();
         Facade.Harness.ApplyDefaultSelection();
+        Facade.Harness.ApplyTokenSaver();
         Facade.Harness.SaveSettings();
         // A changed default tool selection must reach chats that are already open.
         Facade.Harness.WorkspaceAgents?.RefreshAll();

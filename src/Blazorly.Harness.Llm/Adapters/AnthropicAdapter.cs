@@ -29,12 +29,17 @@ public sealed class AnthropicAdapter : LlmAdapter
     private readonly IReadOnlyList<LlmModelInfo> _models;
     private readonly string _userAgent;
     private readonly Func<string, (byte[] Data, string MimeType)?>? _attachmentResolver;
+    private readonly string? _upstreamBaseUrl;
 
-    public AnthropicAdapter(string provider, string baseUrl, string apiKey, IReadOnlyList<LlmModelInfo> models, HttpClient http, string? userAgent = null, Func<string, (byte[] Data, string MimeType)?>? attachmentResolver = null)
+    /// <param name="upstreamBaseUrl">When set, requests go to <paramref name="baseUrl"/> (a
+    /// Headroom compression proxy) and carry this real provider URL in the
+    /// <c>x-headroom-base-url</c> header for the proxy to forward to.</param>
+    public AnthropicAdapter(string provider, string baseUrl, string apiKey, IReadOnlyList<LlmModelInfo> models, HttpClient http, string? userAgent = null, Func<string, (byte[] Data, string MimeType)?>? attachmentResolver = null, string? upstreamBaseUrl = null)
     {
         _attachmentResolver = attachmentResolver;
         _provider = provider;
         _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/v1/messages", "/messages", "/v1");
+        _upstreamBaseUrl = upstreamBaseUrl is null ? null : TransportErrors.TrimApiSuffixes(upstreamBaseUrl, "/v1/messages", "/messages", "/v1");
         _apiKey = apiKey;
         _models = models;
         _http = http;
@@ -59,6 +64,8 @@ public sealed class AnthropicAdapter : LlmAdapter
         request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
+        if (_upstreamBaseUrl is not null)
+            request.Headers.TryAddWithoutValidation("x-headroom-base-url", _upstreamBaseUrl);
 
         HttpResponseMessage response;
         try

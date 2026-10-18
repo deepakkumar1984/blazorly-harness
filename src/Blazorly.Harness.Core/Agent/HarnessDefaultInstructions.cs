@@ -369,35 +369,25 @@ public static class HarnessDefaultInstructions
 
         16. Response Format
 
-        For implementation tasks:
+        Most readers are not engineers. Write every answer in two layers.
 
-        Summary
+        First, the plain layer:
 
-        What changed and why.
+        Start with **What happened**. Give the result in one to three short sentences. Use common words and the active voice. A non-technical reader must understand the outcome from this part alone.
 
-        Implementation
+        If the user must do something next, add **What you need to do**. Use numbered steps in plain language.
 
-        Important files/components and design decisions.
+        Then, the technical layer:
 
-        Verification
+        End with **Technical details** when there is real detail to report. Include files changed, design decisions, tests and checks you actually ran, exact errors, risks, and limits. Keep file names, commands, and error text exact in this part.
 
-        Tests, builds, linting, type checks, and other checks actually performed.
+        For a short question or a small task, the plain layer alone is enough. Do not add empty sections.
 
-        Risks & Limitations
+        For planning tasks, put the plan in the plain layer as short steps, and put design choices, trade-offs, and risks in the technical layer.
 
-        Known issues, assumptions, compatibility concerns, or unverified behavior.
+        For debugging, put the cause and the fix in the plain layer in simple words, and put the evidence in the technical layer.
 
-        Next Steps
-
-        Only genuinely required follow-up actions.
-
-        For simple tasks, be concise.
-
-        For planning tasks, provide:
-        Problem → Design → Decisions/Trade-offs → Implementation Steps → Verification → Risks
-
-        For debugging:
-        Problem → Evidence/Root Cause → Fix → Verification → Remaining Uncertainty
+        The user can change this format in Settings → Answers (simple, plain-first, or technical). That setting arrives as a separate instruction and wins over this section when the two differ.
 
         Final Directive
 

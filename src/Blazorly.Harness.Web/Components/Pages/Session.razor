@@ -367,7 +367,7 @@
                         </div>
                         break;
                     case "assistant":
-                        <div class="bubble assistant" @key="node.Key">
+                        <div class="bubble assistant" data-step-status="@node.StepStatus" @key="node.Key">
                             <div class="bubble-head">
                                 <span class="bubble-role">Assistant @(node.StepStatus == "streaming" ? "· typing…" : node.StepStatus == "thinking" ? "· thinking…" : "")</span>
                                 @if (node.StepStatus is not ("streaming" or "thinking"))
@@ -1298,6 +1298,10 @@
         if (_view == "chat" && _topGrowRef is not null)
             await TryJs("blazorly.attachTopGrow", _transcript, _topGrowRef);
 
+        // Draw any settled ```mermaid blocks as pictures (chat bubbles and the plan
+        // review alike). The JS side exits fast when there is nothing to draw, skips
+        // still-streaming bubbles, and loads the vendored library only on first use.
+        await TryJs("blazorly.renderMermaid");
         // Programmatic draft changes (send clears it, slash completion fills it) fire
         // no DOM input event — re-measure so the composer height tracks the text.
         await TryJs("blazorly.composer.grow", _composerTa);

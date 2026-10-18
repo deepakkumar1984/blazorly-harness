@@ -157,6 +157,28 @@ public sealed class AgentLoopService
     /// </summary>
     public Func<SystemPrompt.SystemPromptContext, string?>? IdentityOverride { get; set; }
 
+    /// <summary>
+    /// Host seam for the global answer style (Settings → Answers). Read per prompt assembly,
+    /// so a saved change reaches running chats on their next request. Null provider, or an
+    /// unknown value, means <see cref="AnswerStyle.Layered"/>; a provider that returns an empty
+    /// string omits the section entirely (the explicit off switch for hosts and tests that pin a
+    /// minimal prompt). The style renders as its own
+    /// section after the instruction body, so it applies even when a workspace's custom
+    /// instructions replace that body through <see cref="IdentityOverride"/>.
+    /// </summary>
+    public Func<SystemPrompt.SystemPromptContext, string?>? AnswerStyleProvider { get; set; }
+
+    /// <summary>
+    /// Host seam for the prompt-side token saver switches (Settings → Token saver). Read per
+    /// prompt assembly like <see cref="AnswerStyleProvider"/>. Null provider means both off.
+    /// Terse output replaces the answer-style section outright — the two give opposite orders
+    /// about sentence shape, and the user-facing setting says the token saver wins while on.
+    /// </summary>
+    public Func<SystemPrompt.SystemPromptContext, TokenSaverPromptOptions>? TokenSaverProvider { get; set; }
+
+    private TokenSaverPromptOptions TokenSaverFor(SystemPrompt.SystemPromptContext ctx)
+        => TokenSaverProvider?.Invoke(ctx) ?? TokenSaverPromptOptions.Off;
+
     /// <summary>Registers the harness identity section and the prompt variables it interpolates
     /// (provider, model, cwd, and today's date as seen by the server).</summary>
     public IDisposable RegisterDefaultPrompt()
@@ -165,6 +187,18 @@ public sealed class AgentLoopService
             ctx => IdentityHeader + "\n\n"
                 + (IdentityOverride?.Invoke(ctx) is { Length: > 0 } custom ? custom : DefaultIdentityBody),
             lenient: true);
+        var answerStyle = _systemPrompt.RegisterSection("harness:answer-style", 50, ctx =>
+        {
+            // Terse output (token saver) wins outright while on; its own section follows.
+            if (TokenSaverFor(ctx).TerseOutput) return "";
+            if (AnswerStyleProvider is null) return AnswerStyle.SectionText(null);
+            var style = AnswerStyleProvider(ctx);
+            return string.IsNullOrWhiteSpace(style) ? "" : AnswerStyle.SectionText(style);
+        });
+        var terseOutput = _systemPrompt.RegisterSection("harness:token-saver-terse", 51,
+            ctx => TokenSaverFor(ctx).TerseOutput ? TokenSaverPrompts.TerseOutputSection : "");
+        var minimalCode = _systemPrompt.RegisterSection("harness:token-saver-code", 52,
+            ctx => TokenSaverFor(ctx).MinimalCode ? TokenSaverPrompts.MinimalCodeSection : "");
         var provider = _systemPrompt.RegisterVariable("provider", ctx => ctx.Agent?.Options.Provider ?? DefaultSelection.Provider);
         var model = _systemPrompt.RegisterVariable("model", ctx => ctx.Agent?.Options.Model ?? DefaultSelection.Model);
         var cwd = _systemPrompt.RegisterVariable("cwd", ctx => ctx.Cwd ?? "(unspecified)");
@@ -175,6 +209,9 @@ public sealed class AgentLoopService
         return Disposable.Of(() =>
         {
             identity.Dispose();
+            answerStyle.Dispose();
+            terseOutput.Dispose();
+            minimalCode.Dispose();
             provider.Dispose();
             model.Dispose();
             cwd.Dispose();

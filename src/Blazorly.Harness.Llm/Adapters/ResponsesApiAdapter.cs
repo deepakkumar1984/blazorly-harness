@@ -27,12 +27,19 @@ public sealed class ResponsesApiAdapter : LlmAdapter
     private readonly IReadOnlyList<LlmModelInfo> _models;
     private readonly string _userAgent;
     private readonly Func<string, (byte[] Data, string MimeType)?>? _attachmentResolver;
+    private readonly string? _upstreamBaseUrl;
 
-    public ResponsesApiAdapter(string provider, string baseUrl, string apiKey, IReadOnlyList<LlmModelInfo> models, HttpClient http, string? userAgent = null, Func<string, (byte[] Data, string MimeType)?>? attachmentResolver = null, bool requireApiKey = true)
+    /// <param name="upstreamBaseUrl">When set, requests go to <paramref name="baseUrl"/> (a
+    /// Headroom compression proxy) and carry this real provider URL in the
+    /// <c>x-headroom-base-url</c> header for the proxy to forward to. The proxy appends the
+    /// original request path (/v1/responses) to the header value, so a trailing /v1 is
+    /// trimmed here to avoid doubling it.</param>
+    public ResponsesApiAdapter(string provider, string baseUrl, string apiKey, IReadOnlyList<LlmModelInfo> models, HttpClient http, string? userAgent = null, Func<string, (byte[] Data, string MimeType)?>? attachmentResolver = null, bool requireApiKey = true, string? upstreamBaseUrl = null)
     {
         _attachmentResolver = attachmentResolver;
         _provider = provider;
         _baseUrl = TransportErrors.TrimApiSuffixes(baseUrl, "/chat/completions", "/responses");
+        _upstreamBaseUrl = upstreamBaseUrl is null ? null : TransportErrors.TrimApiSuffixes(upstreamBaseUrl, "/chat/completions", "/responses", "/v1");
         _apiKey = apiKey;
         _requireApiKey = requireApiKey;
         _models = models;
@@ -58,6 +65,8 @@ public sealed class ResponsesApiAdapter : LlmAdapter
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
+        if (_upstreamBaseUrl is not null)
+            request.Headers.TryAddWithoutValidation("x-headroom-base-url", _upstreamBaseUrl);
 
         HttpResponseMessage response;
         try

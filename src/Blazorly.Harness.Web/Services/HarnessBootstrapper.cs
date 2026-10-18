@@ -36,6 +36,26 @@ public sealed class HarnessSettings
     /// <summary>Wire-protocol override per built-in provider id: "openai" (automatic), "responses" or "anthropic".
     /// Custom gateways carry their own <see cref="CustomProviderConfig.ApiType"/> instead.</summary>
     public Dictionary<string, string> ProviderApiTypes { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>How answers are written: "simple" (plain only), "layered" (plain result first,
+    /// technical details below — the default), or "technical" (engineer report). Read per prompt
+    /// assembly, so a saved change reaches running chats on their next request. Unknown values
+    /// normalize to "layered" on load; see Core <c>AnswerStyle</c>.</summary>
+    public string AnswerStyle { get; set; } = Blazorly.Harness.Core.Agent.AnswerStyle.Layered;
+
+    /// <summary>Token saver: native RTK-style filtering of tool output (git, search, listings,
+    /// logs) before the model reads it. Off by default; read live by the compression policy.</summary>
+    public bool TokenSaverToolOutput { get; set; }
+    /// <summary>Token saver: Caveman-style terse output. While on it replaces the answer-style
+    /// section, so plain layered answers pause. Off by default.</summary>
+    public bool TokenSaverTerseOutput { get; set; }
+    /// <summary>Token saver: Ponytail-style minimal-code bias (YAGNI, reuse, stdlib first). Off by default.</summary>
+    public bool TokenSaverMinimalCode { get; set; }
+    /// <summary>Token saver: route LLM requests through an external Headroom proxy the user
+    /// installed and runs (the harness never installs or starts it). The real provider URL
+    /// travels in the <c>x-headroom-base-url</c> header. Off by default.</summary>
+    public bool TokenSaverHeadroom { get; set; }
+    /// <summary>Headroom proxy root URL, e.g. http://localhost:8787 (a trailing /v1 is tolerated).</summary>
+    public string TokenSaverHeadroomUrl { get; set; } = "http://localhost:8787";
     public string WorkspaceRoot { get; set; } = Directory.GetCurrentDirectory();
     public string SandboxMode { get; set; } = SandboxPolicy.FullAccess;
     /// <summary>
@@ -449,6 +469,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         WorkspaceAgents = new WorkspaceAgentService(this);
         _workspaceAgentEvents = WorkspaceAgents.Attach();
         Loop.IdentityOverride = ctx => WorkspaceAgents?.CustomInstructionsFor(ctx.Cwd ?? ctx.Agent?.Session.Header.Cwd);
+        Loop.AnswerStyleProvider = _ => Settings.AnswerStyle;
+        Loop.TokenSaverProvider = _ => new TokenSaverPromptOptions(Settings.TokenSaverTerseOutput, Settings.TokenSaverMinimalCode);
         await ReattachPersistedSessionsAsync().ConfigureAwait(false);
     }
 
@@ -558,6 +580,10 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                 Spills = Core.Spill.SpillService.Mount(ctx, Path.Combine(_home, "spills"),
                     new Core.Spill.SpillOptions { ThresholdChars = Settings.SpillThresholdChars })));
         }
+        // Token saver output compression mounts unconditionally (its Enabled flag gates it)
+        // so the Settings switch applies on save without a restart.
+        plugins.Add(MountPlugin.Sync("token-saver-output", [], ctx =>
+            ToolOutputCompression = Core.TokenSaver.ToolOutputCompressionService.Mount(ctx, Settings.TokenSaverToolOutput)));
         plugins.Add(MountPlugin.Sync("repeatGuard", [], ctx =>
             RepeatGuard = Core.Guards.RepeatCallGuard.Mount(ctx)));
         if (Settings.EnableSchedule)
@@ -712,6 +738,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     public Core.Sessions.SessionTitleService? Titles { get; private set; }
     public Core.TokenMeter.TokenMeterService? Meter { get; private set; }
     public Core.Spill.SpillService? Spills { get; private set; }
+    /// <summary>Token saver tool-output compression; always mounted, gated by its Enabled flag.</summary>
+    public Core.TokenSaver.ToolOutputCompressionService? ToolOutputCompression { get; private set; }
     public Core.Guards.RepeatCallGuard? RepeatGuard { get; private set; }
     public Core.Schedule.ScheduleService? Schedules { get; private set; }
     public Core.Mcp.McpClientService? Mcp { get; private set; }
@@ -745,15 +773,39 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     /// <summary>Effective wire protocol for a route under the live settings.</summary>
     public string ApiTypeFor(string provider) => ResolveApiType(Settings, provider);
 
+    /// <summary>
+    /// Token saver route shape: with Headroom on, a route talks to the user's Headroom proxy
+    /// and the real provider URL travels in the <c>x-headroom-base-url</c> header (the adapters
+    /// trim it to their own suffix rules). OpenAI-shaped routes address the proxy under /v1,
+    /// Anthropic-shaped at the root — matching how each adapter appends its call path. Off,
+    /// unconfigured, or already pointing at the proxy: the route is returned unchanged.
+    /// </summary>
+    public static (string EffectiveBaseUrl, string? UpstreamBaseUrl) ResolveHeadroomRoute(
+        HarnessSettings settings, string apiType, string baseUrl)
+    {
+        if (!settings.TokenSaverHeadroom || string.IsNullOrWhiteSpace(baseUrl))
+            return (baseUrl, null);
+        var root = (settings.TokenSaverHeadroomUrl ?? "").Trim().TrimEnd('/');
+        if (root.EndsWith("/v1", StringComparison.OrdinalIgnoreCase)) root = root[..^3].TrimEnd('/');
+        if (root.Length == 0 || baseUrl.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            return (baseUrl, null);
+        return apiType == "anthropic" ? (root, baseUrl) : ($"{root}/v1", baseUrl);
+    }
+
     private LlmAdapter BuildRoute(string provider, string baseUrl, string? apiKey, IReadOnlyList<LlmModelInfo> models)
-        => ResolveApiType(Settings, provider) switch
+    {
+        var apiType = ResolveApiType(Settings, provider);
+        var (effectiveBaseUrl, upstream) = ResolveHeadroomRoute(Settings, apiType, baseUrl);
+        return apiType switch
         {
-            "anthropic" => new AnthropicAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp, attachmentResolver: AttachmentResolver()),
-            "responses" => new ResponsesApiAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
-                attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider)),
-            _ => new OpenAiCompatibleAdapter(provider, baseUrl, apiKey ?? "", models, StreamingHttp,
-                attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider)),
+            "anthropic" => new AnthropicAdapter(provider, effectiveBaseUrl, apiKey ?? "", models, StreamingHttp,
+                attachmentResolver: AttachmentResolver(), upstreamBaseUrl: upstream),
+            "responses" => new ResponsesApiAdapter(provider, effectiveBaseUrl, apiKey ?? "", models, StreamingHttp,
+                attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider), upstreamBaseUrl: upstream),
+            _ => new OpenAiCompatibleAdapter(provider, effectiveBaseUrl, apiKey ?? "", models, StreamingHttp,
+                attachmentResolver: AttachmentResolver(), requireApiKey: ProviderCatalog.RequiresApiKey(provider), upstreamBaseUrl: upstream),
         };
+    }
 
     /// <summary>Selects the web_search backend from settings; a keyed backend without a key
     /// falls back to keyless DuckDuckGo (noted on stderr) so web_search keeps working.</summary>
@@ -1096,6 +1148,42 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         }
     }
 
+    /// <summary>Probes the configured Headroom proxy for the Settings check button. Any HTTP
+    /// response proves reachability (the proxy may 404 unknown paths); a transport failure is
+    /// reported with its reason — never as success.</summary>
+    public static async Task<(bool Reachable, string Detail)> CheckHeadroomAsync(string proxyUrl, CancellationToken ct = default)
+    {
+        var root = (proxyUrl ?? "").Trim().TrimEnd('/');
+        if (root.EndsWith("/v1", StringComparison.OrdinalIgnoreCase)) root = root[..^3].TrimEnd('/');
+        if (root.Length == 0 || !Uri.TryCreate(root, UriKind.Absolute, out _))
+            return (false, "Enter a proxy URL like http://localhost:8787 first.");
+        using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromSeconds(4));
+        foreach (var path in new[] { "/health", "/stats", "/" })
+        {
+            try
+            {
+                using var response = await http.GetAsync(root + path, budget.Token).ConfigureAwait(false);
+                return (true, $"Proxy answered at {root} (HTTP {(int)response.StatusCode} on {path}).");
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException)
+            {
+                if (path == "/")
+                    return (false, $"No answer from {root}: {ex.GetBaseException().Message}. Is `headroom proxy` running?");
+            }
+        }
+        return (false, $"No answer from {root}.");
+    }
+
+    /// <summary>Applies the live token-saver flags that are not read per assembly (tool-output
+    /// compression). Prompt sections and Headroom routing need no call here: prompts read
+    /// settings per request, and routes rebuild in ApplyProviderSelection on the same save.</summary>
+    public void ApplyTokenSaver()
+    {
+        if (ToolOutputCompression is not null) ToolOutputCompression.Enabled = Settings.TokenSaverToolOutput;
+    }
+
     public void ApplyDefaultSelection()
     {
         Loop.DefaultSelection = new LlmCallConfig { Provider = Settings.Provider, Model = Settings.Model };
@@ -1177,6 +1265,10 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     /// <summary>Renames retired provider ids so saved settings keep working across catalog changes.</summary>
     public static void MigrateLegacySettings(HarnessSettings settings)
     {
+        // A misspelled or retired answer style must never reach the prompt as-is.
+        settings.AnswerStyle = Blazorly.Harness.Core.Agent.AnswerStyle.Normalize(settings.AnswerStyle);
+        if (string.IsNullOrWhiteSpace(settings.TokenSaverHeadroomUrl))
+            settings.TokenSaverHeadroomUrl = "http://localhost:8787";
         // "zhipu" → "zai": same API under the Z.ai brand, now on the documented api.z.ai host
         // (the old default open.bigmodel.ai never resolved; open.bigmodel.cn is the China host).
         if (settings.Provider == "zhipu")

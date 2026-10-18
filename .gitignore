@@ -12,7 +12,7 @@
 *.userosscache
 *.sln.docstates
 *.userprefs
-
+videos/
 # IDE / editor caches
 .vs/
 .idea/

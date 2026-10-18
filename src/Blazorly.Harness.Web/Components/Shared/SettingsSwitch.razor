@@ -1,0 +1,20 @@
+@*
+    On/off switch for settings pages: a real checkbox (keyboard and screen-reader friendly,
+    exposed as role="switch") drawn as a sliding pill with a plain On/Off word beside it, so
+    state never depends on colour alone. Used by Settings → Token saver.
+*@
+<label class="switch">
+    <input type="checkbox" role="switch" aria-checked="@(Checked ? "true" : "false")" aria-label="@Label"
+           checked="@Checked" @onchange="OnChange" />
+    <span class="switch-track" aria-hidden="true"></span>
+    <span class="switch-state" aria-hidden="true">@(Checked ? "On" : "Off")</span>
+</label>
+
+@code {
+    [Parameter] public bool Checked { get; set; }
+    [Parameter] public EventCallback<bool> CheckedChanged { get; set; }
+    /// <summary>What the switch controls, for assistive tech (not shown; cards carry visible titles).</summary>
+    [Parameter] public string Label { get; set; } = "";
+
+    private async Task OnChange(ChangeEventArgs e) => await CheckedChanged.InvokeAsync(e.Value is true);
+}
