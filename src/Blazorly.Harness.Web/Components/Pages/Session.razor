@@ -174,6 +174,18 @@
                                     <span class="v">@Fmt(context.PressureTokens) tokens · @context.OccupancyPercent% of @(context.ContextWindowTokens is { } window ? Fmt(window) : "unknown window")</span>
                                 </div>
                                 <div class="popover-empty">Estimated from message, system prompt, and tool text. The window uses API/catalog metadata or your configured fallback.</div>
+                                <div class="ctx-actions">
+                                    <button class="ghost small ctx-compact" disabled="@_running"
+                                            title="@(_running ? "Unavailable while the agent is working" : "Prune + summarize older context now (same as /compact)")"
+                                            @onclick="CompactContext">
+                                        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v3.2M6 4.2 8 6.2l2-2" /><path d="M8 13.5v-3.2M6 11.8 8 9.8l2 2" /></svg>
+                                        Compress context
+                                    </button>
+                                    @if (_compactNote is { Length: > 0 } note)
+                                    {
+                                        <div class="ctx-note @(_compactNoteFailed ? "error" : "")">@note</div>
+                                    }
+                                </div>
                                 <div class="ctx-section">
                                     <div class="ctx-row"><span class="k">system</span><span class="v">@Fmt(context.SystemTokens)</span></div>
                                     <div class="ctx-row"><span class="k">tools</span><span class="v">@Fmt(context.ToolsTokens)</span></div>
@@ -613,7 +625,9 @@
             <div class="todo-head">
                 <span class="todo-head-title">Tasks</span>
                 <span class="todo-count">@done/@todos.Count done</span>
-                <button class="link" title="Clear the task list — history stays in the log; the next agent update starts a fresh list" aria-label="Clear task list" @onclick="ClearTodos">clear</button>
+                <button class="icon icon-svg" title="Clear the task list — history stays in the log; the next agent update starts a fresh list" aria-label="Clear task list" @onclick="ClearTodos">
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.8 4.3h10.4" /><path d="M6.2 2.8h3.6v1.5" /><path d="m4.1 4.3.6 9h6.6l.6-9" /><path d="M6.6 6.9v4.1M9.4 6.9v4.1" /></svg>
+                </button>
                 <button class="icon" title="Hide task list" aria-label="Hide task list" @onclick="() => _todosCollapsed = true">✕</button>
             </div>
             <div class="todo-list">
@@ -635,10 +649,22 @@
         <aside class="delegation-panel" aria-label="Delegated agents">
             <div class="delegation-head">
                 <span class="todo-head-title">Agents</span>
-                <span class="todo-count">@(running > 0 ? $"{running} running" : "all settled")</span>
+                @if (running > 0)
+                {
+                    <span class="todo-count">@running running</span>
+                }
+                else
+                {
+                    <span class="todo-count settled" title="All agents settled">
+                        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.2 11.5 13 4.8" /></svg>
+                        <span class="visually-hidden">All agents settled</span>
+                    </span>
+                }
                 @if (agents.Any(d => d.Status != "running"))
                 {
-                    <button class="link" title="Hide every settled agent row — running agents stay; their sessions are untouched" aria-label="Clear settled agents" @onclick="ClearSettledDelegations">clear finished</button>
+                    <button class="icon icon-svg" title="Hide every settled agent row — running agents stay; their sessions are untouched" aria-label="Clear settled agents" @onclick="ClearSettledDelegations">
+                        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8s2.4-4.2 6-4.2S14 8 14 8s-2.4 4.2-6 4.2S2 8 2 8z" /><path d="M6.2 6.2l3.6 3.6M9.8 6.2l-3.6 3.6" /></svg>
+                    </button>
                 }
                 <button class="icon" title="Hide agents panel" aria-label="Hide agents panel" @onclick="() => _delegationsCollapsed = true">✕</button>
             </div>
@@ -933,6 +959,8 @@
     private bool _modelMenu;
     private bool _permissionMenu;
     private bool _ctxMenu;
+    private string? _compactNote;
+    private bool _compactNoteFailed;
     private bool _docsOpen;
     private int _docsDepth;
     private Core.Instructions.DocsInitService.InitPreview? _docsPreview;
@@ -1925,8 +1953,24 @@
     private void ToggleContextMenu()
     {
         _ctxMenu = !_ctxMenu;
+        if (_ctxMenu)
+        {
+            _compactNote = null;
+            _compactNoteFailed = false;
+        }
         _modelMenu = false;
         _permissionMenu = false;
+    }
+
+    /// <summary>Manual compaction from the context card — same path as /compact.</summary>
+    private void CompactContext()
+    {
+        if (_running || _sessionLoading) return;
+        var outcome = Facade.TryCommand(SessionId, "/compact");
+        _compactNote = outcome?.Text;
+        _compactNoteFailed = outcome is { Ok: false };
+        _dirty = true;
+        StateHasChanged();
     }
 
     private void CloseMenus()

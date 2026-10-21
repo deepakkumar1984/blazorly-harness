@@ -243,6 +243,15 @@ button.icon {
 button.icon:hover:not(:disabled) { color: var(--text); background: var(--bg-overlay); }
 button.icon.danger:hover { color: var(--danger); }
 button.icon:disabled { opacity: 0.35; }
+/* Icon-only actions in panel headers: square hit target, no glyph baseline drift. */
+button.icon.icon-svg {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    padding: 3px 5px;
+}
+button.icon.icon-svg > svg { display: block; }
 
 .session-row { display: flex; align-items: center; gap: 2px; }
 .session-row .session-item { flex: 1; min-width: 0; padding-top: 3px; padding-bottom: 3px; }
@@ -600,6 +609,18 @@ button.icon:disabled { opacity: 0.35; }
 .ctx-row .v { font-family: var(--mono); color: var(--text); }
 .ctx-row.ctx-head .v { font-weight: 600; }
 .ctx-section { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 2px; }
+
+/* Manual compaction: one action in the context card, disabled while the agent runs. */
+.ctx-actions { display: flex; flex-direction: column; gap: 6px; padding: 6px 12px 0; }
+.ctx-actions .ctx-compact {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+}
+.ctx-note { font-size: 0.71875rem; line-height: 1.35; color: var(--text-dim); }
+.ctx-note.error { color: var(--danger); }
 
 .popover-group { padding: 6px 10px 3px; font-size: 0.65625rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint); }
 .popover-item {
@@ -1279,8 +1300,10 @@ button.link:hover { text-decoration: underline; }
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--text-faint);
+    white-space: nowrap;
 }
-.todo-count { font-size: 0.6875rem; color: var(--text-dim); font-family: var(--mono); margin-right: auto; }
+.todo-count { font-size: 0.6875rem; color: var(--text-dim); font-family: var(--mono); margin-right: auto; white-space: nowrap; }
+.todo-count.settled { display: inline-flex; align-items: center; color: var(--success); }
 .todo-list { display: flex; flex-direction: column; gap: 6px; }
 .todo-item { display: flex; align-items: flex-start; gap: 7px; font-size: 0.78125rem; color: var(--text-dim); line-height: 1.4; }
 .todo-text { overflow-wrap: anywhere; }

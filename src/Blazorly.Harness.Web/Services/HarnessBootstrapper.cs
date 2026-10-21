@@ -478,7 +478,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
                 "harness-experience", 44, context => Settings.EnableHarnessExperience && context.Cwd is { } cwd
                     ? library.Render(cwd, Settings.HarnessExperienceTaskClass,
                         context.Agent?.Session.DeriveMessages().LastOrDefault(m => m.Role == "user"
-                            && !m.Content.OfType<ToolResultBlock>().Any())?.FlattenText() ?? "") : "");
+                            && !m.Content.OfType<ToolResultBlock>().Any())?.FlattenText() ?? "",
+                        new LessonCompatibility(HarnessExperienceLibrary.WorkspaceRevision(cwd), Settings.Provider, Settings.Model)) : "");
             Context.Effect(section.Dispose);
         }
         if (_boot.Profile is { } activeProfile)

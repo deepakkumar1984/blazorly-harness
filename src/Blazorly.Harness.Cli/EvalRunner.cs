@@ -34,7 +34,8 @@ public sealed record EvalTask(
     string? ExpectFinish = null,
     EvalInterrupt? Interrupt = null,
     string? Sandbox = null,
-    IReadOnlyList<string>? ProtectedFiles = null)
+    IReadOnlyList<string>? ProtectedFiles = null,
+    IReadOnlyList<string>? Hidden = null)
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
@@ -90,6 +91,8 @@ public sealed record EvalTask(
                 $"sandbox must be one of: {string.Join(", ", EvalSandbox.All)} (got '{file.Sandbox}')");
         if (file.ProtectedFiles is { } protectedFiles && protectedFiles.Any(p => file.Setup?.Files?.ContainsKey(p) != true))
             throw new EvalLoadException(dir, "every protectedFiles entry must name a setup file");
+        if (file.Hidden?.Any(s => string.IsNullOrWhiteSpace(s) || s.Trim().Length < 8) == true)
+            throw new EvalLoadException(dir, "each hidden grading string must contain at least 8 characters");
         EvalInterrupt? interrupt = null;
         if (file.Interrupt is { } i)
         {
@@ -115,7 +118,8 @@ public sealed record EvalTask(
             file.ExpectFinish,
             interrupt,
             file.Sandbox,
-            file.ProtectedFiles);
+            file.ProtectedFiles,
+            file.Hidden?.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList());
     }
 
     private sealed record EvalTaskFile(
@@ -129,7 +133,8 @@ public sealed record EvalTask(
         string? ExpectFinish = null,
         EvalInterruptFile? Interrupt = null,
         string? Sandbox = null,
-        List<string>? ProtectedFiles = null);
+        List<string>? ProtectedFiles = null,
+        List<string>? Hidden = null);
 
     private sealed record EvalCheckFile(string? Name, string? Run, int? TimeoutSeconds);
 
@@ -175,7 +180,13 @@ public sealed record EvalTaskResult(
     string Sandbox = EvalSandbox.None,
     string? Skipped = null,
     long CacheReadTokens = 0,
-    long CacheWriteTokens = 0)
+    long CacheWriteTokens = 0,
+    int Compactions = 0,
+    int Retries = 0,
+    bool UsageComplete = true,
+    string? EffectiveProvider = null,
+    string? EffectiveModel = null,
+    string? ReasoningEffort = null)
 {
     /// <summary>Skipped rows are neither passes nor failures: the backend could not run here.</summary>
     public bool IsSkipped => Skipped is not null;
@@ -364,6 +375,30 @@ public static class EvalRunner
             Path.Combine(options.OutDir, $"{result.Id}.{result.Sandbox}.json"),
             JsonSerializer.Serialize(result, Json), ct).ConfigureAwait(false);
 
+    internal static bool TranscriptContainsHidden(string transcript, IReadOnlyList<string>? hidden)
+    {
+        if (hidden is null) return false;
+        foreach (var secret in hidden)
+        {
+            if (secret.Length >= 8 && transcript.Contains(secret, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    private static EvalTaskResult WithMeter(EvalTaskResult result, HeadlessResult run) => result with
+    {
+        InputTokens = run.Usage?.Input ?? 0,
+        OutputTokens = run.Usage?.Output ?? 0,
+        CacheReadTokens = run.Usage?.CacheRead ?? 0,
+        CacheWriteTokens = run.Usage?.CacheWrite ?? 0,
+        Compactions = run.Usage?.Compactions ?? 0,
+        Retries = run.Usage?.Retries ?? 0,
+        UsageComplete = run.Usage?.Complete ?? false,
+        EffectiveProvider = run.Provider,
+        EffectiveModel = run.Model,
+        ReasoningEffort = run.ReasoningEffort,
+    };
+
     private static EvalTaskResult Failure(string id, string backend, string error) => new(
         id, false, "error", 1, null, "", 0, 0, 0, [], error, backend);
 
@@ -400,6 +435,9 @@ public static class EvalRunner
                 }
             }
 
+            if (backend == EvalSandbox.None && task.Hidden is { Count: > 0 })
+                return Failure(task.Id, backend, "hidden grading material requires a confined backend");
+
             var sw = Stopwatch.StartNew();
             var run = task.Interrupt?.KillAfterMs is { } killMs
                 ? await RunKillResumeAsync(task, options, workspace, home, killMs, ct).ConfigureAwait(false)
@@ -434,30 +472,32 @@ public static class EvalRunner
             }
             catch (ArgumentException ex)
             {
-                return Failure(task.Id, backend, ex.Message) with
+                return WithMeter(Failure(task.Id, backend, ex.Message), run) with
                 {
                     SessionId = run.SessionId,
                     DurationMs = sw.ElapsedMilliseconds,
-                    InputTokens = run.Usage?.Input ?? 0,
-                    OutputTokens = run.Usage?.Output ?? 0,
-                    CacheReadTokens = run.Usage?.CacheRead ?? 0,
-                    CacheWriteTokens = run.Usage?.CacheWrite ?? 0
                 };
             }
 
             // A provider failure is reported with the provider's own words, unless the task expected
             // that finish — then it is scored like any other run.
             if (run.Error is not null && run.Finish != (task.ExpectFinish ?? "completed"))
-                return Failure(task.Id, backend, run.Error) with
+                return WithMeter(Failure(task.Id, backend, run.Error), run) with
                 {
                     Finish = run.Finish,
                     ExitCode = run.ExitCode,
                     SessionId = run.SessionId,
                     DurationMs = sw.ElapsedMilliseconds,
-                    InputTokens = run.Usage?.Input ?? 0,
-                    OutputTokens = run.Usage?.Output ?? 0,
-                    CacheReadTokens = run.Usage?.CacheRead ?? 0,
-                    CacheWriteTokens = run.Usage?.CacheWrite ?? 0,
+                };
+
+            var evidenceLog = Path.Combine(options.OutDir, "evidence", backend, task.Id, "session.jsonl");
+            if (File.Exists(evidenceLog) && TranscriptContainsHidden(File.ReadAllText(evidenceLog), task.Hidden))
+                return WithMeter(Failure(task.Id, backend, "grading material appeared in the solver transcript"), run) with
+                {
+                    Finish = run.Finish,
+                    ExitCode = run.ExitCode,
+                    SessionId = run.SessionId,
+                    DurationMs = sw.ElapsedMilliseconds,
                 };
 
             var expectedExit = EvalTask.ExitOfFinish(task.ExpectFinish);
@@ -469,14 +509,14 @@ public static class EvalRunner
                 checks.Add(new EvalCheckResult(check.Name, exit == 0, exit, output));
             }
             var pass = run.ExitCode == expectedExit && checks.All(c => c.Pass);
-            return new EvalTaskResult(
+            return WithMeter(new EvalTaskResult(
                 task.Id, pass, run.Finish, run.ExitCode, run.SessionId,
                 Truncate(run.Response, 2000), sw.ElapsedMilliseconds,
-                run.Usage?.Input ?? 0, run.Usage?.Output ?? 0,
+                0, 0,
                 checks, pass ? null
                     : run.ExitCode != expectedExit ? $"turn ended {run.Finish} (exit {run.ExitCode}), expected {task.ExpectFinish ?? "completed"} (exit {expectedExit})"
                     : "checks failed",
-                backend, CacheReadTokens: run.Usage?.CacheRead ?? 0, CacheWriteTokens: run.Usage?.CacheWrite ?? 0);
+                backend), run);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
@@ -642,9 +682,15 @@ public static class EvalRunner
                     SessionId = root.TryGetProperty("sessionId", out var sid) ? sid.GetString() : null,
                     Response = root.TryGetProperty("response", out var response) ? response.GetString() ?? "" : "",
                     Finish = finish.GetString() ?? "completed",
+                    Provider = root.TryGetProperty("provider", out var provider) && provider.ValueKind == JsonValueKind.String ? provider.GetString() : null,
+                    Model = root.TryGetProperty("model", out var model) && model.ValueKind == JsonValueKind.String ? model.GetString() : null,
+                    ReasoningEffort = root.TryGetProperty("reasoningEffort", out var effort) && effort.ValueKind == JsonValueKind.String ? effort.GetString() : null,
                     Usage = root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object
                         ? new HeadlessUsage(usage.GetProperty("input").GetInt64(), usage.GetProperty("output").GetInt64(),
-                            usage.GetProperty("cacheRead").GetInt64(), usage.GetProperty("cacheWrite").GetInt64()) : null,
+                            usage.GetProperty("cacheRead").GetInt64(), usage.GetProperty("cacheWrite").GetInt64(),
+                            usage.TryGetProperty("compactions", out var compactions) ? compactions.GetInt32() : 0,
+                            usage.TryGetProperty("retries", out var retries) ? retries.GetInt32() : 0,
+                            !usage.TryGetProperty("complete", out var complete) || complete.GetBoolean()) : null,
                     Error = root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String
                         ? error.GetString()
                         : null,

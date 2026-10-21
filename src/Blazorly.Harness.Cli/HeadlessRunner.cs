@@ -34,7 +34,7 @@ public sealed record HeadlessOptions
     public TextWriter Out { get; init; } = Console.Out;
 }
 
-public sealed record HeadlessUsage(long Input, long Output, long CacheRead, long CacheWrite);
+public sealed record HeadlessUsage(long Input, long Output, long CacheRead, long CacheWrite, int Compactions = 0, int Retries = 0, bool Complete = true);
 
 public sealed record HeadlessResult
 {
@@ -44,6 +44,9 @@ public sealed record HeadlessResult
     public string Finish { get; init; } = "completed";
     public HeadlessUsage? Usage { get; init; }
     public string? Error { get; init; }
+    public string? Provider { get; init; }
+    public string? Model { get; init; }
+    public string? ReasoningEffort { get; init; }
 }
 
 /// <summary>
@@ -133,9 +136,23 @@ public static class HeadlessRunner
             var finish = FinishOf(agent);
             var failure = FailureOf(agent);
             var response = LastAssistantText(agent);
-            var usage = bootstrapper.Meter?.Measure(agent);
+            var sessionsRoot = Path.Combine(bootstrapper.DataDirectory, "sessions");
+            var usage = await TrialEvidence.AccountAsync(agent.Session.Events, (id, token) =>
+            {
+                var live = bootstrapper.Sessions.Get(id);
+                if (live is not null) return Task.FromResult<IReadOnlyList<SessionEvent>?>(live.Events);
+                return LoadPersistedChildAsync(sessionsRoot, id, token);
+            }, ct: ct).ConfigureAwait(false);
             if (options.EvidenceDirectory is { } evidence)
+            {
                 TrialEvidence.Write(evidence, agent.Session.Header, agent.Session.Events, response);
+                HarnessArtifacts.WriteJson(Path.Combine(evidence, "route.json"), new
+                {
+                    provider = agent.Options.Provider,
+                    model = agent.Options.Model,
+                    reasoningEffort = agent.Options.ReasoningEffort,
+                });
+            }
 
             if (options.Json)
             {
@@ -144,12 +161,18 @@ public static class HeadlessRunner
                     sessionId = agent.Session.Id,
                     response,
                     finish,
-                    usage = usage is null ? null : new
+                    provider = agent.Options.Provider,
+                    model = agent.Options.Model,
+                    reasoningEffort = agent.Options.ReasoningEffort,
+                    usage = new
                     {
-                        input = usage.TotalInputTokens,
-                        output = usage.TotalOutputTokens,
-                        cacheRead = usage.TotalCacheReadTokens,
-                        cacheWrite = usage.TotalCacheWriteTokens,
+                        input = usage.Input,
+                        output = usage.Output,
+                        cacheRead = usage.CacheRead,
+                        cacheWrite = usage.CacheWrite,
+                        compactions = usage.Compactions,
+                        retries = usage.Retries,
+                        complete = usage.Complete,
                     },
                     error = failure,
                 }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })).ConfigureAwait(false);
@@ -167,8 +190,11 @@ public static class HeadlessRunner
                 SessionId = agent.Session.Id,
                 Response = response,
                 Finish = finish,
-                Usage = usage is null ? null : new HeadlessUsage(usage.TotalInputTokens, usage.TotalOutputTokens, usage.TotalCacheReadTokens, usage.TotalCacheWriteTokens),
+                Usage = usage,
                 Error = failure,
+                Provider = agent.Options.Provider,
+                Model = agent.Options.Model,
+                ReasoningEffort = agent.Options.ReasoningEffort,
             };
         }
         catch (Exception ex)
@@ -178,6 +204,19 @@ public static class HeadlessRunner
         finally
         {
             if (bootstrapper is not null) await bootstrapper.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<IReadOnlyList<SessionEvent>?> LoadPersistedChildAsync(string sessionsRoot, string sessionId, CancellationToken ct)
+    {
+        try
+        {
+            var loaded = await new Persistence.JsonlSessionPersistence(sessionsRoot).LoadAsync(sessionId, ct).ConfigureAwait(false);
+            return loaded.Events;
+        }
+        catch (Exception ex) when (ex is IOException or Blazorly.Harness.Kernel.HarnessException or JsonException)
+        {
+            return null;
         }
     }
 

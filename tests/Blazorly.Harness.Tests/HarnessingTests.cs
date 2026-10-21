@@ -286,4 +286,214 @@ public sealed class HarnessingTests : IDisposable
         Assert.Equal("append", assistantEvent.RootElement.GetProperty("surfaceOp").GetString());
         Assert.Equal("after resume", File.ReadAllText(Path.Combine(evidence, "answer.md")));
     }
+
+    [Fact]
+    public void ExcerptReservesAShareForEveryRunAndKeepsWholeEvents()
+    {
+        var baseline = Path.Combine(_root, "baseline.jsonl");
+        var workflow = Path.Combine(_root, "workflow.jsonl");
+        Directory.CreateDirectory(_root);
+        var wide = "{\"seq\":1,\"data\":\"" + new string('B', 2_000) + "\"}";
+        File.WriteAllText(baseline, string.Join('\n', Enumerable.Repeat(wide, 70)) + "\n");
+        File.WriteAllText(workflow, "{\"seq\":9,\"data\":\"workflow kept\"}\n");
+        var text = TrialEvidence.Excerpt(new Dictionary<string, string> { ["baseline/1"] = baseline, ["workflow/1"] = workflow }, 100_000);
+        Assert.Contains("workflow kept", text);
+        Assert.Contains("omitted", text);
+        Assert.Contains(baseline, text);
+        foreach (var line in text.Split('\n'))
+        {
+            if (!line.StartsWith('{')) continue;
+            using var _ = JsonDocument.Parse(line);
+        }
+
+        var huge = Path.Combine(_root, "huge.jsonl");
+        File.WriteAllText(huge, new string('H', 80) + "\n{\"seq\":2,\"data\":\"older kept\"}\n");
+        var clipped = TrialEvidence.Excerpt(new Dictionary<string, string> { ["huge"] = huge }, 50);
+        Assert.Contains("older kept", clipped);
+        Assert.DoesNotContain(new string('H', 80), clipped);
+
+        var oversize = Path.Combine(_root, "oversize.jsonl");
+        File.WriteAllText(oversize, "{\"seq\":7,\"data\":\"" + new string('Z', 21_000) + "\"}\n");
+        var read = TrialEvidence.ReadEvent(oversize, 7);
+        Assert.Contains("does not fit", read);
+        Assert.DoesNotContain(new string('Z', 100), read);
+    }
+
+    [Fact]
+    public void PromotionGuardRejectsBaselineRegressionsAndIgnoresIncompleteUsage()
+    {
+        EvalTaskResult Row(string id, bool pass, long tokens, bool complete = true) => new(
+            id, pass, "completed", 0, "session", "", 1, tokens, tokens, [], null, UsageComplete: complete);
+        EvalSummary Summary(params EvalTaskResult[] tasks) => new(
+            tasks.Length, tasks.Count(t => t.Pass), tasks.Count(t => !t.Pass), 10,
+            tasks.Sum(t => t.InputTokens), tasks.Sum(t => t.OutputTokens), tasks, 0, ["none"], new Dictionary<string, string>());
+        HarnessTrial Trial(HarnessProfile profile, EvalSummary summary) => new(profile.Id, profile.Name, 1, "dir", summary, false);
+
+        var baseline = HarnessProfile.Baseline;
+        var candidate = HarnessProfile.Compression;
+        var trials = new[]
+        {
+            Trial(baseline, Summary(Row("A", true, 10), Row("B", false, 10), Row("C", false, 10))),
+            Trial(candidate, Summary(Row("A", false, 10), Row("B", true, 10), Row("C", true, 10))),
+        };
+        var guarded = HarnessExperiments.Summarise("identity", [baseline, candidate], trials, protectBaseline: true);
+        Assert.Equal(baseline.Id, guarded.BestProfileId);
+        Assert.Contains(guarded.Regressions!, line => line.Contains("compressed-output regressed none|A: 0 passes against 1 baseline passes"));
+        Assert.Contains("Per-task regressions", HarnessExperiments.Render(guarded));
+
+        var open = HarnessExperiments.Summarise("identity", [baseline, candidate], trials, protectBaseline: false);
+        Assert.Equal(candidate.Id, open.BestProfileId);
+        Assert.Contains(open.Regressions!, line => line.Contains("regressed none|A"));
+
+        var terse = HarnessProfile.Terse;
+        var equal = new[]
+        {
+            Trial(baseline, Summary(Row("A", true, 100))),
+            Trial(terse, Summary(Row("A", true, 1, complete: false))),
+        };
+        Assert.Equal(baseline.Id, HarnessExperiments.Summarise("identity", [baseline, terse], equal, protectBaseline: true).BestProfileId);
+        Assert.NotEqual(baseline.Id, terse.Id);
+        Assert.NotEqual(candidate.Id, terse.Id);
+    }
+
+    [Fact]
+    public async Task UsageLedgerIncludesCompactionChildrenAndMarksGaps()
+    {
+        static SessionEvent Ev(string type, object payload) => new() { Type = type, Data = SessionJson.ToElement(payload) };
+        var parent = new[]
+        {
+            Ev(SessionEventTypes.AssistantMessage, new SessionPayloads.AssistantMessage(1, 1,
+                Message.CreateAssistant("scripted", "test", [new TextBlock("parent")]), new TokenUsage(10, 4, 1, 2))),
+            Ev(SessionEventTypes.CompactionSummary, new { usage = new TokenUsage(3, 1) }),
+            Ev(SessionEventTypes.LlmRetry, new { attempt = 1 }),
+            Ev(SessionEventTypes.SubagentStatus, new { childSessionId = "child-1" }),
+            Ev("team/member", new { member = new { sessionId = "child-1" } }),
+        };
+        var child = new[]
+        {
+            Ev(SessionEventTypes.AssistantMessage, new SessionPayloads.AssistantMessage(1, 1,
+                Message.CreateAssistant("scripted", "test", [new TextBlock("child")]), new TokenUsage(5, 2, 1))),
+        };
+
+        var usage = await TrialEvidence.AccountAsync(parent, (id, _) =>
+            Task.FromResult<IReadOnlyList<SessionEvent>?>(id == "child-1" ? child : null));
+        Assert.Equal(new HeadlessUsage(18, 7, 2, 2, 1, 1, true), usage);
+
+        var missing = await TrialEvidence.AccountAsync(parent, (_, _) => Task.FromResult<IReadOnlyList<SessionEvent>?>(null));
+        Assert.False(missing.Complete);
+        Assert.Equal(13, missing.Input);
+        Assert.Equal(5, missing.Output);
+        Assert.Equal(1, missing.Compactions);
+        Assert.Equal(1, missing.Retries);
+
+        var incomplete = await TrialEvidence.AccountAsync([Ev(SessionEventTypes.CompactionSummary, new { summary = "no meter" })], null);
+        Assert.False(incomplete.Complete);
+        Assert.Equal(0, incomplete.Input);
+        Assert.Equal(1, incomplete.Compactions);
+    }
+
+    [Fact]
+    public void LessonsRetainPackagesAndHideIncompatibleRecords()
+    {
+        Directory.CreateDirectory(_root);
+        var baseline = Path.Combine(_root, "base.jsonl");
+        var candidate = Path.Combine(_root, "candidate.jsonl");
+        File.WriteAllText(baseline, "{\"seq\":3,\"data\":\"missed the skill\"}\n");
+        File.WriteAllText(candidate, "{\"seq\":4,\"data\":\"loaded the skill\"}\n");
+        var trajectories = new Dictionary<string, string> { ["base"] = baseline, ["candidate"] = candidate };
+        var library = new HarnessExperienceLibrary(Path.Combine(_root, "packages-library"));
+        var scope = HarnessExperienceLibrary.WorkspaceScope(Path.Combine(_root, "workspace-a"));
+        var profile = SkillProfile();
+        var evidence = new List<HarnessLessonEvidence> { new("base", 3, "missed the skill"), new("candidate", 4, "loaded the skill") };
+        var packaged = new HarnessLesson
+        {
+            Scope = scope,
+            ProfileId = profile.Id,
+            Cue = "Blazor component skill",
+            Component = "skills/component-test/SKILL.md",
+            Lesson = "Run the packaged component checker before editing",
+            Verdict = "helped",
+            Evidence = evidence,
+        };
+        Assert.Throws<ArgumentException>(() => library.Add(packaged, trajectories));
+        var recorded = library.Add(packaged, trajectories, profile)!;
+        var packagePath = Path.Combine(_root, "packages-library", "packages", profile.Id, "profile.json");
+        var bytes = File.ReadAllBytes(packagePath);
+        Assert.Equal(recorded.Id, library.Add(packaged, trajectories, profile)!.Id);
+        Assert.Equal(bytes, File.ReadAllBytes(packagePath));
+        var shown = library.Describe(recorded.Id);
+        Assert.Contains("loaded the skill", shown);
+        Assert.Contains("skills/component-test/scripts/check.py", shown);
+        Assert.Contains(packagePath, shown);
+        File.WriteAllText(packagePath, File.ReadAllText(packagePath).Replace("UI changes", "UI change"));
+        Assert.Throws<ArgumentException>(() => library.Add(packaged, trajectories, profile));
+
+        var revision = new string('a', 40);
+        var specific = new HarnessLesson
+        {
+            Scope = scope,
+            ProfileId = profile.Id,
+            Cue = "revision bound counter",
+            Component = "instructions",
+            Lesson = "This repository revision stores the counter in currentCount",
+            Verdict = "helped",
+            SourceRevision = revision,
+            Provider = "openai",
+            Model = "fixed-model",
+            RevisionSpecific = true,
+            Evidence = evidence,
+        };
+        library.Add(specific, trajectories);
+        var reusable = new HarnessLesson
+        {
+            Scope = scope,
+            ProfileId = profile.Id,
+            Cue = "reusable counter",
+            Component = "instructions",
+            Lesson = "Inspect the component contract before editing markup",
+            Verdict = "helped",
+            SourceRevision = revision,
+            Provider = "openai",
+            Model = "fixed-model",
+            Evidence = evidence,
+        };
+        library.Add(reusable, trajectories);
+        var query = "revision bound counter reusable counter";
+        var same = new LessonCompatibility(revision, "openai", "fixed-model");
+        var otherRevision = new LessonCompatibility(new string('b', 40), "openai", "fixed-model");
+        var otherModel = new LessonCompatibility(revision, "openai", "other-model");
+        var matched = library.Render(Path.Combine(_root, "workspace-a"), "coding", query, same);
+        Assert.Contains("stores the counter", matched);
+        Assert.Contains("Inspect the component contract", matched);
+        var moved = library.Render(Path.Combine(_root, "workspace-a"), "coding", query, otherRevision);
+        Assert.DoesNotContain("stores the counter", moved);
+        Assert.Contains("Inspect the component contract", moved);
+        Assert.DoesNotContain("stores the counter", library.Render(Path.Combine(_root, "workspace-a"), "coding", query, otherModel));
+        Assert.Contains("stores the counter", library.Render(Path.Combine(_root, "workspace-a"), "coding", query));
+    }
+
+    [Fact]
+    public void HelperSyntaxRejectsBrokenScriptsAndAcceptsThePackagedChecker()
+    {
+        Assert.Throws<ArgumentException>(() => HarnessProfile.Parse("""{"name":"bad-py","files":{"scripts/bad.py":"def ("}}"""));
+        Assert.Throws<ArgumentException>(() => HarnessProfile.Parse("""{"name":"bad-csx","files":{"scripts/bad.csx":"class {"}}"""));
+        var script = HarnessProfile.Parse("""{"name":"ok-csx","files":{"scripts/ok.csx":"var n = 1;\n"}}""");
+        Assert.Contains("scripts/ok.csx", script.Files.Keys);
+        SkillProfile().Validate();
+    }
+
+    [Fact]
+    public void HiddenGradingMaterialIsRejectedWhenItLeaksOrIsTooShort()
+    {
+        Assert.False(EvalRunner.TranscriptContainsHidden("ordinary work", ["SECRET_GRADE_TOKEN"]));
+        Assert.True(EvalRunner.TranscriptContainsHidden("saw SECRET_GRADE_TOKEN in the log", ["SECRET_GRADE_TOKEN"]));
+        Assert.False(EvalRunner.TranscriptContainsHidden("short secret", ["short"]));
+        var dir = Path.Combine(_root, "hidden-task");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "task.json"), """
+            {"description":"hidden grade","prompt":"do the work","checks":[{"name":"c","run":"true"}],"hidden":["short"]}
+            """);
+        var error = Assert.Throws<EvalLoadException>(() => EvalTask.Load(dir));
+        Assert.Contains("at least 8 characters", error.Message);
+    }
 }

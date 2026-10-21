@@ -1,0 +1,21 @@
+{
+  "description": "Make Counter.razor a button that increments the displayed count",
+  "prompt": "Counter.razor is supposed to show the count and increment it. The markup must show @currentCount. A <button> element, not a <div>, must use @onclick=\"Increment\". In the @code block, currentCount must be a public int, and public void Increment() must add 1 to currentCount. Leave the checker untouched.",
+  "timeoutSeconds": 180,
+  "setup": {
+    "files": {
+      "Counter.razor": "<p role=\"status\">Current count: @currentCount</p>\n\n<div class=\"counter\" @onclick=\"Increment\">Click me</div>\n\n@code {\n    public int currentCount;\n\n    private void Increment()\n    {\n    }\n}\n",
+      "check_counter.py": "import re, sys, pathlib\ntext = pathlib.Path(\"Counter.razor\").read_text(encoding=\"utf-8\")\ntext = re.sub(r\"@\\*.*?\\*@\", \"\", text, flags=re.S)\ntext = re.sub(r\"<!--.*?-->\", \"\", text, flags=re.S)\nmarkup, sep, code = text.partition(\"@code\")\nif sep == \"\":\n    sys.exit(\"Counter.razor has no @code block\")\nif \"@currentCount\" not in markup:\n    sys.exit(\"markup must show @currentCount\")\nclicks = list(re.finditer(r\"\"\"@onclick\\s*=\\s*([\"'])Increment\\1\"\"\", markup))\nif len(clicks) != 1:\n    sys.exit('expected exactly one @onclick=\"Increment\"')\nstart = markup.rfind(\"<\", 0, clicks[0].start())\ntag = re.match(r\"<([A-Za-z][\\w.]*)\", markup[start:]) if start >= 0 else None\nif tag is None or tag.group(1) != \"button\":\n    found = tag.group(1) if tag else \"none\"\n    sys.exit(f\"Increment must be the click handler of a button, found {found}\")\nif not re.search(r\"\\bpublic\\s+int\\s+currentCount\\b\", code):\n    sys.exit(\"public int currentCount is required\")\nmethod = re.search(r\"\\bpublic\\s+void\\s+Increment\\s*\\(\\s*\\)\\s*\\{(?P<body>.*?)\\n\\s*\\}\", code, re.S)\nif method is None:\n    sys.exit(\"public void Increment() is required\")\nbody = method.group(\"body\")\nif not re.search(r\"currentCount\\s*(\\+\\+|\\+=\\s*1|=\\s*currentCount\\s*\\+\\s*1)\\s*;\", body):\n    sys.exit(\"Increment must add 1 to currentCount\")\n"
+    }
+  },
+  "protectedFiles": [
+    "check_counter.py"
+  ],
+  "checks": [
+    {
+      "name": "button increments the displayed count",
+      "run": "python3 check_counter.py",
+      "timeoutSeconds": 30
+    }
+  ]
+}

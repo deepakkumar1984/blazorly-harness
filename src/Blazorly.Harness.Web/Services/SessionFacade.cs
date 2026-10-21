@@ -12,6 +12,11 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
 {
     public HarnessBootstrapper Harness => harness;
 
+    /// <summary>Sessions with a manual compaction in flight; a second request is refused so the
+    /// surface cannot be shadowed twice by interleaved summary calls.</summary>
+    private readonly HashSet<string> _compacting = new(StringComparer.Ordinal);
+    private readonly object _compactingGate = new();
+
     // ---- workspaces ----
 
     public IReadOnlyList<Workspace> Workspaces() => harness.Workspaces.List();
@@ -546,6 +551,11 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         if (agent.Session.SurfaceSeqs.Count < 3) return ("nothing to compact: the context is already small", false);
         var compaction = harness.Compaction;
         if (compaction is null) return ("compaction is not mounted", false);
+        lock (_compactingGate)
+        {
+            if (!_compacting.Add(sessionId))
+                return ("compaction already running — the context card updates when it finishes", false);
+        }
         _ = Task.Run(async () =>
         {
             try
@@ -558,6 +568,10 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[compaction] /compact failed for session {sessionId}: {ex.Message}");
+            }
+            finally
+            {
+                lock (_compactingGate) _compacting.Remove(sessionId);
             }
         });
         return ("compaction started — older context will be pruned and summarized in the background", true);

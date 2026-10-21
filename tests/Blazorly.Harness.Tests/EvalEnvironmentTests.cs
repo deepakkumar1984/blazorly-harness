@@ -126,14 +126,18 @@ public class EvalEnvironmentTests : BootstrapperTestBase
                 Sandbox = [EvalSandbox.Landlock, EvalSandbox.E2b, EvalSandbox.None],
             });
 
+            var confined = EvalSandbox.Default == EvalSandbox.Landlock;
             Assert.Equal(3, summary.Total);
-            Assert.Equal(1, summary.Executed); // only `none` can run on a host without Landlock or an E2B key
-            Assert.Equal(2, summary.Skipped);
+            Assert.Equal(confined ? 2 : 1, summary.Executed); // Landlock runs only where the host can confine; E2B stays unconfigured
+            Assert.Equal(confined ? 1 : 2, summary.Skipped);
             Assert.Equal(0, summary.Failed); // a skip never fails the run, and never passes it either
-            Assert.Equal(1, summary.Passed);
+            Assert.Equal(confined ? 2 : 1, summary.Passed);
 
             var skipped = summary.Tasks.Where(t => t.IsSkipped).ToList();
-            Assert.Contains(skipped, t => t.Sandbox == EvalSandbox.Landlock && t.Skipped!.StartsWith("confinement-unavailable"));
+            if (confined)
+                Assert.Contains(summary.Tasks, t => t.Sandbox == EvalSandbox.Landlock && t.Pass);
+            else
+                Assert.Contains(skipped, t => t.Sandbox == EvalSandbox.Landlock && t.Skipped!.StartsWith("confinement-unavailable"));
             Assert.Contains(skipped, t => t.Sandbox == EvalSandbox.E2b && t.Skipped!.StartsWith("e2b-not-configured"));
             Assert.All(summary.Tasks.Where(t => !t.IsSkipped), t => Assert.NotEqual("skipped", t.Finish));
         }

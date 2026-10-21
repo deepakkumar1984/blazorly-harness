@@ -1,8 +1,11 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 
 namespace Blazorly.Harness.Core.Harnessing;
 
@@ -33,6 +36,12 @@ public sealed record HarnessProfile
     {
         Name = "compressed-output",
         Settings = new() { TokenSaverToolOutput = true },
+    };
+
+    public static HarnessProfile Terse => new()
+    {
+        Name = "terse-output",
+        Settings = new() { TokenSaverTerseOutput = true },
     };
 
     [JsonIgnore]
@@ -78,6 +87,7 @@ public sealed record HarnessProfile
         {
             if (!IsPackagePath(path) || !names.Add(path)) throw new ArgumentException($"invalid or colliding profile path: {path}");
             if (body is null) throw new ArgumentException($"profile file cannot be null: {path}");
+            CheckHelperSyntax(path, body);
             if (path.EndsWith("/SKILL.md", StringComparison.Ordinal))
             {
                 var folder = path.Split('/')[1];
@@ -99,6 +109,55 @@ public sealed record HarnessProfile
 
     public static bool IsPackagePath(string path) => Regex.IsMatch(path,
         "^(scripts/[a-z0-9][a-z0-9_.-]*\\.(py|sh|csx|js|mjs|json|md|txt)|skills/[a-z0-9][a-z0-9_-]*/(SKILL\\.md|scripts/[a-z0-9][a-z0-9_.-]*\\.(py|sh|csx|js|mjs|json|md|txt)))$");
+
+    private static void CheckHelperSyntax(string path, string body)
+    {
+        var extension = Path.GetExtension(path);
+        if (extension is ".py" or ".sh" or ".js" or ".mjs")
+        {
+            var error = InterpreterSyntax(extension, body);
+            if (error is not null) throw new ArgumentException($"{path}: {error}");
+            return;
+        }
+        if (extension != ".csx") return;
+        var tree = CSharpSyntaxTree.ParseText(body, new CSharpParseOptions(LanguageVersion.Preview, DocumentationMode.Parse, SourceCodeKind.Script));
+        var diagnostic = tree.GetDiagnostics().FirstOrDefault(d => d.Severity == DiagnosticSeverity.Error);
+        if (diagnostic is not null) throw new ArgumentException($"{path}: {diagnostic.GetMessage()}");
+    }
+
+    private static string? InterpreterSyntax(string extension, string body)
+    {
+        var file = Path.Combine(Path.GetTempPath(), "blz-syntax-" + Guid.NewGuid().ToString("N") + extension);
+        try
+        {
+            File.WriteAllText(file, body, new UTF8Encoding(false));
+            var (program, args) = extension switch
+            {
+                ".py" => ("python3", new[] { "-c", "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())", file }),
+                ".sh" => ("bash", new[] { "-n", file }),
+                _ => ("node", new[] { "--check", file }),
+            };
+            var start = new ProcessStartInfo(program) { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
+            foreach (var arg in args) start.ArgumentList.Add(arg);
+            using var process = Process.Start(start) ?? throw new ArgumentException($"{program} could not be started");
+            if (!process.WaitForExit(15_000))
+            {
+                try { process.Kill(entireProcessTree: true); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                return $"{program} syntax check timed out";
+            }
+            if (process.ExitCode == 0) return null;
+            var stderr = process.StandardError.ReadToEnd().Trim();
+            return string.IsNullOrWhiteSpace(stderr) ? $"{program} rejected the helper (exit {process.ExitCode})" : stderr;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
+        {
+            return ex.Message;
+        }
+        finally
+        {
+            if (File.Exists(file)) File.Delete(file);
+        }
+    }
 
     private void CheckReferences(string source, string body)
     {

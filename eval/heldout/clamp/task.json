@@ -1,0 +1,23 @@
+{
+  "description": "Clamp a value into an inclusive range",
+  "prompt": "src/Clamp.cs returns the original value. Change Apply so the result is within min and max, inclusive. Do not change the tests project. Apply(10, 0, 5) must be 5, Apply(-1, 0, 5) must be 0, and Apply(3, 0, 5) must stay 3.",
+  "timeoutSeconds": 300,
+  "setup": {
+    "files": {
+      "src/Clamp.cs": "public static class Clamp\n{\n    public static int Apply(int value, int min, int max) => value;\n}\n",
+      "tests/Clamp.Tests.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net10.0</TargetFramework>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <Nullable>enable</Nullable>\n    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Program.cs\" />\n    <Compile Include=\"../src/Clamp.cs\" />\n  </ItemGroup>\n</Project>\n",
+      "tests/Program.cs": "if (Clamp.Apply(10, 0, 5) != 5) return 1;\nif (Clamp.Apply(-1, 0, 5) != 0) return 1;\nif (Clamp.Apply(3, 0, 5) != 3) return 1;\nif (Clamp.Apply(5, 0, 5) != 5) return 1;\nif (Clamp.Apply(0, 0, 5) != 0) return 1;\nreturn 0;\n"
+    }
+  },
+  "protectedFiles": [
+    "tests/Clamp.Tests.csproj",
+    "tests/Program.cs"
+  ],
+  "checks": [
+    {
+      "name": "protected behavior",
+      "run": "dotnet run --project tests --nologo",
+      "timeoutSeconds": 180
+    }
+  ]
+}

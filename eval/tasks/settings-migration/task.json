@@ -1,0 +1,27 @@
+{
+  "description": "Read theme, falling back to the legacy colourScheme key",
+  "prompt": "Update SettingsReader.ReadTheme so a missing theme falls back to the legacy colourScheme key. Do not drop support for theme. appsettings.legacy.json has colourScheme light and no theme. appsettings.new.json has theme dark. Do not change the tests project or the JSON files.",
+  "timeoutSeconds": 300,
+  "setup": {
+    "files": {
+      "src/SettingsReader.cs": "using System.Text.Json;\n\npublic static class SettingsReader\n{\n    public static string? ReadTheme(string path)\n    {\n        using var document = JsonDocument.Parse(File.ReadAllText(path));\n        return document.RootElement.TryGetProperty(\"theme\", out var theme) && theme.ValueKind == JsonValueKind.String\n            ? theme.GetString()\n            : null;\n    }\n}\n",
+      "appsettings.legacy.json": "{ \"colourScheme\": \"light\" }\n",
+      "appsettings.new.json": "{ \"theme\": \"dark\" }\n",
+      "tests/Settings.Tests.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net10.0</TargetFramework>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <Nullable>enable</Nullable>\n    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Program.cs\" />\n    <Compile Include=\"../src/SettingsReader.cs\" />\n  </ItemGroup>\n</Project>\n",
+      "tests/Program.cs": "var root = new DirectoryInfo(Environment.CurrentDirectory);\nwhile (root is not null && !File.Exists(Path.Combine(root.FullName, \"appsettings.legacy.json\")))\n    root = root.Parent;\nif (root is null) return 1;\nif (SettingsReader.ReadTheme(Path.Combine(root.FullName, \"appsettings.legacy.json\")) != \"light\") return 1;\nif (SettingsReader.ReadTheme(Path.Combine(root.FullName, \"appsettings.new.json\")) != \"dark\") return 1;\nreturn 0;\n"
+    }
+  },
+  "protectedFiles": [
+    "tests/Settings.Tests.csproj",
+    "tests/Program.cs",
+    "appsettings.legacy.json",
+    "appsettings.new.json"
+  ],
+  "checks": [
+    {
+      "name": "legacy and current theme keys",
+      "run": "dotnet run --project tests --nologo",
+      "timeoutSeconds": 180
+    }
+  ]
+}

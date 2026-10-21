@@ -83,6 +83,13 @@ public sealed class HarnessRefinementTests : IDisposable
         Assert.NotNull(report.LessonId);
         Assert.Single(new HarnessExperienceLibrary(options.LibraryDirectory!).List(
             HarnessExperienceLibrary.WorkspaceScope(options.Workspace), "coding"));
+        var retained = Path.Combine(options.LibraryDirectory!, "packages", adopted.Id, "profile.json");
+        Assert.Equal(adopted.Id, HarnessProfile.Load(retained).Id);
+        var described = new HarnessExperienceLibrary(options.LibraryDirectory!).Describe(report.LessonId!);
+        Assert.Contains("Inspect the component behavior before editing", described);
+        Assert.Contains("baseline omitted component guidance", described);
+        Assert.Contains("captured component execution", described);
+        Assert.Contains(retained, described);
         Assert.Equal(2, report.Comparison.Comparisons.Single(c => c.ProfileId == report.AdoptedProfileId).Passed);
     }
 
@@ -140,5 +147,44 @@ public sealed class HarnessRefinementTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() => HarnessRefinement.RunAsync(options, Complete, Evaluate));
         Assert.Equal(0, calls);
         Assert.Equal(HarnessProfile.Baseline.Id, HarnessProfile.Load(Path.Combine(options.Eval.OutDir, "adopted-profile.json")).Id);
+    }
+
+    [Fact]
+    public async Task EqualBudgetRepeatsTheBaselineAndRequiresARealImprovement()
+    {
+        var options = Options() with { EqualBudget = true };
+        var evaluations = 0;
+        var prompts = new List<string>();
+        Task<HarnessEditorReply> Complete(string prompt, CancellationToken ct)
+        {
+            prompts.Add(prompt);
+            var text = prompts.Count switch
+            {
+                1 => "{\"settings\":{\"sandboxMode\":\"full-access\"}}",
+                2 => JsonSerializer.Serialize(new HarnessProfile { Instructions = "workflow" }, HarnessArtifacts.Json),
+                3 => JsonSerializer.Serialize(new HarnessProfile { ToolGuidance = "domain" }, HarnessArtifacts.Json),
+                4 => JsonSerializer.Serialize(new HarnessProfile { Instructions = "composed" }, HarnessArtifacts.Json),
+                _ => """
+                    {"cue":"Blazor component changes","component":"toolGuidance","lesson":"Inspect the component behavior before editing",
+                     "verdict":"helped","confidence":"medium","evidence":[
+                       {"runId":"baseline/1/none/b","eventSeq":2,"observation":"baseline omitted component guidance"},
+                       {"runId":"domain/1/none/b","eventSeq":2,"observation":"candidate applied component guidance"}]}
+                    """,
+            };
+            return Task.FromResult(new HarnessEditorReply(text, 10, 10));
+        }
+        Task<EvalSummary> Run(EvalOptions eval, CancellationToken ct)
+        {
+            evaluations++;
+            return Evaluate(eval, ct);
+        }
+        var report = await HarnessRefinement.RunAsync(options, Complete, Run);
+        Assert.Equal(7, evaluations); // four profile executions plus three baseline repeats
+        Assert.Equal(5, report.EditorCalls);
+        Assert.Equal(1, report.EqualBudgetPasses);
+        Assert.Equal(110, report.EqualBudgetTokens);
+        Assert.True(report.BeatEqualBudget);
+        Assert.Contains("Equal-budget baseline: 4 attempts", File.ReadAllText(Path.Combine(options.Eval.OutDir, "comparison.md")));
+        Assert.Equal("domain", HarnessProfile.Load(Path.Combine(options.Eval.OutDir, "adopted-profile.json")).ToolGuidance);
     }
 }

@@ -237,7 +237,7 @@ public sealed class CompactionService
         var turn = CurrentTurn(session);
         session.Append(SessionEventTypes.CompactionStart, new { compactionId, turn });
 
-        var summary = await SummarizeAsync(agent, assembly, shadowedMessages!, ct).ConfigureAwait(false);
+        var (summary, summaryUsage) = await SummarizeAsync(agent, assembly, shadowedMessages!, ct).ConfigureAwait(false);
 
         session.Append(SessionEventTypes.CompactionSummary, new
         {
@@ -248,6 +248,10 @@ public sealed class CompactionService
             shadowedTokenCount = shadowedMessages!.Sum(m => TokenEstimator.EstimateMessage(m!)),
             provider = agent.Options.Provider,
             model = agent.Options.Model,
+            // The summary call is a separate model request. Keep its usage on this event so a
+            // later ledger does not treat compaction as free when the provider metered it.
+            usage = summaryUsage,
+            usageUnavailable = summaryUsage is null,
         });
 
         // The surface-replacing summary message: enters model history at the shadowed position.
@@ -332,7 +336,7 @@ public sealed class CompactionService
     /// prompt, tool schemas, and message order verbatim (dsh: reuse the provider's warm KV
     /// cache), with the summarization instruction appended as the final user message.
     /// </summary>
-    private async Task<string> SummarizeAsync(Agent.Agent agent, PromptAssembly assembly, IReadOnlyList<Llm.Message> shadowed, CancellationToken ct)
+    private async Task<(string Summary, Llm.TokenUsage? Usage)> SummarizeAsync(Agent.Agent agent, PromptAssembly assembly, IReadOnlyList<Llm.Message> shadowed, CancellationToken ct)
     {
         var request = new GenerateOptions
         {
@@ -356,6 +360,6 @@ public sealed class CompactionService
         }
         var text = string.Join("\n", assembler.Blocks().OfType<TextBlock>().Select(b => b.Text)).Trim();
         if (text.Length == 0) text = "(compaction produced no summary; earlier context was dropped)";
-        return text;
+        return (text, assembler.Usage);
     }
 }

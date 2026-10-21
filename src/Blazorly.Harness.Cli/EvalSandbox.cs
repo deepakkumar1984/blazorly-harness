@@ -70,7 +70,8 @@ public static class EvalSandbox
             EnableLsp = false,
             EnableHooks = true,
             EnableCodeMode = true,
-            EnableWeb = true,
+            // Web fetch would let a solver retrieve a public rubric. Benchmarks do not need it.
+            EnableWeb = false,
             EnableSkills = true,
             EnableGoals = true,
             EnablePlanMode = true,

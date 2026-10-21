@@ -17,6 +17,7 @@ public static class HarnessingCommand
         var trials = 1;
         var timeout = 1800;
         long budget = 500_000;
+        var equalBudget = false;
         using var cancellation = new CancellationTokenSource();
         ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; cancellation.Cancel(); };
         Console.CancelKeyPress += cancel;
@@ -32,12 +33,14 @@ public static class HarnessingCommand
                             blazorly eval refine [--profile <file|baseline>] [--tasks <dir>] [--out <new-dir>]
                                 [--provider <name>] [--model <id>] [--editor-provider <name>] [--editor-model <id>]
                                 [--sandbox <list>] [--trials <1–5>] [--timeout <seconds>] [--max-tokens <n>]
-                                [--library <dir>] [--workspace <path>] [--task-class <name>]
+                                [--library <dir>] [--workspace <path>] [--task-class <name>] [--equal-budget]
                             One opt-in Propose–Probe–Compose round with baseline retention, bounded editor
                             calls and token/deadline checks between stages. Costs model calls for editing
                             and up to four task-set executions per trial. Reuses unchanged configurations.
                             Saves adopted-profile.json; leaves global settings unchanged.
                             --library enables reflection and stores only supported isolated-edit lessons.
+                            --equal-budget repeats the baseline until it has as many attempts as the round
+                            executed, then reports whether the adopted profile beat the best of those attempts.
                             """);
                         return 0;
                     case "--profile": baseline = ReadProfile(Value()); break;
@@ -54,6 +57,7 @@ public static class HarnessingCommand
                     case "--trials": trials = int.Parse(Value()); break;
                     case "--timeout": timeout = int.Parse(Value()); break;
                     case "--max-tokens": budget = long.Parse(Value()); break;
+                    case "--equal-budget": equalBudget = true; break;
                     default: throw new ArgumentException($"unknown refine flag {args[i]}");
                 }
             }
@@ -100,6 +104,7 @@ public static class HarnessingCommand
                 Workspace = workspace,
                 TaskClass = taskClass,
                 LibraryDirectory = library,
+                EqualBudget = equalBudget,
                 Eval = new()
                 {
                     TasksDir = tasks,
@@ -129,18 +134,21 @@ public static class HarnessingCommand
             {
                 Console.WriteLine("""
                     blazorly experience add <lesson.json> --workspace <path> [--task-class coding]
-                        --evidence <run-id>=<session.jsonl> --evidence <other-run-id>=<session.jsonl> [--home <path>]
+                        --evidence <run-id>=<session.jsonl> --evidence <other-run-id>=<session.jsonl>
+                        [--profile <adopted-profile.json>] [--home <path>]
+                    blazorly experience show <lesson-id> [--home <path>]
                     blazorly experience list --workspace <path> [--task-class coding] [--home <path>]
                     blazorly experience revoke <lesson-id> [--home <path>]
                     Set enableHarnessExperience=true in settings.json to retrieve matching lessons in chat.
                     Durable entries require verdict=helped and references to actual contrasting events.
+                    --profile retains the adopted profile that a packaged-file lesson names.
                     """);
                 return 0;
             }
             var command = args[0];
             var workspace = Environment.CurrentDirectory;
             var taskClass = "coding";
-            string? home = null, fileOrId = null;
+            string? home = null, fileOrId = null, profilePath = null;
             var evidence = new Dictionary<string, string>(StringComparer.Ordinal);
             for (var i = 1; i < args.Length; i++)
             {
@@ -150,6 +158,7 @@ public static class HarnessingCommand
                     case "--workspace": workspace = Value(); break;
                     case "--task-class": taskClass = Value(); break;
                     case "--home": home = Value(); break;
+                    case "--profile": profilePath = Value(); break;
                     case "--evidence":
                         var parts = Value().Split('=', 2);
                         if (parts.Length != 2 || !evidence.TryAdd(parts[0], parts[1])) throw new ArgumentException("evidence must be a unique run-id=path pair");
@@ -168,8 +177,12 @@ public static class HarnessingCommand
                 case "add" when fileOrId is not null:
                     var lesson = JsonSerializer.Deserialize<HarnessLesson>(File.ReadAllText(fileOrId), HarnessArtifacts.Json)
                         ?? throw new ArgumentException("lesson must be an object");
-                    var added = library.Add(lesson with { Scope = HarnessExperienceLibrary.WorkspaceScope(workspace), TaskClass = taskClass }, evidence);
+                    var package = profilePath is null ? null : HarnessProfile.Load(profilePath);
+                    var added = library.Add(lesson with { Scope = HarnessExperienceLibrary.WorkspaceScope(workspace), TaskClass = taskClass }, evidence, package);
                     Console.WriteLine(added is null ? "NO_ENTRY: no supported transferable lesson" : $"Saved lesson {added.Id}");
+                    return 0;
+                case "show" when fileOrId is not null:
+                    Console.Write(library.Describe(fileOrId));
                     return 0;
                 case "list":
                     foreach (var item in library.List(HarnessExperienceLibrary.WorkspaceScope(workspace), taskClass))
@@ -197,6 +210,7 @@ public static class HarnessingCommand
         var trials = 3;
         var timeout = 0;
         var resume = false;
+        var protectBaseline = true;
         try
         {
             for (var i = 0; i < args.Length; i++)
@@ -214,6 +228,7 @@ public static class HarnessingCommand
                     case "--trials": trials = int.Parse(Value()); break;
                     case "--timeout": timeout = int.Parse(Value()); break;
                     case "--resume": resume = true; break;
+                    case "--allow-regressions": protectBaseline = false; break;
                     default: throw new ArgumentException($"unknown comparison flag {args[i]}");
                 }
             }
@@ -224,6 +239,7 @@ public static class HarnessingCommand
                 Profiles = profiles,
                 Trials = trials,
                 Resume = resume,
+                ProtectBaseline = protectBaseline,
                 Eval = new()
                 {
                     TasksDir = tasks,
@@ -263,7 +279,7 @@ public static class HarnessingCommand
                 Console.WriteLine($"Saved {profile.Id} to {Path.GetFullPath(args[3])}");
                 return 0;
             }
-            throw new ArgumentException("usage: blazorly profiles validate <file|baseline|compression> OR snapshot <file|baseline|compression> --out <file>");
+            throw new ArgumentException("usage: blazorly profiles validate <file|baseline|compression|terse> OR snapshot <file|baseline|compression|terse> --out <file>");
         }
         catch (Exception ex) when (ex is ArgumentException or JsonException or IOException)
         {
@@ -276,22 +292,25 @@ public static class HarnessingCommand
     {
         "baseline" => HarnessProfile.Baseline,
         "compression" => HarnessProfile.Compression,
+        "terse" or "terse-output" => HarnessProfile.Terse,
         _ => HarnessProfile.Load(value),
     };
 
     private static int Help()
     {
         Console.WriteLine("""
-            blazorly profiles validate <file|baseline|compression>
-            blazorly profiles snapshot <file|baseline|compression> --out <file>
+            blazorly profiles validate <file|baseline|compression|terse>
+            blazorly profiles snapshot <file|baseline|compression|terse> --out <file>
             blazorly run "task" --profile <file>
             blazorly eval --profile <file> [existing eval flags]
-            blazorly eval compare --profile <file|compression> [--profile <file>] --trials <1–10>
+            blazorly eval compare --profile <file|compression|terse> [--profile <file>] --trials <1–10>
                 [--tasks <dir>] [--out <dir>] [--provider <name>] [--model <id>]
-                [--sandbox <list>] [--timeout <seconds>] [--resume]
+                [--sandbox <list>] [--timeout <seconds>] [--resume] [--allow-regressions]
 
             Compare includes the pinned baseline, alternates profile ordering, and saves full
             captured event logs, configuration hashes, tokens and check results per trial.
+            A candidate that drops a task the baseline passed is not recommended unless
+            --allow-regressions is set. Per-task regressions are listed either way.
             --resume reuses completed trials only when configuration and captured artifacts match.
             These commands do not promote a profile into global settings.
             """);

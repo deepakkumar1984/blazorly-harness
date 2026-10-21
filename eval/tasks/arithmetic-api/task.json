@@ -1,0 +1,23 @@
+{
+  "description": "Fix Calculator.Multiply without regressing Add",
+  "prompt": "Calculator.Add is correct. Calculator.Multiply currently returns a sum. Change Multiply so it returns the product, and leave Add returning the sum. Do not change the tests project. Multiply(6, 7) must be 42, Multiply(0, 5) must be 0, and Add(2, 3) must stay 5.",
+  "timeoutSeconds": 300,
+  "setup": {
+    "files": {
+      "src/Calculator.cs": "public static class Calculator\n{\n    public static int Add(int a, int b) => a + b;\n    public static int Multiply(int a, int b) => a + b;\n}\n",
+      "tests/Calculator.Tests.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net10.0</TargetFramework>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <Nullable>enable</Nullable>\n    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Program.cs\" />\n    <Compile Include=\"../src/Calculator.cs\" />\n  </ItemGroup>\n</Project>\n",
+      "tests/Program.cs": "if (Calculator.Multiply(6, 7) != 42) return 1;\nif (Calculator.Multiply(0, 5) != 0) return 1;\nif (Calculator.Multiply(3, 3) != 9) return 1;\nif (Calculator.Multiply(-2, 4) != -8) return 1;\nif (Calculator.Add(2, 3) != 5) return 1;\nreturn 0;\n"
+    }
+  },
+  "protectedFiles": [
+    "tests/Calculator.Tests.csproj",
+    "tests/Program.cs"
+  ],
+  "checks": [
+    {
+      "name": "protected behavior",
+      "run": "dotnet run --project tests --nologo",
+      "timeoutSeconds": 180
+    }
+  ]
+}

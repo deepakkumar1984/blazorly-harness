@@ -191,7 +191,7 @@ public class EvalRunnerTests : BootstrapperTestBase
             Assert.Equal(1, summary.Failed);
             Assert.True(File.Exists(Path.Combine(finished, "results.json")));
             Assert.True(File.Exists(Path.Combine(finished, "summary.md")));
-            Assert.True(File.Exists(Path.Combine(finished, "smoke.none.json"))); // per-task file carries the backend
+            Assert.True(File.Exists(Path.Combine(finished, "smoke." + EvalSandbox.Default + ".json"))); // per-task file carries the backend
             Assert.True(File.Exists(Path.Combine(finished, "environment.json")));
             using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(finished, "results.json")));
             Assert.Equal(2, doc.RootElement.GetProperty("total").GetInt32());
