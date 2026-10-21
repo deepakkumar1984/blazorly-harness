@@ -1,0 +1,8 @@
+{
+  "description": "Compute 6*7 with run_code and write the bare number to answer.txt",
+  "prompt": "Use run_code to compute 6*7 and write just the resulting number (no other text) to answer.txt.",
+  "timeoutSeconds": 180,
+  "checks": [
+    { "name": "answer is 42", "run": "test -f answer.txt && grep -qx '42' answer.txt", "timeoutSeconds": 30 }
+  ]
+}

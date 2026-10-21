@@ -1,0 +1,29 @@
+{
+  "description": "Restart kill mid-turn: the headless process is SIGKILLed shortly after its first tool call lands in the log (inside the 2.5s bash window), the session log must reload (torn tail discarded, interrupted turn repaired in memory), and a resume run must complete the session",
+  "prompt": "Run the scripted task.",
+  "provider": "scripted",
+  "model": "test",
+  "timeoutSeconds": 60,
+  "expectFinish": "completed",
+  "interrupt": {
+    "killAfterMs": 300,
+    "resumePrompt": "Continue: summarize what happened."
+  },
+  "checks": [
+    {
+      "name": "log-reloads-line-consistent",
+      "run": "python3 -c \"\nimport json, os\nraw = open(os.environ['BLAZORLY_SESSION_LOG'], 'rb').read().decode()\nlines = raw.split('\\n')\ntorn = lines and lines[-1] != ''\nif lines and lines[-1] == '': lines = lines[:-1]\nelse: lines = lines[:-1]  # torn final line is legal (discarded on reload)\nfor line in lines:\n    json.loads(line)\nassert lines, 'log is empty'\n\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "turns-strictly-increasing",
+      "run": "python3 -c \"\nimport json, os\nstarts, ends = [], []\nfor line in open(os.environ['BLAZORLY_SESSION_LOG']):\n    e = json.loads(line)\n    if e.get('type') == 'turn/start': starts.append(e['data']['turn'])\n    if e.get('type') == 'turn/end': ends.append((e['data']['turn'], e['data']['reason']['kind']))\nassert starts == sorted(set(starts)) and len(starts) >= 1, starts\nassert ends, 'no completed turn/end after resume'\nassert ends[-1][1] == 'completed', ends[-1]\nassert [t for t, _ in ends] == sorted(set(t for t, _ in ends)), ends\n\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "killed-turn-open-on-disk",
+      "run": "python3 -c \"\nimport json, os\ncounts = {'turn/start': 0, 'turn/end': 0}\nfor line in open(os.environ['BLAZORLY_SESSION_LOG']):\n    e = json.loads(line)\n    if e.get('type') in counts: counts[e['type']] += 1\nassert counts['turn/start'] >= 2, counts\nassert counts['turn/start'] == counts['turn/end'] + 1, counts\n\"",
+      "timeoutSeconds": 30
+    }
+  ]
+}

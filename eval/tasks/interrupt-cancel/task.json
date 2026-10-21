@@ -1,0 +1,26 @@
+{
+  "description": "User stop mid-turn (cancel lands inside the 2.5s bash window): the turn must end aborted with the user cause, the pending tool must be closed durably, and the log must stay line-consistent",
+  "prompt": "Run the scripted task.",
+  "provider": "scripted",
+  "model": "test",
+  "timeoutSeconds": 60,
+  "expectFinish": "aborted",
+  "interrupt": { "cancelAfterMs": 1200 },
+  "checks": [
+    {
+      "name": "aborted-turn-end",
+      "run": "python3 -c \"\nimport json, os\nlog = os.environ['BLAZORLY_SESSION_LOG']\nends = []\nfor line in open(log):\n    e = json.loads(line)\n    if e.get('type') == 'turn/end':\n        ends.append(e['data']['reason'])\nassert ends, 'no turn/end in log'\nassert ends[-1]['kind'] == 'aborted', ends[-1]\nassert ends[-1].get('cause') == 'user', ends[-1]\n\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "pending-tool-closed",
+      "run": "python3 -c \"\nimport json, os\nlog = os.environ['BLAZORLY_SESSION_LOG']\ncalls, results = [], []\nfor line in open(log):\n    e = json.loads(line)\n    if e.get('type') == 'tool/call': calls.append(e['data']['callId'])\n    if e.get('type') == 'tool/result': results.append(e['data']['message']['content'][0].get('toolCallId'))\nassert calls, 'no tool call was made'\nmissing = [c for c in calls if c not in results]\nassert not missing, f'calls without durable results: {missing}'\n\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "log-line-consistent",
+      "run": "python3 -c \"\nimport json, os\nraw = open(os.environ['BLAZORLY_SESSION_LOG'], 'rb').read().decode()\nlines = raw.split('\\n')\nif lines and lines[-1] == '': lines = lines[:-1]\nelse: lines = lines[:-1]  # a torn final line (no trailing newline) is legal and discarded on reload\nfor line in lines:\n    json.loads(line)\n\"",
+      "timeoutSeconds": 30
+    }
+  ]
+}

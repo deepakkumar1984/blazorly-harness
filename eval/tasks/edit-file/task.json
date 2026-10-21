@@ -1,0 +1,20 @@
+{
+  "description": "Edit app.txt in place: bump VERSION from __NEXT__ to 1.2.0",
+  "prompt": "The file app.txt contains VERSION=__NEXT__. Edit it in place so the line reads VERSION=1.2.0 (keep everything else unchanged).",
+  "timeoutSeconds": 180,
+  "setup": {
+    "files": { "app.txt": "APP=blazorly\nVERSION=__NEXT__\nMODE=release\n" }
+  },
+  "checks": [
+    {
+      "name": "version bumped",
+      "run": "python3 -c \"line = [l for l in open('app.txt') if l.startswith('VERSION=')][0]; assert line.strip() == 'VERSION=1.2.0', line\"",
+      "timeoutSeconds": 30
+    },
+    {
+      "name": "other lines intact",
+      "run": "python3 -c \"lines = open('app.txt').read().splitlines(); assert 'APP=blazorly' in lines and 'MODE=release' in lines, lines\"",
+      "timeoutSeconds": 30
+    }
+  ]
+}
