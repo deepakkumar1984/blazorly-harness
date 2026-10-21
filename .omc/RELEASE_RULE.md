@@ -1,5 +1,5 @@
 # Release Rules
-<!-- last-analyzed: 2026-09-27T00:00:00Z -->
+<!-- last-analyzed: 2026-10-21T07:30:00Z -->
 
 ## Version Sources
 - Git tag only (`vX.Y.Z`). CI strips the `v` and passes `/p:Version=X.Y.Z` to the build.
@@ -14,8 +14,9 @@
 - Local gate before tagging: `dotnet build Blazorly.Harness.slnx` must succeed.
 
 ## Registry / Distribution
-- GitHub Release (created by CI via `gh release create --generate-notes`) with six platform archives + SHA256SUMS + install scripts.
-- Installers (`installer/install.sh`, `install.ps1`) pull the latest release; CI marks each tag release `--latest`.
+- GitHub Release (created by CI via `gh release create`, or updated with `gh release edit` if the release already exists). Reviewed notes use `--notes-file`; otherwise `--generate-notes`.
+- Assets: six platform archives + SHA256SUMS + `installer/install.sh`, `install.ps1`, and `install-desktop.sh`. The `desktop` job then uploads the macOS arm64 `.dmg` / `.zip` and `SHA256SUMS-desktop`.
+- Installers (`installer/install.sh`, `install.ps1`, `install-desktop.sh`) pull the latest release; CI marks each tag release `--latest`.
 
 ## Release Notes Strategy
 - Reviewed notes in `release-notes/<tag>.md` (e.g. `release-notes/v0.9.1.md`) win: CI uses `--notes-file` when present, else `--generate-notes` from commits since the previous tag.

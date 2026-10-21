@@ -1,0 +1,20 @@
+# The release job and the install scripts run on Linux and macOS.
+# CRLF in a shebang fails with "bash\r: No such file or directory".
+* text=auto eol=lf
+*.png binary
+*.webp binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.mp4 binary
+*.webm binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.so binary
+*.gz binary
+*.zip binary
+*.db binary
