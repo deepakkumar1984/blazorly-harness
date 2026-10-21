@@ -18,6 +18,8 @@ public static class HarnessingCommand
         var timeout = 1800;
         long budget = 500_000;
         var equalBudget = false;
+        var resume = false;
+        var rounds = 1;
         using var cancellation = new CancellationTokenSource();
         ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; cancellation.Cancel(); };
         Console.CancelKeyPress += cancel;
@@ -33,14 +35,22 @@ public static class HarnessingCommand
                             blazorly eval refine [--profile <file|baseline>] [--tasks <dir>] [--out <new-dir>]
                                 [--provider <name>] [--model <id>] [--editor-provider <name>] [--editor-model <id>]
                                 [--sandbox <list>] [--trials <1–5>] [--timeout <seconds>] [--max-tokens <n>]
-                                [--library <dir>] [--workspace <path>] [--task-class <name>] [--equal-budget]
-                            One opt-in Propose–Probe–Compose round with baseline retention, bounded editor
+                                [--library <dir>] [--workspace <path>] [--task-class <name>] [--equal-budget] [--resume]
+                                [--rounds <1–3>]
+                            One or more opt-in Propose–Probe–Compose rounds with baseline retention, bounded editor
                             calls and token/deadline checks between stages. Costs model calls for editing
                             and up to four task-set executions per trial. Reuses unchanged configurations.
                             Saves adopted-profile.json; leaves global settings unchanged.
                             --library enables reflection and stores only supported isolated-edit lessons.
                             --equal-budget repeats the baseline until it has as many attempts as the round
                             executed, then reports whether the adopted profile beat the best of those attempts.
+                            --resume continues an interrupted run in --out. The baseline, tasks, route and
+                            round settings must match. Saved editor replies are reused when the prompt still
+                            matches; a mismatch stops the run. A finished execution is reused only when
+                            its captured artifacts still match.
+                            --rounds repeats the round up to 3 times. Each later round starts from the best
+                            profile so far and has its own 7-call editor cap. The token budget covers the
+                            whole run. The default is 1. Extra rounds are not themselves a better configuration.
                             """);
                         return 0;
                     case "--profile": baseline = ReadProfile(Value()); break;
@@ -58,6 +68,8 @@ public static class HarnessingCommand
                     case "--timeout": timeout = int.Parse(Value()); break;
                     case "--max-tokens": budget = long.Parse(Value()); break;
                     case "--equal-budget": equalBudget = true; break;
+                    case "--resume": resume = true; break;
+                    case "--rounds": rounds = int.Parse(Value()); break;
                     default: throw new ArgumentException($"unknown refine flag {args[i]}");
                 }
             }
@@ -105,6 +117,8 @@ public static class HarnessingCommand
                 TaskClass = taskClass,
                 LibraryDirectory = library,
                 EqualBudget = equalBudget,
+                Resume = resume,
+                Rounds = rounds,
                 Eval = new()
                 {
                     TasksDir = tasks,

@@ -497,7 +497,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
                 "/model" => CommandModel(sessionId, args),
                 "/effort" => CommandEffort(sessionId, args),
                 "/title" => CommandTitle(sessionId, args),
-                "/help" => ("/help — show commands\n/permission <read-only|workspace-write|full-access> — switch this session's sandbox preset\n/model <provider>/<model> — switch the model route\n/effort <off|low|high|max|…> — set reasoning effort for this session's model\n/title <text> — rename this session\n/plan — toggle plan mode (restricts mutations until a plan is approved)\n/goal <objective> — set a persistent goal that auto-continues across turns\n/compact — prune + summarize older context now (frees window space)", true),
+                "/help" => ("/help — show commands\n/permission <read-only|workspace-write|full-access> — switch this session's sandbox preset\n/model <provider>/<model> — switch the model route\n/effort <off|low|high|max|…> — set reasoning effort for this session's model\n/title <text> — rename this session\n/plan — toggle plan mode (restricts mutations until a plan is approved)\n/goal <objective> — set a persistent goal that auto-continues across turns\n/compact — summarize older context now, keeping the recent tail verbatim", true),
                 "/plan" => CommandPlan(sessionId),
                 "/goal" => CommandGoal(sessionId, args),
                 "/compact" => CommandCompact(sessionId),
@@ -560,8 +560,10 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
         {
             try
             {
-                // keepTokens: 0 = forced: shadow everything but the most recent node.
-                var shadowed = await compaction.CompactAsync(agent, keepTokens: 0).ConfigureAwait(false);
+                // Keep the newest quarter of the live surface verbatim; only the older
+                // history is summarized. Deliberately not keepTokens: 0 (one surviving node),
+                // which leaves the next turn with no recent conversation to continue from.
+                var shadowed = await compaction.CompactKeepingRecentAsync(agent).ConfigureAwait(false);
                 await FlushAsync(sessionId).ConfigureAwait(false);
                 Console.Error.WriteLine($"[compaction] /compact shadowed {shadowed} nodes for session {sessionId}");
             }
@@ -574,7 +576,7 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
                 lock (_compactingGate) _compacting.Remove(sessionId);
             }
         });
-        return ("compaction started — older context will be pruned and summarized in the background", true);
+        return ("compaction started — older context will be summarized in the background; the recent tail stays verbatim", true);
     }
 
     private (string, bool) CommandPermission(string sessionId, string args)    {

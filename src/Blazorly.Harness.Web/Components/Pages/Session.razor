@@ -176,7 +176,7 @@
                                 <div class="popover-empty">Estimated from message, system prompt, and tool text. The window uses API/catalog metadata or your configured fallback.</div>
                                 <div class="ctx-actions">
                                     <button class="ghost small ctx-compact" disabled="@_running"
-                                            title="@(_running ? "Unavailable while the agent is working" : "Prune + summarize older context now (same as /compact)")"
+                                            title="@(_running ? "Unavailable while the agent is working" : "Summarize older context now — the recent tail stays verbatim (same as /compact)")"
                                             @onclick="CompactContext">
                                         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v3.2M6 4.2 8 6.2l2-2" /><path d="M8 13.5v-3.2M6 11.8 8 9.8l2 2" /></svg>
                                         Compress context
@@ -1535,7 +1535,7 @@
         ("/title", "<text>", "rename this session"),
         ("/plan", "", "toggle plan mode (restricts mutations until approved)"),
         ("/goal", "<objective>", "set a persistent goal"),
-        ("/compact", "", "prune + summarize older context now"),
+        ("/compact", "", "summarize older context, keep the recent tail"),
         ("/help", "", "list commands"),
     ];
 

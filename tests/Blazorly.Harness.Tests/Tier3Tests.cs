@@ -271,6 +271,35 @@ public class CompactionPrunerTests
     }
 
     [Fact]
+    public async Task ManualCompact_KeepsARecentTailInsteadOfOnlyTheLastNode()
+    {
+        await using var harness = TestHarness.Create(options => options.Purpose == "compaction"
+            ? Scripted.Text("SUMMARY: older context summarized.")
+            : Scripted.Text("ok"));
+        var compaction = CompactionService.Mount(harness.Ctx, new CompactionOptions());
+        var agent = harness.CreateAgent();
+        for (var i = 0; i < 12; i++)
+        {
+            agent.Session.Append(SessionEventTypes.UserMessage,
+                Message.CreateUserText($"MARKER-{i:D2} " + new string('z', 400)),
+                new Session.AppendOptions(SurfaceOp: new SurfaceOp.Append()));
+        }
+
+        var shadowed = await compaction.CompactKeepingRecentAsync(agent);
+
+        Assert.True(shadowed > 0);
+        var derived = agent.Session.DeriveMessages();
+        var text = string.Join("\n", derived.Select(m => m.FlattenText()));
+        Assert.Contains("SUMMARY: older context summarized.", text);
+        // Manual compaction keeps the newest quarter verbatim: several recent messages stay,
+        // not just the newest node (that is the harsh keepTokens: 0 behavior).
+        Assert.Contains("MARKER-11", text);
+        Assert.Contains("MARKER-10", text);
+        Assert.DoesNotContain("MARKER-00", text);
+        Assert.True(derived.Count >= 3, $"expected a live tail, got {derived.Count} messages");
+    }
+
+    [Fact]
     public async Task Window_ResolvesFromTheModelCatalog_CappedByTheGlobalOption()
     {
         await using var harness = TestHarness.Create();

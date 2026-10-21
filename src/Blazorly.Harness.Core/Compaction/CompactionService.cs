@@ -20,7 +20,9 @@ public sealed record CompactionOptions
     /// <summary>Fraction of the window kept unshadowed (recent messages stay verbatim).</summary>
     public double KeepRatio { get; init; } = 0.25;
 
-    public int SummaryMaxTokens { get; init; } = 1024;
+    /// <summary>Cap for the durable summary. Large enough to carry task state, decisions,
+    /// paths, and next steps for a long coding session without crowding the window.</summary>
+    public int SummaryMaxTokens { get; init; } = 2048;
 
     /// <summary>Old tool results rendering more than this many chars are pruned to a placeholder.</summary>
     public int PrunerChars { get; init; } = 4_000;
@@ -271,6 +273,23 @@ public sealed class CompactionService
         return shadowSeqs.Count;
     }
 
+    /// <summary>
+    /// Manual compaction with a live tail: prune oversized tool output first, then shadow the
+    /// older surface while keeping the newest quarter of the *current* surface verbatim. This
+    /// is deliberately milder than <c>keepTokens: 0</c> (a single surviving node): the next
+    /// turn still sees the recent conversation, and the summary only carries older history.
+    /// Works below the automatic threshold because the tail budget is proportional to the
+    /// live surface rather than the model window.
+    /// </summary>
+    public async Task<int> CompactKeepingRecentAsync(Agent.Agent agent, CancellationToken ct = default)
+    {
+        if (agent.Session.SurfaceSeqs.Count < 3) return 0;
+        await PruneAsync(agent, ct).ConfigureAwait(false);
+        var surfaceTokens = TokenEstimator.EstimateMessages(agent.Session.DeriveMessages());
+        var keep = Math.Max(1, surfaceTokens / 4);
+        return await CompactAsync(agent, keepTokens: keep, ct).ConfigureAwait(false);
+    }
+
     private static int CurrentTurn(Sessions.Session session)
     {
         var events = session.Events;
@@ -347,10 +366,14 @@ public sealed class CompactionService
             System = SystemPromptService.RenderPrompt(assembly),
             Tools = assembly.ToolSchemas,
             Messages = [.. Llm.MessagePairing.Repair(shadowed), Llm.Message.CreateUserText("""
-                Summarize the conversation above so work can continue without it: the task and
-                its current state, decisions made, files touched, commands run and their
-                outcomes, open problems, and the immediate next steps. Be concrete and terse;
-                keep names, paths, and ids. Plain text only.
+                Summarize the conversation above so work can continue without it. Capture:
+                the user's goal and constraints; what is done, in progress, and not started;
+                decisions and the reasons behind them; files touched with their paths;
+                commands and tools run with their outcomes; exact errors, identifiers, test
+                names, and unresolved details that matter; open problems; and the
+                immediate next steps. Keep anything a successor needs to act immediately;
+                do not invent anything absent from the conversation. Be concrete and terse;
+                plain text only.
                 """)],
         };
         var assembler = new BlockAssembler();
