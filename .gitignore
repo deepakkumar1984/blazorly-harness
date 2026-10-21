@@ -57,7 +57,7 @@ Coverage/
 *.coveragexml
 *.trx
 BenchmarkDotNet.Artifacts/
-
+*REVIEW*.md
 # Runtime data (SQLite / local stores)
 *.db
 *.db-shm

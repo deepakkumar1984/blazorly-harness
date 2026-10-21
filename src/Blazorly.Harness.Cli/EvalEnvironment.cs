@@ -7,6 +7,8 @@ using Blazorly.Harness.Llm;
 using Blazorly.Harness.Tools;
 using Blazorly.Harness.Web;
 using Blazorly.Harness.Web.Services;
+using Blazorly.Harness.Core.Harnessing;
+using Blazorly.Harness.Core.SystemPrompt;
 
 namespace Blazorly.Harness.Cli;
 
@@ -17,7 +19,13 @@ public sealed record EvalBackendManifest(
     IReadOnlyList<string> Tools,
     IReadOnlyList<string> AppliedPlugins,
     IReadOnlyDictionary<string, object?> Settings,
-    string? Error);
+    string? Error)
+{
+    public string? ProfileId { get; init; }
+    public string? SystemPromptHash { get; init; }
+    public string? ConfigurationHash { get; init; }
+    public IReadOnlyDictionary<string, string> SkillHashes { get; init; } = new Dictionary<string, string>();
+}
 
 /// <summary>
 /// The fixed environment an eval score was measured against. Without this a score change is
@@ -53,30 +61,22 @@ public static class EvalEnvironmentCapture
         IReadOnlyList<string> backends,
         Func<string, string> homeOf,
         HarnessSettings ambient,
-        CancellationToken ct = default)
+        CancellationToken ct = default, HarnessProfile? profile = null)
     {
         var manifests = new Dictionary<string, EvalBackendManifest>(StringComparer.Ordinal);
-        var previousHome = Environment.GetEnvironmentVariable("BLAZORLY_HOME");
-        try
+        foreach (var backend in backends)
         {
-            foreach (var backend in backends)
+            var settings = EvalSandbox.PinnedSettings(backend);
+            EvalSandbox.InheritRoutes(settings, ambient);
+            if (profile is not null) HarnessBootstrapper.ApplyProfile(settings, profile);
+            if (EvalSandbox.UnavailableReason(backend, settings) is { } reason)
             {
-                var settings = EvalSandbox.PinnedSettings(backend);
-                EvalSandbox.InheritRoutes(settings, ambient);
-                if (EvalSandbox.UnavailableReason(backend, settings) is { } reason)
-                {
-                    // No boot: the backend cannot run here, and the manifest must say why.
-                    manifests[backend] = new EvalBackendManifest(backend, "", [], [],
-                        EvalSandbox.RedactedSnapshot(settings), reason);
-                    continue;
-                }
-                Environment.SetEnvironmentVariable("BLAZORLY_HOME", homeOf(backend));
-                manifests[backend] = await CaptureBackendAsync(backend, settings, ct).ConfigureAwait(false);
+                // No boot: the backend cannot run here, and the manifest must say why.
+                manifests[backend] = new EvalBackendManifest(backend, "", [], [],
+                    EvalSandbox.RedactedSnapshot(settings), reason);
+                continue;
             }
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("BLAZORLY_HOME", previousHome);
+            manifests[backend] = await CaptureBackendAsync(backend, settings, homeOf(backend), profile, ct).ConfigureAwait(false);
         }
 
         var (sha, dirty) = GitStamp();
@@ -96,20 +96,45 @@ public static class EvalEnvironmentCapture
             ambient.Model,
             manifests);
 
-        static async Task<EvalBackendManifest> CaptureBackendAsync(string backend, HarnessSettings settings, CancellationToken ct)
+        static async Task<EvalBackendManifest> CaptureBackendAsync(string backend, HarnessSettings settings, string home,
+            HarnessProfile? profile, CancellationToken ct)
         {
-            var bootstrapper = new HarnessBootstrapper();
+            var package = profile?.Materialize(home);
+            var roots = package is null ? Array.Empty<string>() : new[] { Path.Combine(package, "skills") };
+            var bootstrapper = new HarnessBootstrapper(new(home, roots, profile, package));
             try
             {
                 await bootstrapper.StartAsync(ct).ConfigureAwait(false);
                 var schemas = bootstrapper.Tools.Schemas();
+                var assembly = bootstrapper.Context.Get<SystemPromptService>(SystemPromptService.ServiceKey).Assemble(null, null);
+                var prompt = SystemPromptService.RenderPrompt(assembly);
+                if (package is not null) prompt = prompt.Replace(package, "{{profileRoot}}", StringComparison.Ordinal);
+                var promptHash = HarnessArtifacts.HashText(prompt);
+                var skills = bootstrapper.Context.TryGet<SkillsService>("skills");
+                var skillHashes = skills?.List().ToDictionary(s => s.Name, s => HarnessArtifacts.HashText(skills.ReadBody(s.Name) ?? ""))
+                    ?? new Dictionary<string, string>();
+                var snapshot = EvalSandbox.RedactedSnapshot(settings);
+                var configurationHash = HarnessArtifacts.Hash(JsonSerializer.SerializeToElement(new
+                {
+                    assets = (profile ?? HarnessProfile.Baseline).Files.ToDictionary(p => p.Key, p => HarnessArtifacts.HashText(p.Value)),
+                    promptHash,
+                    toolSchemaHash = ToolSchemaHash(schemas),
+                    skillHashes,
+                    settings = snapshot,
+                }));
                 return new EvalBackendManifest(
                     backend,
                     ToolSchemaHash(schemas),
                     schemas.Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal).ToList(),
                     bootstrapper.AppliedPlugins,
-                    EvalSandbox.RedactedSnapshot(settings),
-                    null);
+                    snapshot,
+                    null)
+                {
+                    ProfileId = (profile ?? HarnessProfile.Baseline).Id,
+                    SystemPromptHash = promptHash,
+                    ConfigurationHash = configurationHash,
+                    SkillHashes = skillHashes,
+                };
             }
             catch (Exception exception)
             {

@@ -19,9 +19,10 @@ public sealed class SkillsService(params string[] roots)
     /// collisions): the harness-native folder, the shared ~/.agents convention (the
     /// same SKILL.md format other agent tools read, so one collection serves them all),
     /// and a project-local folder.</summary>
-    public static string[] DefaultRoots() =>
+    public static string[] DefaultRoots(string? home = null) =>
     [
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".blazorly", "skills"),
+        Path.Combine(home ?? Environment.GetEnvironmentVariable("BLAZORLY_HOME")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".blazorly"), "skills"),
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agents", "skills"),
         Path.Combine(Environment.CurrentDirectory, ".blazorly", "skills"),
     ];

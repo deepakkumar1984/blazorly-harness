@@ -25,6 +25,7 @@ Site: [Blazorly Harness](https://harness.blazorly.com/) — features, install, a
 - **Multi-agent orchestration** — spawn sub-agents, build teams, fan out parallel swarms with review gates; children run inside the parent chat with live progress
 - **Full workspace toolset** — bash, file read/write/edit, grep/glob, web search & fetch, LSP diagnostics, tmux awareness, session search, run_code, and any tool your MCP servers expose
 - **Durable sessions** — every turn, chat, and tool call is saved; sessions survive app restarts, browser closes, and cold-resume of sub-agents days later
+- **Harness profiles and refinement** — portable instruction/skill profiles, repeated eval comparisons, one bounded Propose–Probe–Compose round, and scoped lessons backed by execution evidence. See [commands and examples](eval/README.md)
 - **Decision model (System One / JEV-1)** — optional fast classifier for tool selection, auto-plan gating, and risk awareness; pure-code path carries the easy cases, one small model call handles the ambiguous tail
 - **Single binary, six platforms** — self-contained install (no SDK, no Docker) for Linux, macOS, and Windows on both x64 and arm64
 

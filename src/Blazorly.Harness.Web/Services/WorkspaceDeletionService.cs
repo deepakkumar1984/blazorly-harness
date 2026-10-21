@@ -53,6 +53,8 @@ public sealed class WorkspaceDeletionService(HarnessBootstrapper harness, RunSup
             await StopSessionsAsync(preview.Sessions, ct);
             ValidateDirectory(preview.Workspace);
             if (Directory.Exists(root)) await Task.Run(() => DeleteDirectoryTree(root, root), ct);
+            new Core.Harnessing.HarnessExperienceLibrary(Path.Combine(harness.DataDirectory, "experience"))
+                .DeleteScope(Core.Harnessing.HarnessExperienceLibrary.WorkspaceScope(root));
 
             foreach (var session in preview.Sessions)
             {

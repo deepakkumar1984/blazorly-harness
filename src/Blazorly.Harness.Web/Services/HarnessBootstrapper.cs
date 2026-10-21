@@ -13,6 +13,7 @@ using Blazorly.Harness.Persistence;
 using Blazorly.Harness.Core.Jobs;
 using Blazorly.Harness.Tools;
 using Microsoft.Extensions.Options;
+using Blazorly.Harness.Core.Harnessing;
 
 namespace Blazorly.Harness.Web.Services;
 
@@ -92,6 +93,9 @@ public sealed class HarnessSettings
     public bool EnableAskUser { get; set; } = true;
     public bool EnableSessionQuery { get; set; } = true;
     public bool EnableProjectInstructions { get; set; } = true;
+    /// <summary>Retrieve supported lessons scoped to this workspace; no automatic lesson creation.</summary>
+    public bool EnableHarnessExperience { get; set; }
+    public string HarnessExperienceTaskClass { get; set; } = "coding";
     public bool EnableTime { get; set; } = true;
     public bool EnableTmux { get; set; } = true;
     public bool EnableAutoTitles { get; set; } = true;
@@ -398,6 +402,10 @@ public sealed class CustomProviderConfig
     }
 }
 
+/// <summary>Explicit launch dependencies; trials never need to mutate process-wide environment.</summary>
+public sealed record HarnessBootOptions(string? HomeDirectory = null, IReadOnlyList<string>? SkillRoots = null,
+    HarnessProfile? Profile = null, string? ProfileRoot = null);
+
 public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 {
     public HarnessContext Context { get; private set; } = null!;
@@ -419,6 +427,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     private ISessionPersistence? _ownedPersistence;
     private bool _disposed;
     private readonly string _home;
+    private readonly HarnessBootOptions _boot;
     public string DataDirectory => _home;
     public string SettingsFilePath => Path.Combine(_home, "settings.json");
     public string? SettingsLoadError { get; private set; }
@@ -429,13 +438,14 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         Timeout = Timeout.InfiniteTimeSpan,
     };
 
-    public HarnessBootstrapper()
+    public HarnessBootstrapper(HarnessBootOptions? options = null)
     {
+        _boot = options ?? new();
         // BLAZORLY_HOME isolates the whole harness home (settings, sessions, spills, …);
         // used by tests and by users who want a portable home.
-        _home = Path.GetFullPath(Environment.GetEnvironmentVariable("BLAZORLY_HOME") is { Length: > 0 } custom
+        _home = Path.GetFullPath(_boot.HomeDirectory ?? (Environment.GetEnvironmentVariable("BLAZORLY_HOME") is { Length: > 0 } custom
             ? custom
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".blazorly"));
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".blazorly")));
         Directory.CreateDirectory(_home);
     }
 
@@ -452,6 +462,7 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
     public async Task StartAsyncCore()
     {
         LoadSettings();
+        if (_boot.Profile is { } profile) ApplyProfile(Settings, profile);
         Context = HarnessContext.CreateRoot();
         Context.Events.OnListenerError = (_, ex) => Console.Error.WriteLine($"[harness] listener error: {ex.Message}");
 
@@ -459,6 +470,23 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         var applied = new List<string>();
         await PluginHost.ApplyAllAsync(Context, plugins, applied).ConfigureAwait(false);
         AppliedPlugins = applied;
+        if (Settings.EnableHarnessExperience)
+        {
+            var library = new HarnessExperienceLibrary(Path.Combine(_home, "experience"));
+            Context.Provide("harnessExperience", library);
+            var section = Context.Get<SystemPromptService>(SystemPromptService.ServiceKey).RegisterContext(
+                "harness-experience", 44, context => Settings.EnableHarnessExperience && context.Cwd is { } cwd
+                    ? library.Render(cwd, Settings.HarnessExperienceTaskClass,
+                        context.Agent?.Session.DeriveMessages().LastOrDefault(m => m.Role == "user"
+                            && !m.Content.OfType<ToolResultBlock>().Any())?.FlattenText() ?? "") : "");
+            Context.Effect(section.Dispose);
+        }
+        if (_boot.Profile is { } activeProfile)
+        {
+            var section = Context.Get<SystemPromptService>(SystemPromptService.ServiceKey).RegisterSection(
+                "harness-profile", 90, _ => activeProfile.Render(_boot.ProfileRoot ?? "{{profileRoot}}"), lenient: true);
+            Context.Effect(section.Dispose);
+        }
         // JobsRuntime is mounted by JobsPlugin itself (it self-mounts when absent).
         Jobs = Context.Get<JobsRuntime>(JobsRuntime.ServiceKey);
 
@@ -476,6 +504,18 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
 
     /// <summary>Plugin names in the order they applied; useful diagnostics and tests.</summary>
     public IReadOnlyList<string> AppliedPlugins { get; private set; } = [];
+
+    public static void ApplyProfile(HarnessSettings settings, HarnessProfile profile)
+    {
+        profile.Validate();
+        var changes = profile.Settings;
+        if (changes.TokenSaverToolOutput is { } compression) settings.TokenSaverToolOutput = compression;
+        if (changes.TokenSaverTerseOutput is { } terse) settings.TokenSaverTerseOutput = terse;
+        if (changes.TokenSaverMinimalCode is { } minimal) settings.TokenSaverMinimalCode = minimal;
+        if (changes.AnswerStyle is { } style) settings.AnswerStyle = style;
+        if (changes.CompactionThreshold is { } threshold) settings.CompactionThreshold = threshold;
+        if (changes.CompactionPrunerChars is { } chars) settings.CompactionPrunerChars = chars;
+    }
 
     /// <summary>
     /// The boot composition: spine mounts (as <see cref="MountPlugin"/> adapters so load order
@@ -638,7 +678,8 @@ public sealed class HarnessBootstrapper : IHostedService, IAsyncDisposable
         if (Settings.EnableAskUser) plugins.Add(new AskUserPlugin());
         plugins.Add(new SubagentToolsPlugin());
         if (Settings.EnableWeb) plugins.Add(new WebPlugin(BuildWebProvider(Settings), ownsProvider: true));
-        if (Settings.EnableSkills) plugins.Add(new SkillPlugin());
+        if (Settings.EnableSkills) plugins.Add(new SkillPlugin(new SkillsService(
+            (_boot.SkillRoots ?? SkillsService.DefaultRoots(_home)).ToArray())));
         if (Settings.EnableSessionQuery) plugins.Add(new SessionQueryPlugin());
         if (Settings.EnableGoals) plugins.Add(new GoalPlugin());
         if (Settings.EnablePlanMode) plugins.Add(new PlanModePlugin());

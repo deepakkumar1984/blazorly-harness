@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Blazorly.Harness.Core.Harnessing;
 
 namespace Blazorly.Harness.Cli;
 
@@ -32,7 +33,8 @@ public sealed record EvalTask(
     IReadOnlyList<EvalCheck> Checks,
     string? ExpectFinish = null,
     EvalInterrupt? Interrupt = null,
-    string? Sandbox = null)
+    string? Sandbox = null,
+    IReadOnlyList<string>? ProtectedFiles = null)
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
@@ -86,6 +88,8 @@ public sealed record EvalTask(
         if (!EvalSandbox.IsKnown(file.Sandbox))
             throw new EvalLoadException(dir,
                 $"sandbox must be one of: {string.Join(", ", EvalSandbox.All)} (got '{file.Sandbox}')");
+        if (file.ProtectedFiles is { } protectedFiles && protectedFiles.Any(p => file.Setup?.Files?.ContainsKey(p) != true))
+            throw new EvalLoadException(dir, "every protectedFiles entry must name a setup file");
         EvalInterrupt? interrupt = null;
         if (file.Interrupt is { } i)
         {
@@ -110,7 +114,8 @@ public sealed record EvalTask(
             checks,
             file.ExpectFinish,
             interrupt,
-            file.Sandbox);
+            file.Sandbox,
+            file.ProtectedFiles);
     }
 
     private sealed record EvalTaskFile(
@@ -123,7 +128,8 @@ public sealed record EvalTask(
         List<EvalCheckFile>? Checks,
         string? ExpectFinish = null,
         EvalInterruptFile? Interrupt = null,
-        string? Sandbox = null);
+        string? Sandbox = null,
+        List<string>? ProtectedFiles = null);
 
     private sealed record EvalCheckFile(string? Name, string? Run, int? TimeoutSeconds);
 
@@ -139,6 +145,10 @@ public sealed record EvalOptions
     public required string OutDir { get; init; }
     public string? Provider { get; init; }
     public string? Model { get; init; }
+    public string? ProfilePath { get; init; }
+    public string? AmbientHomeDirectory { get; init; }
+    // Controllers freeze routes at launch rather than rereading a changing settings file per trial.
+    internal Web.Services.HarnessSettings? AmbientSettings { get; init; }
     public int DefaultTimeoutSeconds { get; init; } = 300;
     /// <summary>
     /// Execution-backend matrix: every task runs once per backend. Empty means each task's own
@@ -163,7 +173,9 @@ public sealed record EvalTaskResult(
     IReadOnlyList<EvalCheckResult> Checks,
     string? Error,
     string Sandbox = EvalSandbox.None,
-    string? Skipped = null)
+    string? Skipped = null,
+    long CacheReadTokens = 0,
+    long CacheWriteTokens = 0)
 {
     /// <summary>Skipped rows are neither passes nor failures: the backend could not run here.</summary>
     public bool IsSkipped => Skipped is not null;
@@ -210,9 +222,16 @@ public static class EvalRunner
         var dirs = Directory.GetDirectories(tasksDir).OrderBy(Path.GetFileName).ToList();
         if (dirs.Count == 0)
             throw new EvalLoadException(tasksDir, "no tasks found (each task is a directory with task.json)");
+        var profile = options.ProfilePath is null ? null : HarnessProfile.Load(options.ProfilePath);
 
         Directory.CreateDirectory(options.OutDir);
         options = options with { OutDir = Path.GetFullPath(options.OutDir) };
+        if (profile is not null)
+        {
+            var snapshot = Path.Combine(options.OutDir, "profile.json");
+            profile.Save(snapshot);
+            options = options with { ProfilePath = snapshot };
+        }
 
         // Load first: which backends to materialize depends on what the tasks declare.
         var loaded = new List<(string Dir, string Id, EvalTask? Task, string? LoadError)>();
@@ -224,98 +243,94 @@ public static class EvalRunner
         }
 
         var backends = ResolveBackends(options, loaded.Where(l => l.Task is not null).Select(l => l.Task!));
-        // Read the ambient configuration before BLAZORLY_HOME is repointed at the seeded homes.
-        var ambient = EvalSandbox.LoadAmbient();
+        var ambient = options.AmbientSettings ?? EvalSandbox.LoadAmbient(options.AmbientHomeDirectory);
         var homes = backends.ToDictionary(b => b, b => HomeDir(options, b), StringComparer.Ordinal);
         foreach (var (backend, home) in homes)
-            SetupHome(options, backend, ambient);
+            SetupHome(options, backend, ambient, profile);
 
-        var environment = (await EvalEnvironmentCapture.CaptureAsync(backends, b => homes[b], ambient, ct).ConfigureAwait(false))
+        var environment = (await EvalEnvironmentCapture.CaptureAsync(backends, b => homes[b], ambient, ct, profile).ConfigureAwait(false))
             with
-            {
-                Provider = options.Provider ?? ambient.Provider,
-                Model = options.Model ?? ambient.Model,
-            };
+        {
+            Provider = options.Provider ?? ambient.Provider,
+            Model = options.Model ?? ambient.Model,
+        };
         await EvalEnvironmentCapture.WriteAsync(environment, options.OutDir, ct).ConfigureAwait(false);
 
-        var previousHome = Environment.GetEnvironmentVariable("BLAZORLY_HOME");
         var results = new List<EvalTaskResult>();
         var totalSw = Stopwatch.StartNew();
-        try
+        foreach (var backend in backends)
         {
-            foreach (var backend in backends)
+            ct.ThrowIfCancellationRequested();
+            var pinned = SettingsFor(backend, ambient, profile);
+            var unavailable = EvalSandbox.UnavailableReason(backend, pinned);
+            foreach (var (dir, id, task, loadError) in loaded)
             {
-                Environment.SetEnvironmentVariable("BLAZORLY_HOME", homes[backend]);
-                var pinned = SettingsFor(backend, ambient);
-                var unavailable = EvalSandbox.UnavailableReason(backend, pinned);
-                foreach (var (dir, id, task, loadError) in loaded)
+                ct.ThrowIfCancellationRequested();
+                if (task is null)
                 {
-                    if (task is null)
-                    {
-                        // A task that cannot be parsed is reported once, not once per backend.
-                        if (backend != backends[0]) continue;
-                        results.Add(Failure(id, backend, loadError!));
-                        await options.Out.WriteLineAsync($"FAIL {id} [{backend}] (task failed to load: {loadError})").ConfigureAwait(false);
-                        continue;
-                    }
-                    if (!Targets(task, options, backend)) continue;
-                    var effective = options.DefaultTimeoutSeconds > 0
-                        ? task with { TimeoutSeconds = options.DefaultTimeoutSeconds }
-                        : task;
-
-                    if (unavailable is not null)
-                    {
-                        results.Add(Skipped(effective.Id, backend, unavailable));
-                        await options.Out.WriteLineAsync($"SKIP {effective.Id} [{backend}] ({unavailable})").ConfigureAwait(false);
-                        await WriteTaskResultAsync(options, Skipped(effective.Id, backend, unavailable), ct).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    var result = await RunTaskAsync(effective, options, backend, homes[backend], ct).ConfigureAwait(false);
-                    results.Add(result);
-                    await options.Out.WriteLineAsync(
-                        $"{(result.Pass ? "PASS" : "FAIL")} {result.Id} [{backend}] ({result.DurationMs}ms, {result.Finish})").ConfigureAwait(false);
-                    await WriteTaskResultAsync(options, result, ct).ConfigureAwait(false);
+                    // A task that cannot be parsed is reported once, not once per backend.
+                    if (backend != backends[0]) continue;
+                    results.Add(Failure(id, backend, loadError!));
+                    await options.Out.WriteLineAsync($"FAIL {id} [{backend}] (task failed to load: {loadError})").ConfigureAwait(false);
+                    continue;
                 }
+                if (!Targets(task, options, backend)) continue;
+                var effective = options.DefaultTimeoutSeconds > 0
+                    ? task with { TimeoutSeconds = options.DefaultTimeoutSeconds }
+                    : task;
+
+                if (unavailable is not null)
+                {
+                    results.Add(Skipped(effective.Id, backend, unavailable));
+                    await options.Out.WriteLineAsync($"SKIP {effective.Id} [{backend}] ({unavailable})").ConfigureAwait(false);
+                    await WriteTaskResultAsync(options, Skipped(effective.Id, backend, unavailable), ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                var result = await RunTaskAsync(effective, options, backend, homes[backend], ct).ConfigureAwait(false);
+                results.Add(result);
+                await options.Out.WriteLineAsync(
+                    $"{(result.Pass ? "PASS" : "FAIL")} {result.Id} [{backend}] ({result.DurationMs}ms, {result.Finish})").ConfigureAwait(false);
+                await WriteTaskResultAsync(options, result, ct).ConfigureAwait(false);
             }
-            totalSw.Stop();
-            var executed = results.Where(r => !r.IsSkipped).ToList();
-            var summary = new EvalSummary(
-                results.Count,
-                executed.Count(r => r.Pass),
-                executed.Count(r => !r.Pass),
-                totalSw.ElapsedMilliseconds,
-                executed.Sum(r => r.InputTokens),
-                executed.Sum(r => r.OutputTokens),
-                results,
-                results.Count(r => r.IsSkipped),
-                backends,
-                environment.Manifests.ToDictionary(
-                    kv => kv.Key,
-                    kv => kv.Value.ToolSchemaHash,
-                    StringComparer.Ordinal));
-            await File.WriteAllTextAsync(Path.Combine(options.OutDir, "results.json"),
-                JsonSerializer.Serialize(summary, Json), ct).ConfigureAwait(false);
-            await File.WriteAllTextAsync(Path.Combine(options.OutDir, "summary.md"),
-                RenderMarkdown(summary, environment), ct).ConfigureAwait(false);
-            await options.Out.WriteLineAsync(
-                $"eval: {summary.Passed}/{summary.Executed} passed in {summary.DurationMs}ms "
-                + $"(backends: {string.Join(", ", backends)}"
-                + (summary.Skipped > 0 ? $", {summary.Skipped} skipped" : "")
-                + $"; in {summary.InputTokens} / out {summary.OutputTokens} tokens)").ConfigureAwait(false);
-            return summary;
         }
-        finally
-        {
-            Environment.SetEnvironmentVariable("BLAZORLY_HOME", previousHome);
-        }
+        totalSw.Stop();
+        var executed = results.Where(r => !r.IsSkipped).ToList();
+        var summary = new EvalSummary(
+            results.Count,
+            executed.Count(r => r.Pass),
+            executed.Count(r => !r.Pass),
+            totalSw.ElapsedMilliseconds,
+            executed.Sum(r => r.InputTokens),
+            executed.Sum(r => r.OutputTokens),
+            results,
+            results.Count(r => r.IsSkipped),
+            backends,
+            environment.Manifests.ToDictionary(
+                kv => kv.Key,
+                kv => kv.Value.ToolSchemaHash,
+                StringComparer.Ordinal));
+        await File.WriteAllTextAsync(Path.Combine(options.OutDir, "results.json"),
+            JsonSerializer.Serialize(summary, Json), ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(Path.Combine(options.OutDir, "summary.md"),
+            RenderMarkdown(summary, environment), ct).ConfigureAwait(false);
+        await options.Out.WriteLineAsync(
+            $"eval: {summary.Passed}/{summary.Executed} passed in {summary.DurationMs}ms "
+            + $"(backends: {string.Join(", ", backends)}"
+            + (summary.Skipped > 0 ? $", {summary.Skipped} skipped" : "")
+            + $"; in {summary.InputTokens} / out {summary.OutputTokens} tokens)").ConfigureAwait(false);
+        return summary;
     }
 
     /// <summary>Per-backend seeded home under the output directory (never the user's ~/.blazorly).</summary>
     public static string HomeDir(EvalOptions options, string backend) => Path.Combine(options.OutDir, $"home-{backend}");
 
-    private static Web.Services.HarnessSettings SettingsFor(string backend, Web.Services.HarnessSettings ambient)
-        => EvalSandbox.InheritRoutes(EvalSandbox.PinnedSettings(backend), ambient);
+    private static Web.Services.HarnessSettings SettingsFor(string backend, Web.Services.HarnessSettings ambient, HarnessProfile? profile = null)
+    {
+        var settings = EvalSandbox.InheritRoutes(EvalSandbox.PinnedSettings(backend), ambient);
+        if (profile is not null) Web.Services.HarnessBootstrapper.ApplyProfile(settings, profile);
+        return settings;
+    }
 
     /// <summary>The backend matrix: CLI override, else each task's declaration, else the host default.</summary>
     internal static IReadOnlyList<string> ResolveBackends(EvalOptions options, IEnumerable<EvalTask> tasks)
@@ -360,6 +375,7 @@ public static class EvalRunner
         var workspace = Path.Combine(options.OutDir, "workspaces", backend, task.Id);
         try
         {
+            HarnessArtifacts.AssertNoLinks(options.OutDir, workspace);
             if (Directory.Exists(workspace)) Directory.Delete(workspace, recursive: true);
             Directory.CreateDirectory(workspace);
 
@@ -391,13 +407,43 @@ public static class EvalRunner
                 {
                     Job = task.Prompt,
                     WorkspacePath = workspace,
+                    HomeDirectory = home,
+                    SkillRoots = [],
+                    ProfilePath = options.ProfilePath,
+                    EvidenceDirectory = Path.Combine(options.OutDir, "evidence", backend, task.Id),
                     Provider = task.Provider ?? options.Provider,
                     Model = task.Model ?? options.Model,
                     TimeoutSeconds = task.TimeoutSeconds,
                     CancelAfterMs = task.Interrupt?.CancelAfterMs,
                     Quiet = true,
-                }).ConfigureAwait(false);
+                }, ct).ConfigureAwait(false);
+            if (task.Interrupt?.KillAfterMs is not null && run.SessionId is { } sessionId)
+                run = run with
+                {
+                    Usage = await TrialEvidence.WritePersistedAsync(
+                    Path.Combine(options.OutDir, "evidence", backend, task.Id),
+                    Path.Combine(home, "sessions"), sessionId, run.Response, ct).ConfigureAwait(false)
+                };
             sw.Stop();
+            try
+            {
+                if (options.ProfilePath is { } profilePath) HarnessProfile.Load(profilePath).VerifyMaterialized(workspace);
+                if (task.ProtectedFiles is { } protectedFiles && protectedFiles.Any(path =>
+                    !File.Exists(Path.Combine(workspace, path)) || File.ReadAllText(Path.Combine(workspace, path)) != task.Setup!.Files![path]))
+                    throw new ArgumentException("protected task fixtures were changed during the trial");
+            }
+            catch (ArgumentException ex)
+            {
+                return Failure(task.Id, backend, ex.Message) with
+                {
+                    SessionId = run.SessionId,
+                    DurationMs = sw.ElapsedMilliseconds,
+                    InputTokens = run.Usage?.Input ?? 0,
+                    OutputTokens = run.Usage?.Output ?? 0,
+                    CacheReadTokens = run.Usage?.CacheRead ?? 0,
+                    CacheWriteTokens = run.Usage?.CacheWrite ?? 0
+                };
+            }
 
             // A provider failure is reported with the provider's own words, unless the task expected
             // that finish — then it is scored like any other run.
@@ -408,6 +454,10 @@ public static class EvalRunner
                     ExitCode = run.ExitCode,
                     SessionId = run.SessionId,
                     DurationMs = sw.ElapsedMilliseconds,
+                    InputTokens = run.Usage?.Input ?? 0,
+                    OutputTokens = run.Usage?.Output ?? 0,
+                    CacheReadTokens = run.Usage?.CacheRead ?? 0,
+                    CacheWriteTokens = run.Usage?.CacheWrite ?? 0,
                 };
 
             var expectedExit = EvalTask.ExitOfFinish(task.ExpectFinish);
@@ -426,8 +476,9 @@ public static class EvalRunner
                 checks, pass ? null
                     : run.ExitCode != expectedExit ? $"turn ended {run.Finish} (exit {run.ExitCode}), expected {task.ExpectFinish ?? "completed"} (exit {expectedExit})"
                     : "checks failed",
-                backend);
+                backend, CacheReadTokens: run.Usage?.CacheRead ?? 0, CacheWriteTokens: run.Usage?.CacheWrite ?? 0);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             return Failure(task.Id, backend, ex.Message);
@@ -444,7 +495,7 @@ public static class EvalRunner
         EvalTask task, EvalOptions options, string workspace, string home, int killAfterMs, CancellationToken ct)
     {
         var killSw = Stopwatch.StartNew();
-        var first = SpawnCli(task, workspace, resume: null);
+        var first = SpawnCli(task, workspace, home, options, resume: null);
         using var anchorCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         anchorCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(5, task.TimeoutSeconds)));
         var toolCallSeen = WaitForFirstToolCallAsync(home, task.Id, anchorCts.Token);
@@ -478,15 +529,21 @@ public static class EvalRunner
             };
         }
 
-        var resume = SpawnCli(task, workspace, resume: session.Value.SessionId);
+        var resume = SpawnCli(task, workspace, home, options, resume: session.Value.SessionId);
         var resumeDone = await Task.WhenAny(
             resume.WaitForExitTask,
             Task.Delay(TimeSpan.FromSeconds(Math.Max(1, task.TimeoutSeconds)), ct)).ConfigureAwait(false);
         if (resumeDone != resume.WaitForExitTask)
         {
             try { resume.Process.Kill(entireProcessTree: true); } catch { }
-            return new HeadlessResult { ExitCode = 1, Finish = "error", SessionId = session.Value.SessionId,
-                Error = $"resume run exceeded the task timeout ({task.TimeoutSeconds}s)" };
+            await resume.WaitForExitTask.ConfigureAwait(false);
+            return new HeadlessResult
+            {
+                ExitCode = 1,
+                Finish = "error",
+                SessionId = session.Value.SessionId,
+                Error = $"resume run exceeded the task timeout ({task.TimeoutSeconds}s)"
+            };
         }
         var envelope = await EnvelopeOfAsync(resume).ConfigureAwait(false);
         var finish = envelope?.Finish ?? (resume.Process.ExitCode == 0 ? "completed" : "error");
@@ -496,7 +553,7 @@ public static class EvalRunner
             SessionId = session.Value.SessionId,
             Response = envelope?.Response ?? "",
             Finish = finish,
-            Usage = null,
+            Usage = envelope?.Usage,
             Error = resume.Process.ExitCode != 0 ? $"resume run exited {resume.Process.ExitCode}" : null,
         };
     }
@@ -527,22 +584,32 @@ public static class EvalRunner
 
     private sealed record CliSpawn(Process Process, Task WaitForExitTask, Task<string> Stdout);
 
-    private static CliSpawn SpawnCli(EvalTask task, string workspace, string? resume)
+    private static CliSpawn SpawnCli(EvalTask task, string workspace, string home, EvalOptions options, string? resume)
     {
         var start = CliRelaunch.StartInfo(workspace);
         start.ArgumentList.Add("run");
         start.ArgumentList.Add(resume is null ? task.Prompt : task.Interrupt?.ResumePrompt ?? "Continue.");
+        start.ArgumentList.Add("--home");
+        start.ArgumentList.Add(home);
+        start.ArgumentList.Add("--isolated-skills");
+        start.ArgumentList.Add("--evidence-dir");
+        start.ArgumentList.Add(Path.Combine(options.OutDir, "evidence", Path.GetFileName(Path.GetDirectoryName(workspace))!, task.Id));
+        if (options.ProfilePath is { } profilePath)
+        {
+            start.ArgumentList.Add("--profile");
+            start.ArgumentList.Add(profilePath);
+        }
         start.ArgumentList.Add("--workspace");
         start.ArgumentList.Add(workspace);
-        if (!string.IsNullOrWhiteSpace(task.Provider))
+        if (!string.IsNullOrWhiteSpace(task.Provider ?? options.Provider))
         {
             start.ArgumentList.Add("--provider");
-            start.ArgumentList.Add(task.Provider);
+            start.ArgumentList.Add((task.Provider ?? options.Provider)!);
         }
-        if (!string.IsNullOrWhiteSpace(task.Model))
+        if (!string.IsNullOrWhiteSpace(task.Model ?? options.Model))
         {
             start.ArgumentList.Add("--model");
-            start.ArgumentList.Add(task.Model);
+            start.ArgumentList.Add((task.Model ?? options.Model)!);
         }
         if (resume is not null)
         {
@@ -551,7 +618,7 @@ public static class EvalRunner
         }
         start.ArgumentList.Add("--json");
         start.ArgumentList.Add("--quiet");
-        // BLAZORLY_HOME is already the eval home for this process; children inherit it.
+        // Home, profile and skill isolation travel as explicit child arguments.
         var process = Process.Start(start) ?? throw new InvalidOperationException("failed to spawn the headless cli");
         return new CliSpawn(process, process.WaitForExitAsync(), process.StandardOutput.ReadToEndAsync());
     }
@@ -575,6 +642,9 @@ public static class EvalRunner
                     SessionId = root.TryGetProperty("sessionId", out var sid) ? sid.GetString() : null,
                     Response = root.TryGetProperty("response", out var response) ? response.GetString() ?? "" : "",
                     Finish = finish.GetString() ?? "completed",
+                    Usage = root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object
+                        ? new HeadlessUsage(usage.GetProperty("input").GetInt64(), usage.GetProperty("output").GetInt64(),
+                            usage.GetProperty("cacheRead").GetInt64(), usage.GetProperty("cacheWrite").GetInt64()) : null,
                     Error = root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String
                         ? error.GetString()
                         : null,
@@ -632,11 +702,12 @@ public static class EvalRunner
     /// and credentials, so evals use the developer's models without inheriting their behavioral
     /// configuration (sandbox mode, plugin toggles, context window) or polluting their sessions.
     /// </summary>
-    internal static string SetupHome(EvalOptions options, string backend, Web.Services.HarnessSettings ambient)
+    internal static string SetupHome(EvalOptions options, string backend, Web.Services.HarnessSettings ambient, HarnessProfile? profile = null)
     {
         var home = HomeDir(options, backend);
+        HarnessArtifacts.AssertNoLinks(options.OutDir, home);
         if (Directory.Exists(home)) Directory.Delete(home, recursive: true);
-        return EvalSandbox.WriteHome(home, SettingsFor(backend, ambient));
+        return EvalSandbox.WriteHome(home, SettingsFor(backend, ambient, profile));
     }
 
     public static async Task<(int ExitCode, string Output)> ShellAsync(

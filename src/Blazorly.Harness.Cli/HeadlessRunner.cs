@@ -4,6 +4,7 @@ using Blazorly.Harness.Core.Agent;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Llm;
 using Blazorly.Harness.Web.Services;
+using Blazorly.Harness.Core.Harnessing;
 
 namespace Blazorly.Harness.Cli;
 
@@ -12,6 +13,10 @@ public sealed record HeadlessOptions
     public string Job { get; init; } = "";
     /// <summary>Workspace root; defaults to the invoking directory (dsh launcher behavior).</summary>
     public string? WorkspacePath { get; init; }
+    public string? HomeDirectory { get; init; }
+    public IReadOnlyList<string>? SkillRoots { get; init; }
+    public string? ProfilePath { get; init; }
+    public string? EvidenceDirectory { get; init; }
     public string? Provider { get; init; }
     public string? Model { get; init; }
     /// <summary>Reasoning effort for the run (off/low/medium/high/…); unset keeps the session's.</summary>
@@ -48,12 +53,18 @@ public sealed record HeadlessResult
 /// </summary>
 public static class HeadlessRunner
 {
-    public static async Task<HeadlessResult> RunAsync(HeadlessOptions options)
+    public static async Task<HeadlessResult> RunAsync(HeadlessOptions options, CancellationToken ct = default)
     {
-        var bootstrapper = new HarnessBootstrapper();
-        bootstrapper.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+        HarnessBootstrapper? bootstrapper = null;
         try
         {
+            ct.ThrowIfCancellationRequested();
+            var root = Path.GetFullPath(options.WorkspacePath ?? Environment.CurrentDirectory);
+            var profile = options.ProfilePath is null ? null : HarnessProfile.Load(options.ProfilePath);
+            var packageRoot = profile?.Materialize(root);
+            var skillRoots = profile is null ? options.SkillRoots : new[] { Path.Combine(packageRoot!, "skills") };
+            bootstrapper = new HarnessBootstrapper(new(options.HomeDirectory, skillRoots, profile, packageRoot));
+            await bootstrapper.StartAsync(ct).ConfigureAwait(false);
             // Route overrides must land before the selection is applied, and must not carry the
             // persisted route's base URL or typed key onto a different provider's host.
             if (!string.IsNullOrWhiteSpace(options.Provider))
@@ -62,7 +73,6 @@ public static class HeadlessRunner
             bootstrapper.ApplyProviderSelection();
             bootstrapper.ApplyDefaultSelection();
 
-            var root = options.WorkspacePath ?? Environment.CurrentDirectory;
             var workspace = bootstrapper.Workspaces.Ensure(root);
             var route = new AgentOptions(bootstrapper.Settings.Provider, bootstrapper.Settings.Model,
                 HarnessBootstrapper.ResolveMaxOutputTokens(bootstrapper.Settings,
@@ -89,6 +99,7 @@ public static class HeadlessRunner
             });
 
             agent.Followup(Message.CreateUserText(options.Job));
+            using var cancellation = ct.Register(() => agent.Cancel(AgentCancelCause.User()));
 
             using var timeoutCts = options.TimeoutSeconds is { } seconds
                 ? new CancellationTokenSource(TimeSpan.FromSeconds(seconds))
@@ -123,6 +134,8 @@ public static class HeadlessRunner
             var failure = FailureOf(agent);
             var response = LastAssistantText(agent);
             var usage = bootstrapper.Meter?.Measure(agent);
+            if (options.EvidenceDirectory is { } evidence)
+                TrialEvidence.Write(evidence, agent.Session.Header, agent.Session.Events, response);
 
             if (options.Json)
             {
@@ -164,7 +177,7 @@ public static class HeadlessRunner
         }
         finally
         {
-            await bootstrapper.DisposeAsync().ConfigureAwait(false);
+            if (bootstrapper is not null) await bootstrapper.DisposeAsync().ConfigureAwait(false);
         }
     }
 

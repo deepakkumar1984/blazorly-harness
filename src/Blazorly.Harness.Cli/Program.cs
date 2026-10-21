@@ -17,6 +17,8 @@ return args.Length == 0 ? await ServeAsync([]) : args[0] switch
     "run" => await RunAsync(args[1..]),
     "sessions" => await SessionsAsync(args[1..]),
     "eval" => await EvalAsync(args[1..]),
+    "profiles" => HarnessingCommand.Profiles(args[1..]),
+    "experience" => HarnessingCommand.Experience(args[1..]),
     "decisions" => await Blazorly.Harness.Cli.DecisionsCommand.RunAsync(args[1..]),
     "serve-stdio" => await ServeStdioAsync(args[1..]),
     "serve-acp" => await ServeAcpAsync(args[1..]),
@@ -40,6 +42,10 @@ static int Help()
         blazorly — agentic coding harness (blazorly-harness CLI)
 
         Commands:
+          profiles         Validate or snapshot a portable harness profile (--help).
+          experience       Record, list or revoke scoped lessons with execution evidence (--help).
+          eval compare     Compare profiles against baseline with repeated trials (--help).
+          eval refine      Propose, probe and compose a harness profile (--help).
           (no command)     Start the local UI (alias: `serve`). Flags:
                              --port <n>           bind this port (default 5080)
                              --host <ip|name>     bind address (default localhost;
@@ -54,6 +60,7 @@ static int Help()
                            session workspace on first use. Streams the assistant text.
                            Flags:
                              --workspace <path>   workspace root (default: current dir)
+                             --profile <file>     instructions, skills and behavioral settings
                              --provider <name>    deepseek | openai | anthropic | ... any built-in
                                                   provider, or a configured custom route
                              --model <id>         model id for the run
@@ -77,6 +84,7 @@ static int Help()
                                                    eval/results-<timestamp>)
                               --provider <name>    route override for all tasks
                               --model <id>         model override for all tasks
+                              --profile <file>     evaluate this harness profile
                               --timeout <seconds>  per-task timeout override
                               --sandbox <list>     comma-separated backend matrix:
                                                    landlock,e2b,none (default: the
@@ -144,6 +152,18 @@ static (HeadlessOptions Options, List<string> Positional) Parse(string[] args)
     {
         switch (args[i])
         {
+            case "--profile" when i + 1 < args.Length:
+                options = options with { ProfilePath = args[++i] };
+                break;
+            case "--home" when i + 1 < args.Length:
+                options = options with { HomeDirectory = args[++i] };
+                break;
+            case "--isolated-skills":
+                options = options with { SkillRoots = [] };
+                break;
+            case "--evidence-dir" when i + 1 < args.Length:
+                options = options with { EvidenceDirectory = args[++i] };
+                break;
             case "--workspace" when i + 1 < args.Length:
                 options = options with { WorkspacePath = args[++i] };
                 break;
@@ -205,16 +225,22 @@ static async Task<int> SessionsAsync(string[] args)
 
 static async Task<int> EvalAsync(string[] args)
 {
+    if (args.Length > 0 && args[0] == "compare") return await HarnessingCommand.CompareAsync(args[1..]);
+    if (args.Length > 0 && args[0] == "refine") return await HarnessingCommand.RefineAsync(args[1..]);
     var tasksDir = "eval/tasks";
     string? outDir = null;
     string? provider = null;
     string? model = null;
     string? sandbox = null;
+    string? profile = null;
     var timeout = 0;
     for (var i = 0; i < args.Length; i++)
     {
         switch (args[i])
         {
+            case "--profile" when i + 1 < args.Length:
+                profile = args[++i];
+                break;
             case "--tasks" when i + 1 < args.Length:
                 tasksDir = args[++i];
                 break;
@@ -247,6 +273,7 @@ static async Task<int> EvalAsync(string[] args)
             OutDir = outDir,
             Provider = provider,
             Model = model,
+            ProfilePath = profile,
             DefaultTimeoutSeconds = timeout,
             Sandbox = EvalSandbox.ParseMatrix(sandbox),
         });

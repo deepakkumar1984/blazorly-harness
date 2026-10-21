@@ -138,6 +138,7 @@ public static class EvalSandbox
         pinned.BaseUrl = ambient.BaseUrl;
         pinned.BaseUrlProvider = ambient.BaseUrlProvider;
         pinned.ProviderBaseUrls = ambient.ProviderBaseUrls;
+        pinned.ProviderApiTypes = ambient.ProviderApiTypes;
         pinned.ApiKey = ambient.ApiKey;
         pinned.ProviderKeys = ambient.ProviderKeys;
         pinned.DiscoveredModels = ambient.DiscoveredModels;
@@ -210,20 +211,33 @@ public static class EvalSandbox
         ["provider"] = settings.Provider,
         ["model"] = settings.Model,
         ["baseUrl"] = settings.BaseUrl,
+        ["baseUrlProvider"] = settings.BaseUrlProvider,
+        ["providerBaseUrls"] = settings.ProviderBaseUrls,
+        ["providerApiTypes"] = settings.ProviderApiTypes,
+        ["discoveredModels"] = settings.DiscoveredModels,
+        ["retry"] = settings.Retry,
+        ["retryProviders"] = settings.RetryProviders,
         ["sandboxMode"] = settings.SandboxMode,
         ["sandboxFailClosedWhenUnsupported"] = settings.SandboxFailClosedWhenUnsupported,
         ["enableE2b"] = settings.EnableE2b,
         ["e2bTemplate"] = settings.E2bTemplate,
+        ["e2bBaseUrl"] = settings.E2bBaseUrl,
         ["persistence"] = settings.Persistence,
         ["contextWindowTokens"] = settings.ContextWindowTokens,
         ["compactionThreshold"] = settings.CompactionThreshold,
         ["compactionPrunerChars"] = settings.CompactionPrunerChars,
         ["spillThresholdChars"] = settings.SpillThresholdChars,
         ["webSearchBackend"] = settings.WebSearchBackend,
+        ["answerStyle"] = settings.AnswerStyle,
+        ["tokenSaverToolOutput"] = settings.TokenSaverToolOutput,
+        ["tokenSaverTerseOutput"] = settings.TokenSaverTerseOutput,
+        ["tokenSaverMinimalCode"] = settings.TokenSaverMinimalCode,
         ["plugins"] = PluginToggles(settings),
         ["apiKey"] = Mask(settings.ApiKey),
         ["providerKeys"] = settings.ProviderKeys.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList(),
         ["customProviders"] = settings.CustomProviders.Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToList(),
+        ["customRoutes"] = settings.CustomProviders.OrderBy(p => p.Name, StringComparer.Ordinal)
+            .Select(p => new { p.Name, p.BaseUrl, p.ApiType, p.ApiKeyEnv, p.Models, p.ModelMetadata }).ToList(),
         ["e2bKeyPresent"] = !string.IsNullOrWhiteSpace(settings.ResolveE2bApiKey()),
     };
 
