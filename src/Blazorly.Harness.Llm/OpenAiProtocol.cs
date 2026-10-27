@@ -5,8 +5,14 @@ public static class OpenAiProtocol
 {
     public static bool UsesResponsesForModel(string model)
     {
-        // Gateways may prefix an upstream model with its provider, e.g. openai/gpt-6-astra.
-        var id = model[(model.LastIndexOf('/') + 1)..];
+        // Unprefixed OpenAI ids and the openai/ namespace select Responses. Other gateway
+        // prefixes (az/, azure/, cf/, …) are routing hints, not protocol guarantees: those
+        // routes often expose Azure models through Chat Completions, and guessing Responses
+        // makes the gateway rewrite max_output_tokens/reasoning into fields Azure rejects.
+        var slash = model.LastIndexOf('/');
+        var id = slash >= 0 ? model[(slash + 1)..] : model;
+        if (slash >= 0 && !model[..slash].Equals("openai", StringComparison.OrdinalIgnoreCase))
+            return false;
         return IsFamily(id, "gpt-5") || IsFamily(id, "gpt-6");
     }
 

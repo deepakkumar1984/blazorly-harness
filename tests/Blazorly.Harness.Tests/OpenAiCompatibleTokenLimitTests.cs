@@ -56,6 +56,21 @@ public class OpenAiCompatibleTokenLimitTests
     }
 
     [Fact]
+    public async Task ProviderPrefixedAzureModel_NegotiatesCompletionTokensOnChatPath()
+    {
+        using var handler = new RecordingHandler((_, call) => call == 0 ? Error(UnsupportedMaxTokens) : Success());
+        using var http = new HttpClient(handler);
+        var adapter = new OpenAiCompatibleAdapter("9router", "https://gateway.test/v1", "key", [], http);
+
+        await AssertSuccessfulStream(adapter, Options() with { Provider = "9router", Model = "az/gpt-6.1-sol" });
+
+        Assert.Equal(2, handler.Bodies.Count);
+        Assert.All(handler.Urls, url => Assert.Equal("https://gateway.test/v1/chat/completions", url));
+        AssertTokenLimit(handler.Bodies[0], "max_tokens", 2048);
+        AssertTokenLimit(handler.Bodies[1], "max_completion_tokens", 2048);
+    }
+
+    [Fact]
     public async Task Agent_RecoversWithoutReducingItsTokenBudget()
     {
         using var handler = new RecordingHandler((body, call) => body.TryGetProperty("max_tokens", out _)

@@ -77,7 +77,7 @@ Removing a provider removes its route and clears the default selection if necess
 
 The [startup and behavior audit](audits/2026-09-25-startup-integrity.md) records the fixes and verification limits.
 
-For a gateway that serves the Responses API, choose **OpenAI Responses** as its API type in **Settings → Providers**. Automatic OpenAI-compatible routes also use Responses for GPT-5 and GPT-6 models, including provider-prefixed ids such as `openai/gpt-6-astra`.
+For a gateway that serves the Responses API, choose **OpenAI Responses** as its API type in **Settings → Providers**. Automatic OpenAI-compatible routes also use Responses for GPT-5 and GPT-6 models, including OpenAI-prefixed ids such as `openai/gpt-6-astra`. Other provider-prefixed ids (`az/…`, `azure/…`, `cf/…`) stay on Chat Completions because that prefix selects a gateway route, not a wire protocol; choose **OpenAI Responses** explicitly if the route really serves it.
 
 Personalize the UI in **Settings → Appearance**. Palette, accent, type, text size, corner style and motion changes save automatically; custom CSS uses **Apply CSS** and can be disabled without losing your code. **Reset appearance** restores defaults. If a custom style hides the controls, open `/settings?tab=appearance&reset-appearance=1` on your running instance to reset them.
 

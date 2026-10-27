@@ -222,10 +222,11 @@ public class RetryServiceTests
     }
 
     [Fact]
-    public async Task InvalidRequest_EffortBlame_IsNotAdapted()
+    public async Task InvalidRequest_EffortBlame_DropsEffortOnce()
     {
-        // A 400 naming the reasoning effort fails identically at any cap: no adaptation,
-        // options untouched, and the terminal hint points at the effort knob.
+        // A 400 naming the reasoning effort cannot be repaired by reducing the token
+        // cap. Retry once without effort, record the downgrade, and still surface the
+        // provider's error if the second request fails.
         await using var harness = HarnessWithFlaky((options, _) =>
             Scripted.Error(LlmErrorCodes.InvalidRequest, "reasoning effort 'max' is not supported by this model"));
         RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
@@ -234,11 +235,14 @@ public class RetryServiceTests
         agent.Followup(Message.CreateUserText("go"));
         await agent.WhenIdleAsync();
 
-        Assert.DoesNotContain(agent.Session.Events, e => e.Type == SessionEventTypes.LlmRetry);
+        var retries = agent.Session.Events.Where(e => e.Type == SessionEventTypes.LlmRetry).ToList();
+        Assert.Single(retries);
+        Assert.Equal("max", retries[0].Data.GetProperty("reasoningEffortFrom").GetString());
         Assert.Equal(128000, agent.Options.MaxTokens);
+        Assert.Null(agent.Options.ReasoningEffort);
         var reason = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd).Data.GetProperty("reason");
         Assert.Equal("INVALID_REQUEST", reason.GetProperty("code").GetString());
-        Assert.Contains("Reset with /effort default", reason.GetProperty("message").GetString());
+        Assert.Contains("reasoning effort 'max' is not supported", reason.GetProperty("message").GetString());
     }
 
     [Fact]
@@ -315,6 +319,28 @@ public class RetryServiceTests
     }
 
     [Fact]
+    public async Task InvalidRequest_UpstreamDependencyFailure_DoesNotMutateSettings()
+    {
+        const string message = "provider rejected request (400: {\"error\":{\"code\":\"BadRequestForDependentService\","
+            + "\"message\":\"Bad request for dependent service.\"}})";
+        await using var harness = HarnessWithFlaky((_, _) =>
+            Scripted.Error(LlmErrorCodes.InvalidRequest, message));
+        RetryService.Mount(harness.Ctx, new RetryOptions { Default = Fast() });
+        var agent = harness.CreateAgent(options: new AgentOptions(MaxTokens: 128000, ReasoningEffort: "max"));
+
+        agent.Followup(Message.CreateUserText("go"));
+        await agent.WhenIdleAsync();
+
+        Assert.DoesNotContain(agent.Session.Events, e => e.Type == SessionEventTypes.LlmRetry);
+        Assert.Equal(128000, agent.Options.MaxTokens);
+        Assert.Equal("max", agent.Options.ReasoningEffort);
+        var reason = agent.Session.Events.Last(e => e.Type == SessionEventTypes.TurnEnd).Data.GetProperty("reason");
+        Assert.Equal("INVALID_REQUEST", reason.GetProperty("code").GetString());
+        Assert.Contains("upstream route failed", reason.GetProperty("message").GetString());
+        Assert.Contains("not the cause", reason.GetProperty("message").GetString());
+    }
+
+    [Fact]
     public void TryReduceMaxTokens_RequiresInvalidRequestAndReducibleCap()
     {
         Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure("slow down", LlmErrorCodes.RateLimit), 128000, out _));
@@ -367,6 +393,7 @@ public class RetryServiceTests
             "provider rejected request (400: model does not support tools)",
             """provider rejected request (400: {"success":false,"error":"'arguments' must be valid JSON"})""",
             "provider rejected request (400: unknown tool 'bash_exec')",
+            """provider rejected request (400: {"error":{"code":"BadRequestForDependentService","message":"Bad request for dependent service."}})""",
         })
         {
             Assert.False(RetryService.TryReduceMaxTokens(new LlmFailure(message, LlmErrorCodes.InvalidRequest), 128000, out _), message);

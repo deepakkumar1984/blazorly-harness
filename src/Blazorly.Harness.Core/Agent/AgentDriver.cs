@@ -149,6 +149,8 @@ public sealed class AgentDriver
     {
         if (OpenAiProtocol.RequiresResponsesApi(message))
             return $"{message} Select OpenAI Responses as this provider's API type in Settings → Providers.";
+        if (ProviderErrorSignals.IsUpstreamDependencyFailure(message))
+            return $"{message} The provider's upstream route failed before the model handled the request. Reasoning effort and max output were not the cause; retry later or select another model.";
         var effort = options.ReasoningEffort;
         var maxTokens = options.MaxTokens;
         if (effort is null && maxTokens is null) return message;

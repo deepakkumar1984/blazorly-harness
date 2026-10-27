@@ -90,7 +90,9 @@ public sealed class RetryService
     private async Task<RequestErrorAction?> DecideAsync(RequestErrorEvent payload, CancellationToken ct)
     {
         var policy = PolicyFor(payload.Agent.Options.Provider);
-        var adaptable = TryReduceMaxTokens(payload.Failure, payload.Agent.Options.MaxTokens, out var reduced);
+        var reduceTokens = TryReduceMaxTokens(payload.Failure, payload.Agent.Options.MaxTokens, out var reduced);
+        var dropEffort = TryDropReasoningEffort(payload.Failure, payload.Agent.Options.ReasoningEffort);
+        var adaptable = reduceTokens || dropEffort;
         if (policy.Mode != "always")
         {
             if (payload.Attempts >= policy.MaxRetries) return null;
@@ -106,11 +108,26 @@ public sealed class RetryService
         if (payload.Failure.Code == LlmErrorCodes.ContextWindowExceeded) return null;
         if (providerDelay is { } ask && ask > RetryAfterCap(policy) && policy.Mode != "always") return null;
 
+        // A rejected reasoning field cannot be repaired by changing its value: some gateways
+        // rewrite reasoning.effort back to reasoning_effort, and Azure then rejects the field
+        // even when the request is otherwise valid. Retry once without effort and record the
+        // downgrade so the trajectory shows the model ran at its provider default.
+        if (dropEffort)
+        {
+            var from = payload.Agent.Options.ReasoningEffort!;
+            payload.Agent.Options = payload.Agent.Options with { ReasoningEffort = null };
+            var adaptId = $"retry_{++_counter}";
+            AppendRetryScheduled(payload, policy, adaptId, delayMs: 0, retryAfterMs: null,
+                reasoningEffortFrom: from);
+            AppendRetryStarted(payload, adaptId);
+            return RequestErrorAction.Retry(backoffHandled: true);
+        }
+
         // A 400 that names no other culprit is usually an oversized max_tokens — the model's
         // true output ceiling is unknown or lower than configured (undiscovered routes have no
         // metadata to clamp against). Halve the agent's cap and retry immediately instead of
         // failing the turn; the reduced value sticks as a proven-accepted ceiling.
-        if (adaptable)
+        if (reduceTokens)
         {
             var from = payload.Agent.Options.MaxTokens!.Value;
             payload.Agent.Options = payload.Agent.Options with { MaxTokens = reduced };
@@ -139,7 +156,8 @@ public sealed class RetryService
     }
 
     private static void AppendRetryScheduled(RequestErrorEvent payload, RetryPolicyConfig policy, string retryId,
-        long delayMs, long? retryAfterMs, int? maxTokensFrom = null, int? maxTokensTo = null)
+        long delayMs, long? retryAfterMs, int? maxTokensFrom = null, int? maxTokensTo = null,
+        string? reasoningEffortFrom = null)
     {
         payload.Agent.Session.Append(SessionEventTypes.LlmRetry, new
         {
@@ -154,6 +172,7 @@ public sealed class RetryService
             maxRetries = policy.Mode == "always" ? (int?)null : policy.MaxRetries,
             maxTokensFrom,
             maxTokensTo,
+            reasoningEffortFrom,
         });
     }
 
@@ -182,6 +201,7 @@ public sealed class RetryService
         reduced = 0;
         if (failure.Code != LlmErrorCodes.InvalidRequest) return false;
         if (maxTokens is null or <= AdaptiveMaxTokensFloor) return false;
+        if (ProviderErrorSignals.IsUpstreamDependencyFailure(failure.Message)) return false;
         if (OpenAiProtocol.RequiresResponsesApi(failure.Message)) return false;
         // An unsupported field fails at every value; the adapter handles wire-name negotiation.
         if (TokenLimitErrors.UnsupportedParameter(failure.Message) is not null) return false;
@@ -202,6 +222,23 @@ public sealed class RetryService
         }
         reduced = Math.Max(AdaptiveMaxTokensFloor, maxTokens.Value / 2);
         return reduced < maxTokens.Value;
+    }
+
+    /// <summary>
+    /// Whether an invalid-request failure blamed the reasoning field. Some gateways translate
+    /// the Responses <c>reasoning.effort</c> object back to Chat's <c>reasoning_effort</c> and
+    /// then send it to Azure's Responses endpoint, which rejects both spellings. Omitting the
+    /// field is the only value-independent repair; the retry event records the downgrade.
+    /// Token-limit rejections stay with the adapter's wire-name negotiation.
+    /// </summary>
+    public static bool TryDropReasoningEffort(LlmFailure failure, string? effort)
+    {
+        if (failure.Code != LlmErrorCodes.InvalidRequest || string.IsNullOrWhiteSpace(effort)) return false;
+        if (TokenLimitErrors.UnsupportedParameter(failure.Message) is not null) return false;
+        var lower = failure.Message.ToLowerInvariant();
+        return lower.Contains("reasoning_effort")
+            || lower.Contains("reasoning.effort")
+            || lower.Contains("reasoning effort");
     }
 
     /// <summary>Longest provider Retry-After waited out verbatim; never below MaxDelayMs.</summary>

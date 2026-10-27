@@ -465,6 +465,18 @@ public class InvalidRequestHintTests
     }
 
     [Fact]
+    public void UpstreamDependencyFailure_DoesNotBlameRequestParameters()
+    {
+        var text = AgentDriver.WithInvalidRequestHint(
+            """provider rejected request (400: {"error":{"code":"BadRequestForDependentService","message":"Bad request for dependent service."}})""",
+            new AgentOptions("p", "m", 65536, "max"));
+        Assert.Contains("upstream route failed", text);
+        Assert.Contains("not the cause", text);
+        Assert.DoesNotContain("max_tokens 65536", text);
+        Assert.DoesNotContain("/effort default", text);
+    }
+
+    [Fact]
     public void NothingOursSent_MessagePassesThrough()
     {
         const string message = "provider rejected request (400: Invalid request parameters)";

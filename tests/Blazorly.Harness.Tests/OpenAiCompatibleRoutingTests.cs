@@ -29,6 +29,7 @@ public class OpenAiCompatibleRoutingTests
     [InlineData("openai/gpt-6-astra")]
     [InlineData("gpt-6-sol")]
     [InlineData("gpt-6-luna")]
+    [InlineData("gpt-6.1-sol")]
     [InlineData("gpt-5")]
     [InlineData("gpt-5.4")]
     public async Task ModernOpenAiModels_UseResponsesOnFirstRequest(string model)
@@ -45,6 +46,26 @@ public class OpenAiCompatibleRoutingTests
         AssertResponsesBody(body);
         Assert.Equal(model, body.GetProperty("model").GetString());
         Assert.Equal("probe", body.GetProperty("tools")[0].GetProperty("name").GetString());
+    }
+
+    [Theory]
+    [InlineData("az/gpt-6.1-sol")]
+    [InlineData("azure/gpt-6.1-sol")]
+    [InlineData("openrouter/gpt-6.1-sol")]
+    public async Task NonOpenAiProviderPrefixes_UseChatCompletions(string model)
+    {
+        using var handler = new RecordingHandler((_, _) => Sse("""data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}"""));
+        using var http = new HttpClient(handler);
+        var adapter = new OpenAiCompatibleAdapter("custom", "https://gateway.test/v1", "key", [], http);
+
+        await AssertSuccessfulStream(adapter, Options(model));
+
+        Assert.Equal("https://gateway.test/v1/chat/completions", Assert.Single(handler.Urls));
+        var body = Assert.Single(handler.Bodies);
+        Assert.True(body.TryGetProperty("messages", out _));
+        Assert.Equal("high", body.GetProperty("reasoning_effort").GetString());
+        Assert.False(body.TryGetProperty("input", out _));
+        Assert.False(body.TryGetProperty("reasoning", out _));
     }
 
     [Theory]
