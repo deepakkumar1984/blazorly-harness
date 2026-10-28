@@ -607,27 +607,33 @@ public sealed class WaitAgentTool(TeamService service) : ToolDefinition<WaitAgen
         => [new TextBlock($"Teammate {output.SessionId} is {output.Status}.")];
 }
 
-public sealed record ReportArgs(string Summary);
+public sealed record ReportArgs(string Summary, [property: JsonPropertyName("task_id")] string? TaskId = null);
 
 public sealed record ReportOutput(string MessageId, string To, string Status);
 
 /// <summary>
 /// Scoped per-teammate tool: appends queued/delivered team events to the LEAD session and
-/// injects the report into the lead's inbox as "[teammate label] summary".
+/// folds the report into the lead's inbox as "[teammate label]" — one pending row per
+/// teammate, newest note wins, with the superseded count carried in the header.
 /// </summary>
 public sealed class ReportTool(TeamService service, string leadSessionId, string childSessionId)
     : ToolDefinition<ReportArgs, ReportOutput>
 {
+    /// <summary>A report longer than this is truncated: notices must not grow without bound.</summary>
+    private const int MaxReportChars = 4000;
+
     public override string Name => "report";
 
     public override string Description =>
         "Deliver a report to the team lead: your summary of completed work, findings, or blockers. "
-        + "This is how you hand results back to the lead.";
+        + "This is how you hand results back to the lead. Repeat reports supersede the previous one, "
+        + "so report outcomes, not running commentary.";
 
     public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(
         properties: new Dictionary<string, JsonSchema.Schema>
         {
             ["summary"] = JsonSchema.String("Your report to the lead: outcomes, findings, and next steps."),
+            ["task_id"] = JsonSchema.String("Optional team task id this report is about, so the lead can attribute it."),
         },
         required: ["summary"]);
 
@@ -650,11 +656,43 @@ public sealed class ReportTool(TeamService service, string leadSessionId, string
             ?? throw new ToolException("LEAD_NOT_LIVE", $"the lead session '{leadSessionId}' is not live");
 
         var label = TeamService.LabelOf(lead.Session, childSessionId) ?? childSessionId;
-        var message = new TeamMessage(service.NewMessageId(), childSessionId, leadSessionId, summary);
+        var body = summary.Length > MaxReportChars ? summary[..MaxReportChars] + "…" : summary;
+        var message = new TeamMessage(service.NewMessageId(), childSessionId, leadSessionId, body);
         service.AppendQueued(lead.Session, leadSessionId, message);
-        lead.Inject(Message.CreateUserText($"[teammate {label}] {summary}"));
+
+        // The lead folds reports per teammate: one pending row carrying the newest note plus how
+        // many earlier ones it supersedes. Reporting progress used to append one "steering"
+        // message per note, so three teammates mid-flight buried the conversation; the queue now
+        // stays proportional to the team, not to the chatter.
+        //
+        // An identical repeat carries no new signal, so it is recorded in the mailbox and not
+        // re-injected — the ledger keeps the delivery, the inbox stays quiet. The check expires
+        // with the pending row, so the same summary after new work still lands.
+        var taskId = string.IsNullOrWhiteSpace(args.TaskId) ? null : args.TaskId.Trim();
+        var foldKey = $"teammate:{childSessionId}";
+        if (lead.Inbox.PendingFolded(InboxTarget.NextStep, foldKey) is { } pending
+            && pending.FlattenText().EndsWith("\n" + body, StringComparison.Ordinal))
+        {
+            service.AppendDelivered(lead.Session, leadSessionId, message);
+            return Task.FromResult(new ReportOutput(message.Id, leadSessionId, "duplicate"));
+        }
+
+        lead.Inbox.Fold(
+            InboxTarget.NextStep,
+            foldKey,
+            count => Message.CreateUserText(Notice(label, message.Id, taskId, body, count)));
+
         service.AppendDelivered(lead.Session, leadSessionId, message);
         return Task.FromResult(new ReportOutput(message.Id, leadSessionId, "delivered"));
+    }
+
+    /// <summary>Attributed notice header: who, which report, which task, and what it supersedes.</summary>
+    private static string Notice(string label, string messageId, string? taskId, string body, int count)
+    {
+        var header = $"[teammate {label}] report {messageId}"
+            + (taskId is null ? "" : $" · task {taskId}")
+            + (count > 1 ? $" · supersedes {count - 1} earlier report(s) from this teammate" : "");
+        return header + "\n" + body;
     }
 
     protected override IReadOnlyList<ContentBlock> RenderTyped(ReportArgs args, ReportOutput output)
@@ -693,7 +731,10 @@ public sealed class TeamPlugin : HarnessPlugin
         var prompt = ctx.Get<SystemPromptService>(SystemPromptService.ServiceKey);
         var section = prompt.RegisterSection("agent-teams", 109, _ =>
             "Agent teams: you coordinate teammates through tools. spawn_teammate adds a teammate with its own "
-            + "session and a report tool; teammate reports arrive in your inbox as \"[teammate <label>] <summary>\". "
+            + "session and a report tool; teammate reports arrive in your inbox as \"[teammate <label>] report <id>\" "
+            + "with the task id when the teammate tagged one. Reports are folded per teammate: the pending "
+            + "row always shows the newest note and how many earlier ones it supersedes, so a teammate "
+            + "iterating on a task does not flood your queue. "
             + "Delegate with send_message, review the roster with list_agents (live active/idle status), stop a "
             + "teammate with interrupt_agent, and wait_agent before depending on its output. Track shared work with "
             + "team_task_create, team_task_update (open → in_progress → done), and team_task_list; assignees are "

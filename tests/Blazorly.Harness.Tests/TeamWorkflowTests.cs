@@ -85,7 +85,130 @@ public class TeamTests
         Assert.Equal(lead.Id, message.To);
 
         Assert.Contains(lead.Session.Events, e => e.Type == SessionEventTypes.AgentInboxSpliced);
-        Assert.Contains(lead.Inbox.NextStep, m => m.FlattenText() == "[teammate writer] chapter one drafted");
+        var pending = Assert.Single(lead.Inbox.NextStep);
+        Assert.StartsWith("[teammate writer] report team-msg-", pending.FlattenText());
+        Assert.EndsWith("\nchapter one drafted", pending.FlattenText());
+    }
+
+    [Fact]
+    public async Task ReportTool_FoldsRepeatedReportsIntoOnePendingRow()
+    {
+        string? leadId = null;
+        await using var harness = TestHarness.Create(options =>
+            IsChildSession(options, leadId) ? Scripted.Text("standing by") : Scripted.Text("lead reply"));
+        var subagents = SubagentService.Mount(harness.Ctx);
+        new TeamPlugin().Apply(harness.Ctx);
+        var service = TeamService.Mount(harness.Ctx);
+        var lead = harness.CreateAgent();
+        leadId = lead.Id;
+
+        var spawn = await service.SpawnTeammateAsync(lead, "attention");
+        var child = subagents.GetChild(spawn.SessionId)!;
+
+        await harness.Tools.Execute(Input(child, "report", new { summary = "early contract proposal" }));
+        await harness.Tools.Execute(Input(child, "report", new { summary = "implementation present", task_id = "task-2" }));
+        await harness.Tools.Execute(Input(child, "report", new { summary = "slice complete" }));
+
+        // One teammate narrating three times must not queue three steering rows.
+        var pending = Assert.Single(lead.Inbox.NextStep);
+        var text = pending.FlattenText();
+        Assert.Contains("supersedes 2 earlier report(s)", text);
+        Assert.EndsWith("\nslice complete", text);
+        Assert.DoesNotContain("early contract proposal", text);
+        Assert.Equal(3, pending.Source.FoldCount);
+    }
+
+    [Fact]
+    public async Task ReportTool_DedupesIdenticalRepeatButKeepsTheMailboxLedger()
+    {
+        string? leadId = null;
+        await using var harness = TestHarness.Create(options =>
+            IsChildSession(options, leadId) ? Scripted.Text("standing by") : Scripted.Text("lead reply"));
+        var subagents = SubagentService.Mount(harness.Ctx);
+        new TeamPlugin().Apply(harness.Ctx);
+        var service = TeamService.Mount(harness.Ctx);
+        var lead = harness.CreateAgent();
+        leadId = lead.Id;
+
+        var spawn = await service.SpawnTeammateAsync(lead, "writer");
+        var child = subagents.GetChild(spawn.SessionId)!;
+
+        var first = await harness.Tools.Execute(Input(child, "report", new { summary = "chapter one drafted" }));
+        var second = await harness.Tools.Execute(Input(child, "report", new { summary = "chapter one drafted" }));
+        Assert.False(second.IsError);
+        Assert.Equal("duplicate", second.Value.GetValueOrDefault().GetProperty("status").GetString());
+        Assert.Equal("delivered", first.Value.GetValueOrDefault().GetProperty("status").GetString());
+
+        Assert.Single(lead.Inbox.NextStep);
+        Assert.Equal(1, Assert.Single(lead.Inbox.NextStep).Source.FoldCount);
+        Assert.Equal(2, TeamService.Mailbox(lead.Session).Count);
+    }
+
+    [Fact]
+    public async Task ReportTool_FoldsPerTeammateSoRowsStayAttributable()
+    {
+        string? leadId = null;
+        await using var harness = TestHarness.Create(options =>
+            IsChildSession(options, leadId) ? Scripted.Text("standing by") : Scripted.Text("lead reply"));
+        var subagents = SubagentService.Mount(harness.Ctx);
+        new TeamPlugin().Apply(harness.Ctx);
+        var service = TeamService.Mount(harness.Ctx);
+        var lead = harness.CreateAgent();
+        leadId = lead.Id;
+
+        var attention = await service.SpawnTeammateAsync(lead, "attention");
+        var model = await service.SpawnTeammateAsync(lead, "agent-model");
+        var attentionChild = subagents.GetChild(attention.SessionId)!;
+        var modelChild = subagents.GetChild(model.SessionId)!;
+
+        await harness.Tools.Execute(Input(attentionChild, "report", new { summary = "attention one" }));
+        await harness.Tools.Execute(Input(modelChild, "report", new { summary = "model one" }));
+        await harness.Tools.Execute(Input(attentionChild, "report", new { summary = "attention two" }));
+
+        Assert.Equal(2, lead.Inbox.NextStep.Count);
+        Assert.Contains(lead.Inbox.NextStep, m => m.FlattenText().EndsWith("\nattention two"));
+        Assert.Contains(lead.Inbox.NextStep, m => m.FlattenText().EndsWith("\nmodel one"));
+        Assert.All(lead.Inbox.NextStep, m => Assert.NotNull(m.Source.Fold));
+        Assert.DoesNotContain(lead.Inbox.NextStep, m => m.FlattenText().Contains("attention one"));
+    }
+
+    [Fact]
+    public async Task Inbox_FoldedNoticesAreCappedAndUserSteeringIsNeverEvicted()
+    {
+        await using var harness = TestHarness.Create();
+        var agent = harness.CreateAgent();
+
+        agent.Inject(Message.CreateUserText("human steering"));
+        for (var i = 0; i < Inbox.MaxFoldedNotices + 4; i++)
+        {
+            var n = i;
+            agent.Inbox.Fold(InboxTarget.NextStep, $"notice:{n}", _ => Message.CreateUserText($"notice {n}"));
+        }
+
+        Assert.Equal(Inbox.MaxFoldedNotices, agent.Inbox.NextStep.Count(m => m.Source.Fold is not null));
+        Assert.Contains(agent.Inbox.NextStep, m => m.FlattenText() == "human steering");
+        Assert.DoesNotContain(agent.Inbox.NextStep, m => m.FlattenText() == "notice 0");
+        Assert.Contains(agent.Inbox.NextStep, m => m.FlattenText() == $"notice {Inbox.MaxFoldedNotices + 3}");
+        Assert.Contains(agent.Session.Events, e => e.Type == SessionEventTypes.AgentInboxSpliced);
+    }
+
+    [Fact]
+    public async Task Inbox_FoldReplaysFromTheSplicedEvents()
+    {
+        await using var harness = TestHarness.Create();
+        var agent = harness.CreateAgent();
+
+        var published = new List<SessionEvent>();
+        var inbox = new Inbox(agent.Session, published.Add);
+        inbox.Fold(InboxTarget.NextStep, "teammate:x", _ => Message.CreateUserText("note 1"));
+        inbox.Fold(InboxTarget.NextStep, "teammate:x", _ => Message.CreateUserText("note 2"));
+        inbox.Fold(InboxTarget.NextStep, "teammate:x", _ => Message.CreateUserText("note 3"));
+
+        var replayed = new Inbox(agent.Session, _ => { }, agent.Session.Events);
+        var row = Assert.Single(replayed.NextStep);
+        Assert.Equal("note 3", row.FlattenText());
+        Assert.Equal(3, row.Source.FoldCount);
+        Assert.Equal("teammate:x", row.Source.Fold);
     }
 
     [Fact]

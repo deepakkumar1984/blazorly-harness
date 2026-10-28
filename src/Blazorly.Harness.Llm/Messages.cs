@@ -25,14 +25,20 @@ public sealed record ToolCallBlock(string Id, string Name, string Arguments) : C
 
 public sealed record ToolResultBlock(string ToolCallId, IReadOnlyList<ContentBlock> Content, bool? IsError = null) : ContentBlock;
 
-/// <summary>Producer provenance for a message.</summary>
+/// <summary>
+/// Producer provenance for a message. <see cref="Fold"/> marks an automated notice that the
+/// inbox coalesces: at most one pending slot per fold key, with <see cref="FoldCount"/> carrying
+/// how many notices that slot supersedes. Both are null for ordinary messages.
+/// </summary>
 public sealed record MessageSource(
     string Kind,
     string? Provider = null,
     string? Model = null,
     string? Plugin = null,
     string? CallId = null,
-    string? Form = null)
+    string? Form = null,
+    string? Fold = null,
+    int? FoldCount = null)
 {
     public static MessageSource User() => new("user");
     public static MessageSource FromModel(string provider, string model) => new("model", provider, model);
