@@ -128,8 +128,8 @@ public static class AutoPlanPolicy
 {
     /// <summary>
     /// The human brief for this turn when auto-plan is structurally allowed to consider it, or
-    /// null when the turn is exempt. These guards are structural, not semantic, so a decision
-    /// model replaces only the complexity judgment below — never this.
+    /// null when the turn is exempt. These guards are structural, not semantic; the
+    /// complexity judgment below only ever sees briefs that pass them.
     /// </summary>
     public static string? EligibleBrief(Session session, IReadOnlyList<Message> messages)
     {
@@ -183,19 +183,12 @@ public static class AutoPlanPolicy
 /// guard, exit_plan_mode approval) — this plugin only decides *when* planning starts.
 /// </summary>
 public sealed class AutoPlanPlugin(
-    int threshold = AutoPlanPlugin.DefaultThreshold,
-    Core.Decisions.DecisionService? decisions = null,
-    AutoPlanDecisionOptions? decision = null) : HarnessPlugin
+    int threshold = AutoPlanPlugin.DefaultThreshold) : HarnessPlugin
 {
     public const int DefaultThreshold = 55;
 
-    /// <summary>The question key the decision model answers.</summary>
-    public const string PlanKey = "needs_plan";
-
     public override string Name => "auto-plan";
     public override string[] Inject { get; } = [PlanModeService.ServiceKey, "systemPrompt"];
-
-    private readonly AutoPlanDecisionOptions _decision = decision ?? new AutoPlanDecisionOptions();
 
     protected override Task ApplyAsync(HarnessContext ctx)
     {
@@ -231,52 +224,13 @@ public sealed class AutoPlanPlugin(
     }
 
     /// <summary>
-    /// The engagement decision. A decision model answers first when its seam is enabled and it is
-    /// confident in either direction; an uncertain, unavailable or failed call falls through to the
-    /// deterministic heuristic, so disabling System One restores exactly the previous behaviour.
+    /// The engagement decision: the deterministic complexity heuristic, and nothing else.
+    /// (A separate decision model used to get first say here; it was never enabled in
+    /// practice and was removed — the heuristic is the behaviour that actually ran.)
     /// Returns the score to display when plan mode should engage, else null.
     /// </summary>
-    public async Task<ComplexityScore?> ShouldEngageAsync(
+    public Task<ComplexityScore?> ShouldEngageAsync(
         Session session, IReadOnlyList<Message> messages, CancellationToken ct)
-    {
-        // Structural guards first: exempt turns never reach the model, so they cost nothing.
-        if (AutoPlanPolicy.EligibleBrief(session, messages) is not { } brief) return null;
-        if (AutoPlanPolicy.FollowsApprovedPlan(session)) return null;
-
-        if (decisions is not null && decisions.IsEnabled(Core.Decisions.DecisionSeams.AutoPlan))
-        {
-            var state = new Core.Decisions.DecisionState()
-                .Add("brief", brief, _decision.MaxBriefChars)
-                .Add("cwd", session.Header.Cwd ?? "", 260);
-            var result = await decisions.AskAsync(Core.Decisions.DecisionSeams.AutoPlan, state,
-                new Core.Decisions.Noul(PlanKey,
-                    "Does this request need investigation and an approved plan before anything is changed? "
-                    + "Answer yes for multi-file, multi-step or design-shaped work; no for a question, "
-                    + "a lookup, or a single small edit whose scope is already obvious."),
-                session, ct).ConfigureAwait(false);
-
-            if (result?.ProbabilityOf(PlanKey) is { } p)
-            {
-                if (p >= _decision.EngageAt)
-                    return new ComplexityScore((int)Math.Round(p * 100), [$"decision model: P(needs plan) = {p:P0}"]);
-                if (p <= _decision.SkipAt) return null;
-                // Inside the uncertain band: the model abstains, the heuristic decides.
-            }
-        }
-
-        return AutoPlanPolicy.ShouldEngage(session, messages, threshold, out var score) ? score : null;
-    }
-}
-
-/// <summary>
-/// Calibration bands for the auto-plan decision. Two thresholds rather than one: below
-/// <see cref="SkipAt"/> the brief certainly runs, at or above <see cref="EngageAt"/> it certainly
-/// plans, and the band between is where the model abstains and the deterministic scorer decides.
-/// A calibrated model is only worth trusting where it is actually confident.
-/// </summary>
-public sealed record AutoPlanDecisionOptions
-{
-    public double EngageAt { get; init; } = 0.60;
-    public double SkipAt { get; init; } = 0.25;
-    public int MaxBriefChars { get; init; } = 8_000;
+        => Task.FromResult(
+            AutoPlanPolicy.ShouldEngage(session, messages, threshold, out var score) ? score : null);
 }

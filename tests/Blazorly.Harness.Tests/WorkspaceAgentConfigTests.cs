@@ -26,7 +26,7 @@ public sealed class WorkspaceAgentConfigTests : BootstrapperTestBase
         // Tests that route the LLM (subagent spawn) write their own settings first.
         if (!File.Exists(Path.Combine(Home, "settings.json")))
             File.WriteAllText(Path.Combine(Home, "settings.json"),
-                JsonSerializer.Serialize(new { persistence = "sqlite", enableSystemOne = false }));
+                JsonSerializer.Serialize(new { persistence = "sqlite" }));
         var boot = new HarnessBootstrapper();
         await boot.StartAsync(CancellationToken.None);
         return boot;

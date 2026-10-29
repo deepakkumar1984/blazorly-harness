@@ -400,14 +400,11 @@ public class SubagentServiceTests
         var subagents = Blazorly.Harness.Core.Subagents.SubagentService.Mount(harness.Ctx);
         var parent = harness.CreateAgent();
 
+        // Delegation is one level deep: a child spawning its own child is refused.
         var depth0 = await subagents.SpawnAsync(parent, new("one"), CancellationToken.None);
         var child1 = subagents.GetChild(depth0.SessionId)!;
-        var depth1 = await subagents.SpawnAsync(child1, new("two"), CancellationToken.None);
-        var child2 = subagents.GetChild(depth1.SessionId)!;
-        var depth2 = await subagents.SpawnAsync(child2, new("three"), CancellationToken.None);
-        var child3 = subagents.GetChild(depth2.SessionId)!;
 
         await Assert.ThrowsAsync<Kernel.HarnessException>(() =>
-            subagents.SpawnAsync(child3, new("four"), CancellationToken.None));
+            subagents.SpawnAsync(child1, new("two"), CancellationToken.None));
     }
 }

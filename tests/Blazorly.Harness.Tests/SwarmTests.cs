@@ -244,7 +244,7 @@ public class SwarmTests
     }
 
     [Fact]
-    public async Task ReviewTool_ForkedReviewerReturnsStructuredVerdict()
+    public async Task ReviewTool_FreshReviewerReturnsStructuredVerdict()
     {
         await using var harness = TestHarness.Create(options =>
         {
@@ -272,13 +272,18 @@ public class SwarmTests
         Assert.Equal("tests/Foo.cs:42", issue.GetProperty("location").GetString());
         Assert.Equal("unskip the test", Assert.Single(value.GetProperty("followups").EnumerateArray()).GetString());
 
-        // the reviewer was a fork: a child session seeded with the lead's settled log
+        // the reviewer starts fresh: a child session with no seeded conversation
         var reviewerId = value.GetProperty("session_id").GetString();
         var reviewer = subagents.GetChild(reviewerId!);
         Assert.NotNull(reviewer);
         Assert.Equal(lead.Id, reviewer!.Session.Header.ParentSession);
-        Assert.True(reviewer.Session.Header.SeedLength > 0);
+        Assert.Equal(0, reviewer.Session.Header.SeedLength);
         Assert.Contains("Reviewer verdict: concerns", Rendered(result));
+
+        // one completed review per session: a second call is refused, not re-run
+        var second = await harness.Tools.Execute(Input(lead, "review", new { scope = "the same work again" }));
+        Assert.True(second.IsError);
+        Assert.Contains("already used its independent review", Rendered(second));
     }
 
     [Fact]

@@ -11,7 +11,7 @@ public sealed class WorkspaceLifecycleTests : BootstrapperTestBase
 {
     private async Task<HarnessBootstrapper> Boot(string persistence = "sqlite")
     {
-        File.WriteAllText(Path.Combine(Home, "settings.json"), JsonSerializer.Serialize(new { persistence, enableSystemOne = false }));
+        File.WriteAllText(Path.Combine(Home, "settings.json"), JsonSerializer.Serialize(new { persistence }));
         var boot = new HarnessBootstrapper();
         await boot.StartAsync(CancellationToken.None);
         return boot;

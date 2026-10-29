@@ -26,7 +26,6 @@ Site: [Blazorly Harness](https://harness.blazorly.com/) — features, install, a
 - **Full workspace toolset** — bash, file read/write/edit, grep/glob, web search & fetch, LSP diagnostics, tmux awareness, session search, run_code, and any tool your MCP servers expose
 - **Durable sessions** — every turn, chat, and tool call is saved; sessions survive app restarts, browser closes, and cold-resume of sub-agents days later
 - **Harness profiles and refinement** — portable instruction/skill profiles, repeated eval comparisons, one bounded Propose–Probe–Compose round, and scoped lessons backed by execution evidence. See [commands and examples](eval/README.md)
-- **Decision model (System One / JEV-1)** — optional fast classifier for tool selection, auto-plan gating, and risk awareness; pure-code path carries the easy cases, one small model call handles the ambiguous tail
 - **Single binary, six platforms** — self-contained install (no SDK, no Docker) for Linux, macOS, and Windows on both x64 and arm64
 
 ---
@@ -126,7 +125,7 @@ See [desktop/README.md](desktop/README.md) for flags, packaging, and
 
 Saved keys take precedence over the provider's own environment variable (for example `OPENAI_API_KEY` for OpenAI and `DEEPSEEK_API_KEY` for DeepSeek). Custom gateways use their saved key or explicitly named `apiKeyEnv`. An environment key authenticates an explicitly configured route; it does not add a provider automatically.
 
-Everything else (feature toggles, retry policy, MCP servers, System One, custom providers) is on the Settings page and in `settings.json`. Enable features by name and disable plugins you don't need:
+Everything else (feature toggles, retry policy, MCP servers, custom providers) is on the Settings page and in `settings.json`. Enable features by name and disable plugins you don't need:
 
 ```json
 {
@@ -154,36 +153,13 @@ Each skill is a folder with a `SKILL.md`: `name` + `description` frontmatter, ma
 Blazorly runs sub-agents — each with its own session, provider, and workspace — behind these surfaces:
 
 - **`swarm`** — planner shards your objective, workers run in parallel, a reviewer verifies the actual workspace; failed tasks re-dispatch with review notes
-- **`review`** — an independent agent forked from your conversation checks the files, runs tests, and returns a structured verdict (`pass` | `fail` | `concerns`)
+- **`review`** — one independent agent that starts fresh from your scope text checks the files, runs tests, and returns a structured verdict (`pass` | `fail` | `concerns`); once per session, and delegated children can never delegate or review further
 - **Teams** — `spawn_teammate`, `send_message`, shared task board; batch sends to run teammates in parallel
 - **Background sub-agents** — fire and poll with `subagent_list`; settled children cold-resume later
 
 **Delegation runs inside one chat.** Sub-agent sessions don't clutter your sidebar. The **Agents panel** (beside the task list) shows live status per worker — pulsing while running, a checkmark when done, each row links to the child session for full inspection. A delegated child can never hang waiting for you: its `ask_user_question` answers itself.
 
 The system prompt reserves delegation for genuinely large or parallelizable work — a file edit or quick lookup stays inline with the lead.
-
----
-
-## 🧠 Decision model (System One / JEV-1)
-
-Optional fast classifier for things a small model handles better than a full LLM call:
-
-| Seam | What it asks | Effect |
-|---|---|---|
-| `auto-plan` | *Does this brief need a plan before anything changes?* | Engages plan mode before the first model call |
-| `risk-gate` | *Could this call destroy data or leak secrets?* | Parks calls for your approval |
-| `tool-gate` | *Which tools does the upcoming work need?* | Prunes per-request tool schemas to a shortlist |
-
-The **tool gate** is the hybrid pattern: core + recently-used + lexical relevance stay with zero extra calls; the ambiguous tail gets one System One `Choice` (cached per brief). Any failure returns the full tool list — byte-identical to pre-gate behaviour. Stats at `GET /api/decisions`.
-
-```jsonc
-{
-  "enableSystemOne": true,
-  "systemOneApiKey": "tsk-…",
-  "systemOneSeams": ["tool-gate"],
-  "enableToolGate": true
-}
-```
 
 ---
 

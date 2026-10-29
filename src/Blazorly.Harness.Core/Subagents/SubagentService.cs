@@ -38,7 +38,13 @@ public sealed record SubagentResult(
 public sealed class SubagentService
 {
     public const string ServiceKey = "subagents";
-    public const int MaxDelegationDepth = 3;
+    /// <summary>Delegation is one level deep: children work, they never delegate. A deeper
+    /// tree is how a session fans out into reviewer-of-reviewer loops nobody can stop.</summary>
+    public const int MaxDelegationDepth = 1;
+    /// <summary>Hard tool-call ceiling for one delegated child instance. Past it the child
+    /// must stop and hand its summary back; the lead can cold-resume it (a fresh instance
+    /// with a fresh budget) if the work genuinely needs more.</summary>
+    public const int DefaultMaxChildToolCalls = 100;
     /// <summary>Delegation-panel status hiding a row: the child ran, the user dismissed it.</summary>
     public const string StatusDismissed = "dismissed";
     /// <summary>Delivery outcome when the wait timed out: the message stays queued in the child.</summary>
@@ -48,10 +54,69 @@ public sealed class SubagentService
     private readonly List<(string Parent, Agent.Agent Child)> _children = new();
     private readonly List<Action<Agent.Agent>> _continuableSetups = [];
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _deliveries = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<object, int> _childToolCalls = new();
     private readonly object _gate = new();
-    private int _counter;
 
-    public SubagentService(HarnessContext ctx) => _ctx = ctx;
+    public SubagentService(HarnessContext ctx)
+    {
+        _ctx = ctx;
+        if (ctx.TryGet<ToolRuntime>(ToolRuntime.ServiceKey) is { } tools)
+            tools.AddGuard(ChildToolBudgetGuard);
+    }
+
+    /// <summary>Tool-call budget for delegated children; lead sessions are never counted.</summary>
+    public int MaxChildToolCalls { get; set; } = DefaultMaxChildToolCalls;
+
+    /// <summary>Tools a delegated child never sees: every delegation surface. Children
+    /// execute; coordinating, reviewing, and re-delegating stay with the lead.</summary>
+    public static IReadOnlySet<string> DelegationToolNames { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "spawn_teammate", "send_message", "list_agents", "wait_agent", "interrupt_agent",
+        "team_task_create", "team_task_list", "team_task_update",
+        "subagent_start", "subagent_send", "subagent_list", "subagent_interrupt",
+        "swarm", "workflow", "ralph", "review",
+    };
+
+    private string? ChildToolBudgetGuard(ToolExecutionInput exec)
+    {
+        if (exec.Agent is not { } agent || agent.Session.Header.ParentSession is null) return null;
+        if (exec.Name == "report") return null; // always able to hand back, even over budget
+        var count = _childToolCalls.AddOrUpdate(agent.ScopeKey, 1, static (_, c) => c + 1);
+        return count > MaxChildToolCalls
+            ? $"delegated child tool budget of {MaxChildToolCalls} calls is exhausted — stop working and return your summary to the lead"
+            : null;
+    }
+
+    /// <summary>
+    /// User-stop for a whole delegation tree: cancels the session's agent and every live
+    /// descendant (deepest first), so stopping a chat stops its workers instead of
+    /// leaving them running in the background. Returns how many agents were cancelled.
+    /// </summary>
+    public int CancelTree(string rootSessionId)
+    {
+        if (_ctx.TryGet<AgentRuntime>(AgentRuntime.ServiceKey) is not { } agents) return 0;
+        var live = agents.LiveAgents();
+        var tree = new List<Agent.Agent>();
+        var seen = new HashSet<string>(StringComparer.Ordinal) { rootSessionId };
+        if (live.FirstOrDefault(a => a.Id == rootSessionId) is { } root) tree.Add(root);
+        var frontier = new List<string> { rootSessionId };
+        while (frontier.Count > 0)
+        {
+            var next = new List<string>();
+            foreach (var agent in live)
+            {
+                if (agent.Session.Header.ParentSession is { } parent && frontier.Contains(parent) && seen.Add(agent.Id))
+                {
+                    tree.Add(agent);
+                    next.Add(agent.Id);
+                }
+            }
+            frontier = next;
+        }
+        foreach (var agent in tree.OrderByDescending(a => a.Session.Header.DelegationDepth))
+            agent.Cancel(AgentCancelCause.User());
+        return tree.Count;
+    }
 
     public static SubagentService Mount(HarnessContext ctx)
     {
@@ -345,7 +410,9 @@ public sealed class SubagentService
         childSession = request.Fork
             ? ForkParentSession(parentSession, sessions)
             : sessions.Create(
-                id: $"session-sub-{Interlocked.Increment(ref _counter):x8}",
+                // Random suffix, never a process-local counter: the store is durable
+                // across restarts, so sequential ids collide with yesterday's children.
+                id: $"session-sub-{Ids.New()}",
                 meta: new SessionMeta(
                     Cwd: parentSession.Header.Cwd,
                     ParentSession: parentSession.Id,
@@ -353,10 +420,15 @@ public sealed class SubagentService
 
         var descriptor = new SessionPayloads.SubagentDescriptorPayload(
             Mode: SessionPayloads.SubagentModeContinuable,
-            Provider: request.Provider ?? parent.Options.Provider,
-            Model: request.Model ?? parent.Options.Model,
+            // Empty-string overrides are "no override": models routinely emit
+            // "provider": "" for optional fields, and "" is not null — a child born
+            // with it dies instantly with NO_ADAPTER on every delivery.
+            Provider: NonEmpty(request.Provider) ?? parent.Options.Provider,
+            Model: NonEmpty(request.Model) ?? parent.Options.Model,
             Persona: request.Persona);
-        var child = ConstructChild(parent, childSession, request.Continuable ? descriptor : null, runSetups: false);
+        // The descriptor also carries the route override, so it must reach ConstructChild
+        // for foreground spawns too — it is only *persisted* for continuable children.
+        var child = ConstructChild(parent, childSession, descriptor, runSetups: false);
 
         request.Setup?.Invoke(child);
         _ctx.Get<AgentRuntime>("agents").Publish(child);
@@ -493,6 +565,9 @@ public sealed class SubagentService
         return null;
     }
 
+    private static string? NonEmpty(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value;
+
     private Agent.Agent ConstructChild(Agent.Agent parent, Session childSession, SessionPayloads.SubagentDescriptorPayload? descriptor, bool runSetups)
     {
         var child = new Agent.Agent(
@@ -502,11 +577,20 @@ public sealed class SubagentService
             _ctx.Get<Core.SystemPrompt.SystemPromptService>("systemPrompt"),
             childSession,
             new AgentOptions(
-                descriptor?.Provider ?? parent.Options.Provider,
-                descriptor?.Model ?? parent.Options.Model,
+                // A persisted descriptor can already carry "" (written before this
+                // guard existed); inheriting the parent's route is the only sane read.
+                NonEmpty(descriptor?.Provider) ?? parent.Options.Provider,
+                NonEmpty(descriptor?.Model) ?? parent.Options.Model,
                 parent.Options.MaxTokens));
         child.RetryLimit = parent.RetryLimit;
         child.Driver.MaxParallelToolCalls = parent.Driver.MaxParallelToolCalls;
+        if (childSession.Header.DelegationDepth > 0)
+        {
+            // Hide every delegation tool from the child (its own scoped tools, like the
+            // team report channel, ride on top and stay available).
+            var tools = _ctx.Get<ToolRuntime>(ToolRuntime.ServiceKey);
+            child.Ctx.Effect(tools.Restrict(child.ScopeKey, deny: DelegationToolNames).Dispose);
+        }
         if (runSetups)
         {
             Action<Agent.Agent>[] setups;
@@ -577,10 +661,12 @@ public sealed class SubagentService
     private static (string Summary, string FinishKind) LastAssistantOutput(Session session)
     {
         string finishKind = "completed";
+        string? errorMessage = null;
         foreach (var e in session.Events)
         {
             if (e.Type != SessionEventTypes.TurnEnd) continue;
             var reason = SessionEventRead.TurnEndReasonOf(e);
+            if (reason is TurnEndReason.Error failure) errorMessage = failure.Message;
             finishKind = reason switch
             {
                 TurnEndReason.Aborted => "aborted",
@@ -600,6 +686,10 @@ public sealed class SubagentService
             var text = string.Join("\n", payload.Message.Content.OfType<TextBlock>().Select(b => b.Text)).Trim();
             if (text.Length > 0) return (text, finishKind);
         }
-        return ("(the subagent produced no final message)", finishKind);
+        // Surface the failure reason: "no final message" told the lead nothing, so it
+        // kept re-sending work to a child that could never run.
+        return (errorMessage is { Length: > 0 }
+            ? $"(the subagent failed: {errorMessage})"
+            : "(the subagent produced no final message)", finishKind);
     }
 }

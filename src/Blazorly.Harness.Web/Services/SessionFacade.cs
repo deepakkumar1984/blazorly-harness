@@ -1,5 +1,6 @@
 using Blazorly.Harness.Core.Agent;
 using Blazorly.Harness.Core.Attachments;
+using Blazorly.Harness.Core.Subagents;
 using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Llm;
 using Blazorly.Harness.Tools;
@@ -332,7 +333,12 @@ public sealed class SessionFacade(HarnessBootstrapper harness, UiEventBroker bro
 
     public void Cancel(string sessionId)
     {
-        harness.Agents.Get(sessionId)?.Cancel(AgentCancelCause.User());
+        // Stop means the whole tree: cancelling a chat also cancels its live sub-agents,
+        // instead of leaving delegated work running invisibly in the background.
+        if (harness.Context.TryGet<SubagentService>(SubagentService.ServiceKey) is { } subagents)
+            subagents.CancelTree(sessionId);
+        else
+            harness.Agents.Get(sessionId)?.Cancel(AgentCancelCause.User());
     }
 
     // ---- ui terminal (a persistent shell the user drives; scoped to the session's

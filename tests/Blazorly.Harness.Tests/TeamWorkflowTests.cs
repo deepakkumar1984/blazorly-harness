@@ -74,7 +74,7 @@ public class TeamTests
 
         var report = harness.Tools.Get("report", child!.ScopeKey);
         Assert.NotNull(report);
-        var result = await harness.Tools.Execute(Input(child, "report", new { summary = "chapter one drafted" }));
+        var result = await harness.Tools.Execute(Input(child, "report", new { summary = "chapter one drafted", final = true }));
         Assert.False(result.IsError);
 
         Assert.Contains(lead.Session.Events, e => e.Type == SessionEventTypes.TeamMessageQueued);
@@ -88,6 +88,33 @@ public class TeamTests
         var pending = Assert.Single(lead.Inbox.NextStep);
         Assert.StartsWith("[teammate writer] report team-msg-", pending.FlattenText());
         Assert.EndsWith("\nchapter one drafted", pending.FlattenText());
+    }
+
+    [Fact]
+    public async Task ReportTool_NonFinalReportStaysInMailboxAndNeverInterruptsLead()
+    {
+        string? leadId = null;
+        await using var harness = TestHarness.Create(options =>
+            IsChildSession(options, leadId) ? Scripted.Text("standing by") : Scripted.Text("lead reply"));
+        var subagents = SubagentService.Mount(harness.Ctx);
+        new TeamPlugin().Apply(harness.Ctx);
+        var service = TeamService.Mount(harness.Ctx);
+        var lead = harness.CreateAgent();
+        leadId = lead.Id;
+
+        var spawn = await service.SpawnTeammateAsync(lead, "writer");
+        var child = subagents.GetChild(spawn.SessionId)!;
+
+        var progress = await harness.Tools.Execute(Input(child, "report", new { summary = "halfway there" }));
+        Assert.False(progress.IsError);
+        Assert.Equal("recorded", progress.Value.GetValueOrDefault().GetProperty("status").GetString());
+        Assert.Empty(lead.Inbox.NextStep); // progress must not steer the lead
+        Assert.Equal("halfway there", Assert.Single(TeamService.Mailbox(lead.Session)).Body);
+
+        var done = await harness.Tools.Execute(Input(child, "report", new { summary = "slice complete", final = true }));
+        Assert.Equal("delivered", done.Value.GetValueOrDefault().GetProperty("status").GetString());
+        var pending = Assert.Single(lead.Inbox.NextStep);
+        Assert.EndsWith("\nslice complete", pending.FlattenText());
     }
 
     [Fact]
@@ -105,9 +132,9 @@ public class TeamTests
         var spawn = await service.SpawnTeammateAsync(lead, "attention");
         var child = subagents.GetChild(spawn.SessionId)!;
 
-        await harness.Tools.Execute(Input(child, "report", new { summary = "early contract proposal" }));
-        await harness.Tools.Execute(Input(child, "report", new { summary = "implementation present", task_id = "task-2" }));
-        await harness.Tools.Execute(Input(child, "report", new { summary = "slice complete" }));
+        await harness.Tools.Execute(Input(child, "report", new { summary = "early contract proposal", final = true }));
+        await harness.Tools.Execute(Input(child, "report", new { summary = "implementation present", task_id = "task-2", final = true }));
+        await harness.Tools.Execute(Input(child, "report", new { summary = "slice complete", final = true }));
 
         // One teammate narrating three times must not queue three steering rows.
         var pending = Assert.Single(lead.Inbox.NextStep);
@@ -133,8 +160,8 @@ public class TeamTests
         var spawn = await service.SpawnTeammateAsync(lead, "writer");
         var child = subagents.GetChild(spawn.SessionId)!;
 
-        var first = await harness.Tools.Execute(Input(child, "report", new { summary = "chapter one drafted" }));
-        var second = await harness.Tools.Execute(Input(child, "report", new { summary = "chapter one drafted" }));
+        var first = await harness.Tools.Execute(Input(child, "report", new { summary = "chapter one drafted", final = true }));
+        var second = await harness.Tools.Execute(Input(child, "report", new { summary = "chapter one drafted", final = true }));
         Assert.False(second.IsError);
         Assert.Equal("duplicate", second.Value.GetValueOrDefault().GetProperty("status").GetString());
         Assert.Equal("delivered", first.Value.GetValueOrDefault().GetProperty("status").GetString());
@@ -161,9 +188,9 @@ public class TeamTests
         var attentionChild = subagents.GetChild(attention.SessionId)!;
         var modelChild = subagents.GetChild(model.SessionId)!;
 
-        await harness.Tools.Execute(Input(attentionChild, "report", new { summary = "attention one" }));
-        await harness.Tools.Execute(Input(modelChild, "report", new { summary = "model one" }));
-        await harness.Tools.Execute(Input(attentionChild, "report", new { summary = "attention two" }));
+        await harness.Tools.Execute(Input(attentionChild, "report", new { summary = "attention one", final = true }));
+        await harness.Tools.Execute(Input(modelChild, "report", new { summary = "model one", final = true }));
+        await harness.Tools.Execute(Input(attentionChild, "report", new { summary = "attention two", final = true }));
 
         Assert.Equal(2, lead.Inbox.NextStep.Count);
         Assert.Contains(lead.Inbox.NextStep, m => m.FlattenText().EndsWith("\nattention two"));

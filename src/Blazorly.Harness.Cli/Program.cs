@@ -19,7 +19,6 @@ return args.Length == 0 ? await ServeAsync([]) : args[0] switch
     "eval" => await EvalAsync(args[1..]),
     "profiles" => HarnessingCommand.Profiles(args[1..]),
     "experience" => HarnessingCommand.Experience(args[1..]),
-    "decisions" => await Blazorly.Harness.Cli.DecisionsCommand.RunAsync(args[1..]),
     "serve-stdio" => await ServeStdioAsync(args[1..]),
     "serve-acp" => await ServeAcpAsync(args[1..]),
     "update" => await Blazorly.Harness.Cli.SelfUpdate.RunAsync(args[1..]),
@@ -92,15 +91,6 @@ static int Help()
                                                    where available, else none).
                                                    Unavailable backends are recorded as
                                                    skipped, never as passes.
-          decisions       Inspect the System One decision layer (calibrated typed
-                           decisions used by the auto-plan and risk-gate seams).
-                             doctor             show resolved config + live seams
-                             probe              one real call, raw request/reply
-                                                and what the adapter parsed
-                           Probe flags: --seam <auto-plan|risk-gate|loop>,
-                           --text "<…>", --json. With the feature off (or on but
-                           keyless) every seam falls back to its deterministic
-                           logic and nothing changes.
           init            AI-drafted AGENTS.md docs for a workspace (grounded
                            repo brief, drafts path-verified). Dry run by
                            default; --write creates the files. Flags:

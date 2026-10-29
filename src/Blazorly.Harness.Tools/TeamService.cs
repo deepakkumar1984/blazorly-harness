@@ -188,8 +188,9 @@ public sealed class TeamService
                 + "with send_message. Reply with one short line confirming you are ready.",
             Description: $"teammate '{label}'",
             Persona: $"You are teammate '{label}' on a team coordinated by a lead. Do your assigned work; "
-                + "when you have a report for the lead, call the report tool with your summary. Never ask the user "
-                + "questions — proceed on your best judgment and note assumptions in your reports.",
+                + "when your assigned work is finished or blocked, call the report tool with final=true and "
+                + "your summary (progress reports without final are recorded but do not reach the lead). "
+                + "Never ask the user questions — proceed on your best judgment and note assumptions in your reports.",
             Continuable: true,
             Setup: child =>
             {
@@ -607,14 +608,15 @@ public sealed class WaitAgentTool(TeamService service) : ToolDefinition<WaitAgen
         => [new TextBlock($"Teammate {output.SessionId} is {output.Status}.")];
 }
 
-public sealed record ReportArgs(string Summary, [property: JsonPropertyName("task_id")] string? TaskId = null);
+public sealed record ReportArgs(string Summary, [property: JsonPropertyName("task_id")] string? TaskId = null, bool Final = false);
 
 public sealed record ReportOutput(string MessageId, string To, string Status);
 
 /// <summary>
-/// Scoped per-teammate tool: appends queued/delivered team events to the LEAD session and
-/// folds the report into the lead's inbox as "[teammate label]" — one pending row per
-/// teammate, newest note wins, with the superseded count carried in the header.
+/// Scoped per-teammate tool: appends queued/delivered team events to the LEAD session.
+/// Final reports fold into the lead's inbox as "[teammate label]" — one pending row per
+/// teammate, newest note wins, with the superseded count carried in the header. Non-final
+/// reports are mailbox-only and never enter the lead's conversation.
 /// </summary>
 public sealed class ReportTool(TeamService service, string leadSessionId, string childSessionId)
     : ToolDefinition<ReportArgs, ReportOutput>
@@ -625,15 +627,17 @@ public sealed class ReportTool(TeamService service, string leadSessionId, string
     public override string Name => "report";
 
     public override string Description =>
-        "Deliver a report to the team lead: your summary of completed work, findings, or blockers. "
-        + "This is how you hand results back to the lead. Repeat reports supersede the previous one, "
-        + "so report outcomes, not running commentary.";
+        "Deliver a report to the team lead. Set final=true when your assigned work is finished "
+        + "or blocked — only final reports are delivered into the lead's conversation. Reports "
+        + "without final are recorded in the team mailbox for the record but never interrupt "
+        + "the lead, so save them for real outcomes, not running commentary.";
 
     public override JsonSchema.Schema Parameters { get; } = JsonSchema.Object(
         properties: new Dictionary<string, JsonSchema.Schema>
         {
             ["summary"] = JsonSchema.String("Your report to the lead: outcomes, findings, and next steps."),
             ["task_id"] = JsonSchema.String("Optional team task id this report is about, so the lead can attribute it."),
+            ["final"] = JsonSchema.Boolean("True when the assigned work is finished or blocked; only final reports reach the lead's conversation."),
         },
         required: ["summary"]);
 
@@ -659,6 +663,15 @@ public sealed class ReportTool(TeamService service, string leadSessionId, string
         var body = summary.Length > MaxReportChars ? summary[..MaxReportChars] + "…" : summary;
         var message = new TeamMessage(service.NewMessageId(), childSessionId, leadSessionId, body);
         service.AppendQueued(lead.Session, leadSessionId, message);
+
+        // Progress is not a steering message: non-final reports stay in the mailbox ledger
+        // (durable, attributable) and never enter the lead's inbox. Only a finished/blocked
+        // report earns an interruption.
+        if (!args.Final)
+        {
+            service.AppendDelivered(lead.Session, leadSessionId, message);
+            return Task.FromResult(new ReportOutput(message.Id, leadSessionId, "recorded"));
+        }
 
         // The lead folds reports per teammate: one pending row carrying the newest note plus how
         // many earlier ones it supersedes. Reporting progress used to append one "steering"
@@ -735,6 +748,8 @@ public sealed class TeamPlugin : HarnessPlugin
             + "with the task id when the teammate tagged one. Reports are folded per teammate: the pending "
             + "row always shows the newest note and how many earlier ones it supersedes, so a teammate "
             + "iterating on a task does not flood your queue. "
+            + "Teammates cannot delegate further or review — that stays with you. Only a teammate's final "
+            + "report enters your conversation; progress reports stay in the mailbox. "
             + "Delegate with send_message, review the roster with list_agents (live active/idle status), stop a "
             + "teammate with interrupt_agent, and wait_agent before depending on its output. Track shared work with "
             + "team_task_create, team_task_update (open → in_progress → done), and team_task_list; assignees are "

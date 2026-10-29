@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Blazorly.Harness.Core.Agent;
+using Blazorly.Harness.Core.Sessions;
 using Blazorly.Harness.Core.Subagents;
 using Blazorly.Harness.Core.Tools;
 using Blazorly.Harness.Kernel;
@@ -413,20 +414,28 @@ public sealed record ReviewToolOutput(
     [property: JsonPropertyName("session_id")] string SessionId);
 
 /// <summary>
-/// review: spawns an independent reviewer subagent forked from this conversation (it sees the
-/// session log through the last settled turn) that verifies the described completed work in the
-/// workspace — reading files and running cheap checks rather than trusting the transcript — and
-/// returns a schema-validated verdict with issues and followups.
+/// review: spawns one independent reviewer subagent that starts fresh (no forked
+/// conversation — the scope text is its whole brief) and verifies the described completed
+/// work in the workspace, reading files and running cheap checks rather than trusting any
+/// transcript. Read-mostly toolset, one completed review per session: the verdict is a
+/// gate for the lead to act on, not the start of a fix-and-re-review loop.
 /// </summary>
 public sealed class ReviewTool(SubagentService subagents) : ToolDefinition<ReviewArgs, ReviewToolOutput>
 {
+    /// <summary>The reviewer's whole toolset: inspect and run checks, never delegate.</summary>
+    public static IReadOnlySet<string> ReviewerToolNames { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "read", "grep", "glob", "bash",
+    };
+
     public override string Name => "review";
 
     public override string Description =>
-        "Have an independent reviewer agent verify completed work. The reviewer is forked from this "
-        + "conversation and checks the actual workspace (files, build, tests) instead of trusting the "
-        + "transcript; it returns a structured verdict (pass | fail | concerns), specific issues, and "
-        + "followups. Call it before declaring non-trivial work done.";
+        "Have an independent reviewer agent verify completed work. The reviewer starts fresh "
+        + "(your scope text is its whole brief) and checks the actual workspace (files, build, "
+        + "tests) instead of trusting the transcript; it returns a structured verdict "
+        + "(pass | fail | concerns), specific issues, and followups. Lead sessions only, one "
+        + "completed review per session — act on the verdict instead of re-reviewing.";
 
     public override int? TimeoutMs => 600000;
 
@@ -509,10 +518,23 @@ public sealed class ReviewTool(SubagentService subagents) : ToolDefinition<Revie
         if (scope.Length == 0) throw new ToolException("INVALID_ARGS", "scope must be non-empty");
         var focus = args.Focus?.Trim();
 
-        var prompt = "Review the completed work described below. You are forked from the conversation that did it: "
-            + "verify its claims against the actual workspace — read the files it touched, run cheap checks "
-            + "(build, targeted tests, lint) when they exist — rather than trusting the transcript. Report "
-            + "specific, actionable findings; an empty issues list means the work holds.\n\nScope: " + scope;
+        // One completed review per lead session. Without this gate, review → fix → review
+        // was the loop that burned the session this limit was written after.
+        foreach (var e in lead.Session.Events)
+        {
+            if (e.Type != SessionEventTypes.SubagentStatus) continue;
+            SessionPayloads.SubagentStatusPayload prior;
+            try { prior = SessionEventRead.SubagentStatusOf(e); }
+            catch (JsonException) { continue; }
+            if (prior.Description == "reviewer" && prior.Status == "finished")
+                throw new ToolException("REVIEW_LIMIT", "this session already used its independent review; act on that verdict instead of reviewing again");
+        }
+
+        var prompt = "Review the completed work described below. You start fresh: the scope below is "
+            + "your whole brief. Verify claims against the actual workspace — read the files it touched, "
+            + "run cheap checks (build, targeted tests, lint) when they exist. Use bash only for "
+            + "read-only inspection and test runs; do not edit files. Report specific, actionable "
+            + "findings; an empty issues list means the work holds.\n\nScope: " + scope;
         if (focus is { Length: > 0 }) prompt += "\n\nWeigh hardest: " + focus;
 
         var result = await subagents.SpawnAsync(lead, new SubagentRequest(
@@ -520,7 +542,11 @@ public sealed class ReviewTool(SubagentService subagents) : ToolDefinition<Revie
             Description: "reviewer",
             Persona: "You are an independent senior reviewer: skeptical, specific, and fair. Judge the "
                 + "delivered work in the workspace, not the narrative around it.",
-            Fork: true,
+            Setup: child =>
+            {
+                var tools = child.Ctx.Get<ToolRuntime>(ToolRuntime.ServiceKey);
+                child.Ctx.Effect(tools.Restrict(child.ScopeKey, allow: ReviewerToolNames).Dispose);
+            },
             OutputSchema: VerdictSchema), exec.Signal).ConfigureAwait(false);
 
         if (result.Structured is not { } structured)

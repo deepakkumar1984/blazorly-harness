@@ -108,12 +108,14 @@ public sealed class SubagentStartTool(SubagentService subagents) : ToolDefinitio
         var parent = exec.Agent ?? throw new ToolException("NO_AGENT", "this tool requires an owning agent");
         if (string.IsNullOrWhiteSpace(args.Prompt)) throw new ToolException("INVALID_ARGS", "prompt must be non-empty");
         var schema = args.OutputSchema is { ValueKind: JsonValueKind.Object } raw ? JsonSchema.Raw(raw.Clone()) : null;
+        // Optional overrides arrive as "" when the model fills every field: that is
+        // "no override", never a route — a child spawned with provider "" cannot run.
         var request = new SubagentRequest(
             Prompt: args.Prompt.Trim(),
             Description: args.Description,
-            Provider: args.Provider,
-            Model: args.Model,
-            Persona: args.Persona,
+            Provider: string.IsNullOrWhiteSpace(args.Provider) ? null : args.Provider,
+            Model: string.IsNullOrWhiteSpace(args.Model) ? null : args.Model,
+            Persona: string.IsNullOrWhiteSpace(args.Persona) ? null : args.Persona,
             Continuable: string.Equals(args.Mode, "background", StringComparison.OrdinalIgnoreCase),
             Fork: args.Fork,
             OutputSchema: schema);

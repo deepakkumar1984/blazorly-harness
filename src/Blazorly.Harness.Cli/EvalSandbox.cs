@@ -85,11 +85,6 @@ public static class EvalSandbox
             EnableSpill = true,
             EnableSchedule = true,
             EnableMcp = false,
-            // A decision model is a network dependency that would make scores non-reproducible
-            // and non-comparable; pinned off regardless of the ambient settings.
-            EnableSystemOne = false,
-            EnableRiskGate = false,
-            EnableToolGate = false,
             // Third-party plugins would change the tool set under measurement.
             PluginDirs = [],
             DisabledPlugins = [],
@@ -251,7 +246,6 @@ public static class EvalSandbox
         ["sessionQuery"] = s.EnableSessionQuery, ["projectInstructions"] = s.EnableProjectInstructions,
         ["time"] = s.EnableTime, ["tmux"] = s.EnableTmux, ["autoTitles"] = s.EnableAutoTitles,
         ["spill"] = s.EnableSpill, ["schedule"] = s.EnableSchedule, ["mcp"] = s.EnableMcp,
-        ["systemOne"] = s.EnableSystemOne, ["riskGate"] = s.EnableRiskGate,
     };
 
     private static string Mask(string? secret)
